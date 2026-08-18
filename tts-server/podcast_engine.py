@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -140,13 +141,57 @@ ProgressCallback = Callable[[int, int, str, str], None]
 # (current_line, total_lines, line_text_preview, message)
 
 
+_CHINESE_DIGITS = "零一二三四五六七八九"
+_YEAR_PATTERN = re.compile(r"(?<!\d)(\d{4})\s*年")
+_TIME_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[:：]\s*(\d{2})(?!\d)")
+
+
+def _replace_year(match: re.Match) -> str:
+    """将明确的四位数字年份改为逐位读法，避免按数量读法播报。"""
+    digits = match.group(1)
+    return "".join(_CHINESE_DIGITS[int(digit)] for digit in digits) + "年"
+
+
+def _chinese_hour(hour: int) -> str:
+    """将 0-23 小时转换为自然的中文小时读法。"""
+    if hour < 10:
+        return _CHINESE_DIGITS[hour]
+    if hour < 20:
+        return "十" if hour == 10 else "十" + _CHINESE_DIGITS[hour - 10]
+    return "二十" if hour == 20 else "二十" + _CHINESE_DIGITS[hour - 20]
+
+
+def _replace_time(match: re.Match) -> str:
+    """将明确的时:分格式改为中文时间读法，避免冒号被读成“比”。"""
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return match.group(0)
+    hour_text = _chinese_hour(hour)
+    if minute == 0:
+        return f"{hour_text}点整"
+    if minute < 10:
+        minute_text = f"零{_CHINESE_DIGITS[minute]}"
+    else:
+        minute_text = str(minute)
+        minute_text = "".join(_CHINESE_DIGITS[int(digit)] for digit in minute_text)
+    return f"{hour_text}点{minute_text}分"
+
+
+def _normalize_reading_text(text: str) -> str:
+    """仅规范化明确的年份和时间，其他数字保持原文。"""
+    text = _YEAR_PATTERN.sub(_replace_year, str(text))
+    return _TIME_PATTERN.sub(_replace_time, text)
+
+
 def _sanitize_text(text: str) -> str:
-    """清洗 BPE 无法编码的字符，避免推理阶段触发 tokenizer 错误。"""
+    """规范化年份/时间并清洗 BPE 无法编码的字符。"""
+    text = _normalize_reading_text(text)
     replacements = {
         "・": "、",
         "･": "、",
     }
-    return str(text).translate(str.maketrans(replacements))
+    return text.translate(str.maketrans(replacements))
 
 
 def _read_wav_format(path: str):
