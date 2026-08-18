@@ -1,0 +1,5 @@
+# TTS 服务端额外依赖（index-tts 自身的 torch/torchaudio 等依赖由其 venv 提供）
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+python-multipart>=0.0.9

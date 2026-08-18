@@ -1,0 +1,1 @@
+scp -P 32363 /Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/tts-server/*.py root@111.127.52.27:/mnt/storage/index-tts-data/server-src/tts-server/

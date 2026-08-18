@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="description" content="精选高保真 AI 音色库 · 支持按分类和标签筛选试听" />
+<meta name="theme-color" content="#6366f1" />
+<title>音色库 · Podcast Studio</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2'%3E%3Cpath d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z'/%3E%3Cpath d='M19 10v2a7 7 0 0 1-14 0v-2'/%3E%3Cline x1='12' y1='19' x2='12' y2='23'/%3E%3C/svg%3E" />
+<style>
+:root{--primary:#6366f1;--primary-50:#eef2ff;--primary-100:#e0e7ff;--primary-600:#4f46e5;--primary-700:#4338ca;--gray-50:#f9fafb;--gray-100:#f3f4f6;--gray-200:#e5e7eb;--gray-300:#d1d5db;--gray-400:#9ca3af;--gray-500:#6b7280;--gray-600:#4b5563;--gray-700:#374151;--gray-800:#1f2937;--bg:hsl(220 20% 97%);--pink-100:#fce7f3;--pink-700:#be185d;--blue-100:#dbeafe;--blue-700:#1d4ed8;--amber-100:#fef3c7;--amber-700:#b45309;--green-500:#22c55e;--red-500:#ef4444;--radius:0.75rem;--shadow-sm:0 1px 2px rgba(0,0,0,.05);--shadow-md:0 4px 6px -1px rgba(0,0,0,.08);--shadow-card-hover:0 8px 24px -8px rgba(99,102,241,.18)}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--gray-800);-webkit-font-smoothing:antialiased;line-height:1.5}
+button{font-family:inherit;cursor:pointer}
+a{color:var(--primary-600);text-decoration:none}
+a:hover{color:var(--primary-700)}
+.container{max-width:80rem;margin:0 auto;padding:0 1rem}
+@media(min-width:640px){.container{padding:0 1.5rem}}
+@media(min-width:1024px){.container{padding:0 2rem}}
+.header{background:rgba(255,255,255,.92);backdrop-filter:saturate(180%) blur(8px);border-bottom:1px solid var(--gray-200);position:sticky;top:0;z-index:20}
+.header-inner{padding:.75rem 0;display:flex;flex-direction:column;gap:.75rem}
+@media(min-width:768px){.header-inner{flex-direction:row;align-items:center;justify-content:space-between}}
+.header-title{display:flex;align-items:center;gap:.75rem}
+.header-logo{width:2rem;height:2rem;border-radius:.5rem;background:linear-gradient(135deg,#6366f1,#a855f7);display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0}
+.header-logo svg{width:1.125rem;height:1.125rem}
+.header-title h1{font-size:1rem;font-weight:600;margin:0;color:var(--gray-800)}
+.header-title p{font-size:.7rem;color:var(--gray-400);margin:.125rem 0 0 0}
+.header-right{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.header-meta{display:inline-flex;align-items:center;gap:.375rem;background:var(--primary-50);color:var(--primary-700);padding:.25rem .625rem;border-radius:9999px;font-size:.7rem;font-weight:500}
+.search-wrap{position:relative;width:100%}
+@media(min-width:768px){.search-wrap{width:16rem}}
+.search-wrap svg{position:absolute;left:.75rem;top:50%;transform:translateY(-50%);width:1rem;height:1rem;color:var(--gray-400);pointer-events:none}
+.search-input{width:100%;height:2.25rem;padding:0 .75rem 0 2.25rem;border:1px solid var(--gray-300);border-radius:.5rem;background:#fff;font-size:.85rem;color:var(--gray-800);transition:border-color .15s,box-shadow .15s}
+.search-input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px rgba(99,102,241,.15)}
+.hero{padding:2.5rem 0 1.5rem;text-align:center}
+.hero h2{font-size:1.75rem;font-weight:700;color:var(--gray-800);margin:0 0 .5rem;letter-spacing:-.02em}
+@media(min-width:768px){.hero h2{font-size:2.25rem}}
+.hero p{font-size:.95rem;color:var(--gray-500);margin:0}
+.hero-meta{margin-top:1rem;display:inline-flex;align-items:center;gap:.5rem;background:#fff;border:1px solid var(--gray-200);border-radius:9999px;padding:.375rem 1rem;font-size:.8rem;color:var(--gray-600);box-shadow:var(--shadow-sm)}
+.hero-meta .dot{width:.375rem;height:.375rem;background:var(--green-500);border-radius:50%}
+.tabs{display:flex;gap:.25rem;border-bottom:1px solid var(--gray-200);overflow-x:auto;margin:0 -1rem;padding:0 1rem}
+@media(min-width:640px){.tabs{margin:0;padding:0}}
+.tabs::-webkit-scrollbar{display:none}
+.tab{position:relative;flex-shrink:0;padding:.75rem 1rem;background:transparent;border:none;font-size:.875rem;font-weight:500;color:var(--gray-500);transition:color .15s}
+.tab:hover{color:var(--gray-700)}
+.tab.active{color:var(--primary-600)}
+.tab .count{margin-left:.375rem;font-size:.75rem;color:var(--gray-400)}
+.tab.active .count{color:var(--primary)}
+.tab.active::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--primary);border-radius:2px 2px 0 0}
+.tags-bar{display:flex;align-items:center;gap:.375rem;overflow-x:auto;margin:0 -1rem;padding:.5rem 1rem}
+@media(min-width:640px){.tags-bar{margin:0;padding:.5rem 0}}
+.tags-bar::-webkit-scrollbar{display:none}
+.tags-label{flex-shrink:0;font-size:.7rem;color:var(--gray-400);padding-right:.25rem}
+.chip{flex-shrink:0;display:inline-flex;align-items:center;gap:.25rem;padding:.25rem .75rem;border:1px solid var(--gray-200);background:#fff;border-radius:9999px;font-size:.75rem;font-weight:500;color:var(--gray-600);transition:all .15s}
+.chip:hover{border-color:var(--primary-100);color:var(--primary-600)}
+.chip.active{background:var(--primary);border-color:var(--primary);color:#fff}
+.chip-clear{flex-shrink:0;margin-left:.25rem;background:none;border:none;font-size:.75rem;color:var(--gray-500);padding:.25rem .5rem}
+.chip-clear:hover{color:var(--red-500)}
+.result-info{display:flex;align-items:center;justify-content:space-between;margin:.75rem 0 1rem;font-size:.75rem;color:var(--gray-500)}
+.result-info b{color:var(--gray-700);font-weight:600}
+.result-clear-btn{background:none;border:none;color:var(--gray-500);font-size:.75rem;padding:.25rem .5rem;transition:color .15s}
+.result-clear-btn:hover{color:var(--primary-600)}
+.grid{display:grid;grid-template-columns:1fr;gap:1rem;padding-bottom:3rem}
+@media(min-width:640px){.grid{grid-template-columns:repeat(2,1fr)}}
+@media(min-width:1024px){.grid{grid-template-columns:repeat(3,1fr)}}
+@media(min-width:1280px){.grid{grid-template-columns:repeat(4,1fr)}}
+.card{background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;transition:transform .18s ease,box-shadow .18s ease}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow-card-hover)}
+.card-cover{position:relative;height:8.5rem;background:linear-gradient(135deg,#eef2ff 0%,#faf5ff 50%,#fdf2f8 100%);display:flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer;border:none;width:100%;padding:0}
+.card-cover svg.wave-bg{position:absolute;inset:0;width:100%;height:100%;opacity:.35;pointer-events:none}
+.play-btn{position:relative;z-index:2;width:3rem;height:3rem;border-radius:50%;background:#fff;border:none;display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow-md);transition:transform .15s,background .15s}
+.play-btn:hover{transform:scale(1.08)}
+.card-cover:hover .play-btn{background:var(--primary)}
+.card-cover:hover .play-btn svg{color:#fff}
+.play-btn svg{width:1.25rem;height:1.25rem;color:var(--primary);transition:color .15s}
+.play-btn.playing{background:var(--primary);transform:scale(1.05)}
+.play-btn.playing svg{color:#fff}
+.playing-indicator{position:absolute;top:.5rem;right:.5rem;display:flex;align-items:flex-end;gap:2px;z-index:2}
+.playing-indicator span{width:2px;background:var(--primary);border-radius:1px;animation:pulse 1s ease-in-out infinite}
+.playing-indicator span:nth-child(1){height:6px;animation-delay:0s}
+.playing-indicator span:nth-child(2){height:10px;animation-delay:.15s}
+.playing-indicator span:nth-child(3){height:8px;animation-delay:.3s}
+.playing-indicator span:nth-child(4){height:12px;animation-delay:.45s}
+@keyframes pulse{0%,100%{transform:scaleY(.5);opacity:.6}50%{transform:scaleY(1);opacity:1}}
+.card-player{border-top:1px solid var(--gray-100);background:var(--gray-50);padding:.75rem;animation:fadeIn .25s ease}
+.card-player audio{width:100%;height:2.25rem}
+.card-player p{margin:.375rem 0 0 0;font-size:.625rem;color:var(--gray-400)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+.card-body{padding:.875rem;flex:1;display:flex;flex-direction:column;gap:.5rem}
+.card-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem}
+.card-title-wrap{display:flex;align-items:center;gap:.25rem;min-width:0;flex:1}
+.card-title{font-size:.875rem;font-weight:600;color:var(--gray-800);margin:0;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.copy-btn{flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;width:1.25rem;height:1.25rem;border:none;background:transparent;border-radius:.25rem;color:var(--gray-400);cursor:pointer;transition:color .15s,background .15s;opacity:0}
+.copy-btn svg{width:.875rem;height:.875rem}
+.card-title-wrap:hover .copy-btn{opacity:1}
+.copy-btn:hover{color:var(--primary-600);background:var(--primary-50)}
+.copy-btn.copied{color:var(--green-500);opacity:1}
+.toast{position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%) translateY(1rem);background:var(--gray-800);color:#fff;font-size:.8rem;padding:.5rem 1rem;border-radius:.5rem;box-shadow:var(--shadow-md);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:50}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.card-cat{flex-shrink:0;display:inline-flex;align-items:center;padding:.125rem .5rem;border-radius:9999px;font-size:.625rem;font-weight:500}
+.card-cat.female{background:var(--pink-100);color:var(--pink-700)}
+.card-cat.male{background:var(--blue-100);color:var(--blue-700)}
+.card-cat.emotion{background:var(--amber-100);color:var(--amber-700)}
+.card-intro{font-size:.75rem;color:var(--gray-500);margin:0;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.5em}
+.card-tags{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:auto;padding-top:.25rem}
+.card-tag{display:inline-flex;align-items:center;padding:.125rem .375rem;border-radius:.25rem;font-size:.625rem;font-weight:500;background:var(--gray-100);color:var(--gray-600)}
+.card-tag-more{font-size:.625rem;color:var(--gray-400);padding:0 .25rem}
+.empty{text-align:center;padding:4rem 1rem;color:var(--gray-400)}
+.empty svg{width:3rem;height:3rem;margin:0 auto .75rem;opacity:.5}
+.empty p{font-size:.875rem;margin:0}
+.loading{text-align:center;padding:4rem 1rem;color:var(--gray-400)}
+.loading svg{width:2rem;height:2rem;margin:0 auto .75rem;animation:spin 1s linear infinite}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.footer{margin-top:auto;border-top:1px solid var(--gray-200);background:#fff}
+.footer-inner{padding:2rem 0 2.5rem;display:flex;flex-direction:column;gap:1.5rem}
+@media(min-width:640px){.footer-inner{flex-direction:row;align-items:center;justify-content:space-between}}
+.footer-note{max-width:32rem}
+.footer-note h3{font-size:.875rem;font-weight:600;color:var(--gray-800);margin:0 0 .375rem}
+.footer-note p{font-size:.75rem;color:var(--gray-500);margin:0;line-height:1.6}
+.footer-bottom{margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid var(--gray-100);font-size:.7rem;color:var(--gray-400);display:flex;flex-direction:column;gap:.25rem}
+@media(min-width:640px){.footer-bottom{flex-direction:row;justify-content:space-between}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="container header-inner">
+    <div class="header-title">
+      <div class="header-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+        </svg>
+      </div>
+      <div>
+        <h1>音色库</h1>
+        <p>Podcast Studio · Showcase</p>
+      </div>
+      <span class="header-meta" id="header-meta">— 个音色</span>
+    </div>
+    <div class="header-right">
+      <div class="search-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="text" class="search-input" id="search" placeholder="搜索音色名称、简介或标签…" autocomplete="off" />
+      </div>
+    </div>
+  </div>
+</div>
+
+<main class="container">
+  <section class="hero">
+    <h2 id="hero-title">精选高保真 AI 音色</h2>
+    <p id="hero-subtitle">支持按分类和标签筛选 · 点击卡片试听样本</p>
+    <div class="hero-meta">
+      <span class="dot"></span>
+      <span>本页面为公开浏览页 · 无需登录</span>
+    </div>
+  </section>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="tags-bar" id="tags-bar" style="display:none;"></div>
+
+  <div class="result-info">
+    <span id="result-count">加载中…</span>
+    <button class="result-clear-btn" id="result-clear" style="display:none;">清空筛选</button>
+  </div>
+
+  <div class="loading" id="loading">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="12" y1="2" x2="12" y2="6"/>
+      <line x1="12" y1="18" x2="12" y2="22"/>
+      <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/>
+      <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/>
+      <line x1="2" y1="12" x2="6" y2="12"/>
+      <line x1="18" y1="12" x2="22" y2="12"/>
+    </svg>
+    <p>正在加载音色数据…</p>
+  </div>
+
+  <div class="grid" id="grid" style="display:none;"></div>
+
+  <div class="empty" id="empty" style="display:none;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"/>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+    <p>没有匹配的音色，试试调整筛选条件</p>
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="footer-note">
+      <h3>选定音色后怎么办？</h3>
+      <p id="contact-note">选定音色后，请复制音色给客服，让客服基于这个音色帮你生成音频</p>
+    </div>
+    <div class="footer-bottom">
+      <span>Powered by lizigege</span>
+      <span>展示页 · 音色列表</span>
+    </div>
+  </div>
+</footer>
+<script>
+(function () {
+  "use strict";
+
+  // ─── SVG 图标 ───
+  var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+  var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+  var ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  var WAVE_BG = '<svg class="wave-bg" viewBox="0 0 200 100" preserveAspectRatio="none"><path d="M0,50 Q25,20 50,50 T100,50 T150,50 T200,50" stroke="rgb(165 180 252)" stroke-width="1" fill="none"/><path d="M0,60 Q25,30 50,60 T100,60 T150,60 T200,60" stroke="rgb(196 181 253)" stroke-width="1" fill="none"/></svg>';
+
+  // ─── 状态 ───
+  var state = {
+    allVoices: [],
+    categories: [],
+    contact: { note: "" },
+    title: "精选高保真 AI 音色",
+    subtitle: "",
+    activeCategory: "",
+    activeTags: [],
+    query: "",
+    currentAudio: null,    // 当前正在播放的 <audio> 元素
+    currentCardId: null,   // 当前展开播放器的卡片 id
+  };
+
+  // ─── DOM 引用 ───
+  var el = {
+    grid: document.getElementById("grid"),
+    tabs: document.getElementById("tabs"),
+    tagsBar: document.getElementById("tags-bar"),
+    search: document.getElementById("search"),
+    resultCount: document.getElementById("result-count"),
+    resultClear: document.getElementById("result-clear"),
+    loading: document.getElementById("loading"),
+    empty: document.getElementById("empty"),
+    heroTitle: document.getElementById("hero-title"),
+    heroSubtitle: document.getElementById("hero-subtitle"),
+    headerMeta: document.getElementById("header-meta"),
+    contactNote: document.getElementById("contact-note"),
+  };
+
+  // ─── 工具：转义 HTML，避免简介里的特殊字符破坏布局 ───
+  function escapeHtml(s) {
+    if (s == null) return "";
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // ─── 加载数据 ───
+  function loadData() {
+    fetch("./voices.json", { cache: "no-cache" })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        state.allVoices = data.voices || [];
+        state.categories = data.categories || [];
+        state.contact = data.contact || { note: "" };
+        state.title = data.title || "音色库";
+        state.subtitle = data.subtitle || "";
+
+        el.heroTitle.textContent = state.title;
+        el.heroSubtitle.textContent = state.subtitle || "支持按分类和标签筛选 · 点击卡片试听样本";
+        el.headerMeta.textContent = (data.total || state.allVoices.length) + " 个音色";
+        if (state.contact.note) {
+          el.contactNote.textContent = state.contact.note + " 本页面为公开浏览页，无需登录；请选择你喜欢的音色，然后把音色名称或 ID 发送给客服，让客服帮你生成音频。";
+        }
+
+        el.loading.style.display = "none";
+        el.grid.style.display = "grid";
+
+        renderTabs();
+        renderTagsBar();
+        renderGrid();
+      })
+      .catch(function (err) {
+        el.loading.style.display = "none";
+        el.empty.style.display = "block";
+        el.empty.querySelector("p").textContent = "加载失败：" + err.message;
+      });
+  }
+
+  // ─── 渲染：分类 Tabs ───
+  function renderTabs() {
+    var html = "";
+    var allCount = state.allVoices.length;
+    html += '<button class="tab' + (state.activeCategory === "" ? " active" : "") + '" data-cat="">全部<span class="count">' + allCount + "</span></button>";
+    state.categories.forEach(function (c) {
+      html += '<button class="tab' + (state.activeCategory === c.id ? " active" : "") + '" data-cat="' + escapeHtml(c.id) + '">' + escapeHtml(c.label) + '<span class="count">' + c.count + "</span></button>";
+    });
+    el.tabs.innerHTML = html;
+    el.tabs.querySelectorAll(".tab").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        state.activeCategory = btn.dataset.cat;
+        state.activeTags = [];  // 切分类时清空标签
+        renderTabs();
+        renderTagsBar();
+        renderGrid();
+      });
+    });
+  }
+
+  // ─── 渲染：标签 chips（按使用频次排序，取 Top 14） ───
+  function renderTagsBar() {
+    // 候选标签只来自当前分类下的音色，避免出现不可达组合
+    var pool = state.allVoices.filter(function (v) {
+      return !state.activeCategory || v.category === state.activeCategory;
+    });
+    var cnt = {};
+    pool.forEach(function (v) {
+      (v.tags || []).forEach(function (t) { cnt[t] = (cnt[t] || 0) + 1; });
+    });
+    var tags = Object.keys(cnt)
+      .sort(function (a, b) { return cnt[b] - cnt[a] || a.localeCompare(b); })
+      .slice(0, 14);
+
+    if (tags.length === 0) {
+      el.tagsBar.style.display = "none";
+      return;
+    }
+    el.tagsBar.style.display = "flex";
+
+    var html = '<span class="tags-label">标签</span>';
+    tags.forEach(function (t) {
+      var active = state.activeTags.indexOf(t) >= 0;
+      html += '<button class="chip' + (active ? " active" : "") + '" data-tag="' + escapeHtml(t) + '">' + escapeHtml(t) + "</button>";
+    });
+    if (state.activeTags.length > 0) {
+      html += '<button class="chip-clear" id="tag-clear">清空</button>';
+    }
+    el.tagsBar.innerHTML = html;
+
+    el.tagsBar.querySelectorAll(".chip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        var t = chip.dataset.tag;
+        var idx = state.activeTags.indexOf(t);
+        if (idx >= 0) state.activeTags.splice(idx, 1);
+        else state.activeTags.push(t);
+        renderTagsBar();
+        renderGrid();
+      });
+    });
+    var clearBtn = document.getElementById("tag-clear");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", function () {
+        state.activeTags = [];
+        renderTagsBar();
+        renderGrid();
+      });
+    }
+  }
+
+  // ─── 筛选 ───
+  function getFiltered() {
+    var kw = state.query.trim().toLowerCase();
+    return state.allVoices.filter(function (v) {
+      if (state.activeCategory && v.category !== state.activeCategory) return false;
+      if (state.activeTags.length > 0) {
+        var tags = v.tags || [];
+        for (var i = 0; i < state.activeTags.length; i++) {
+          if (tags.indexOf(state.activeTags[i]) < 0) return false;
+        }
+      }
+      if (kw) {
+        var hitName = (v.name || "").toLowerCase().indexOf(kw) >= 0;
+        var hitIntro = (v.intro || "").toLowerCase().indexOf(kw) >= 0;
+        var hitTag = (v.tags || []).some(function (t) { return t.toLowerCase().indexOf(kw) >= 0; });
+        if (!hitName && !hitIntro && !hitTag) return false;
+      }
+      return true;
+    });
+  }
+
+  // ─── 渲染：卡片网格 ───
+  function renderGrid() {
+    var list = getFiltered();
+
+    // 更新结果信息
+    var hasFilter = state.activeTags.length > 0 || state.activeCategory !== "" || state.query !== "";
+    if (hasFilter) {
+      el.resultCount.innerHTML = '共匹配 <b>' + list.length + "</b> 个音色 / 总 " + state.allVoices.length + " 个";
+      el.resultClear.style.display = "inline-block";
+    } else {
+      el.resultCount.innerHTML = '共 <b>' + list.length + "</b> 个音色";
+      el.resultClear.style.display = "none";
+    }
+
+    if (list.length === 0) {
+      el.grid.style.display = "none";
+      el.empty.style.display = "block";
+      return;
+    }
+    el.grid.style.display = "grid";
+    el.empty.style.display = "none";
+
+    var html = "";
+    list.forEach(function (v) {
+      var tagsHtml = "";
+      var tags = v.tags || [];
+      tags.slice(0, 3).forEach(function (t) {
+        tagsHtml += '<span class="card-tag">' + escapeHtml(t) + "</span>";
+      });
+      if (tags.length > 3) {
+        tagsHtml += '<span class="card-tag-more">+' + (tags.length - 3) + "</span>";
+      }
+
+      html += '<article class="card" data-id="' + escapeHtml(v.id) + '">'
+        + '<button class="card-cover" data-action="toggle">'
+          + WAVE_BG
+          + '<span class="play-btn">' + ICON_PLAY + "</span>"
+          + '<div class="playing-indicator" style="display:none;"><span></span><span></span><span></span><span></span></div>'
+        + "</button>"
+        + '<div class="card-player" style="display:none;">'
+          + '<audio preload="none" src="' + escapeHtml(v.preview_url) + '"></audio>'
+          + "<p>参考音色样本 · 点击播放</p>"
+        + "</div>"
+        + '<div class="card-body">'
+          + '<div class="card-title-row">'
+            + '<div class="card-title-wrap">'
+              + '<h3 class="card-title" title="' + escapeHtml(v.name) + '">' + escapeHtml(v.name) + "</h3>"
+              + '<button class="copy-btn" data-action="copy" data-name="' + escapeHtml(v.name) + '" aria-label="复制音色名称">' + ICON_COPY + "</button>"
+            + "</div>"
+            + '<span class="card-cat ' + escapeHtml(v.category) + '">' + escapeHtml(v.category_label || v.category) + "</span>"
+          + "</div>"
+          + '<p class="card-intro">' + escapeHtml(v.intro) + "</p>"
+          + '<div class="card-tags">' + tagsHtml + "</div>"
+        + "</div>"
+      + "</article>";
+    });
+    el.grid.innerHTML = html;
+
+    // 绑定点击事件
+    el.grid.querySelectorAll(".card").forEach(function (card) {
+      var cover = card.querySelector(".card-cover");
+      cover.addEventListener("click", function () { toggleCard(card); });
+      var copyBtn = card.querySelector(".copy-btn");
+      if (copyBtn) {
+        copyBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          handleCopy(copyBtn);
+        });
+      }
+    });
+  }
+
+  // ─── 复制音色名称到剪贴板 ───
+  function handleCopy(btn) {
+    var name = btn.dataset.name;
+    if (!name) return;
+
+    function showSuccess() {
+      btn.classList.add("copied");
+      btn.innerHTML = ICON_CHECK;
+      showToast("已复制：" + name);
+      setTimeout(function () {
+        btn.classList.remove("copied");
+        btn.innerHTML = ICON_COPY;
+      }, 1500);
+    }
+
+    // 优先用现代 Clipboard API
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(name).then(showSuccess).catch(function () {
+        fallbackCopy(name, showSuccess);
+      });
+    } else {
+      fallbackCopy(name, showSuccess);
+    }
+  }
+
+  // ─── 兼容旧浏览器/非 HTTPS 的 fallback ───
+  function fallbackCopy(text, onSuccess) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.top = "-9999px";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok && onSuccess) onSuccess();
+      else showToast("复制失败，请手动选择文字");
+    } catch (e) {
+      showToast("复制失败，请手动选择文字");
+    }
+  }
+
+  // ─── Toast 提示 ───
+  var toastEl = null;
+  var toastTimer = null;
+  function showToast(msg) {
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.className = "toast";
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toastEl.classList.remove("show");
+    }, 2000);
+  }
+
+  // ─── 切换卡片播放 ───
+  function toggleCard(card) {
+    var cardId = card.dataset.id;
+    var player = card.querySelector(".card-player");
+    var audio = player.querySelector("audio");
+    var playBtn = card.querySelector(".play-btn");
+    var indicator = card.querySelector(".playing-indicator");
+
+    // 如果点击的是当前正在播放的卡片：暂停或恢复
+    if (state.currentCardId === cardId) {
+      if (audio.paused) {
+        audio.play().catch(function () {});
+      } else {
+        audio.pause();
+      }
+      return;
+    }
+
+    // 切换到新卡片：先停掉旧的
+    if (state.currentAudio) {
+      state.currentAudio.pause();
+      var oldCard = el.grid.querySelector('.card[data-id="' + CSS.escape(state.currentCardId) + '"]');
+      if (oldCard) {
+        oldCard.querySelector(".card-player").style.display = "none";
+        oldCard.querySelector(".play-btn").classList.remove("playing");
+        oldCard.querySelector(".play-btn").innerHTML = ICON_PLAY;
+        oldCard.querySelector(".playing-indicator").style.display = "none";
+      }
+    }
+
+    // 展开新卡片的播放器
+    player.style.display = "block";
+    playBtn.classList.add("playing");
+    playBtn.innerHTML = ICON_PAUSE;
+    indicator.style.display = "flex";
+    state.currentAudio = audio;
+    state.currentCardId = cardId;
+
+    // 绑定播放/暂停事件
+    audio.onplay = function () {
+      playBtn.classList.add("playing");
+      playBtn.innerHTML = ICON_PAUSE;
+      indicator.style.display = "flex";
+    };
+    audio.onpause = function () {
+      playBtn.classList.remove("playing");
+      playBtn.innerHTML = ICON_PLAY;
+      indicator.style.display = "none";
+    };
+    audio.onended = function () {
+      playBtn.classList.remove("playing");
+      playBtn.innerHTML = ICON_PLAY;
+      indicator.style.display = "none";
+    };
+
+    audio.play().catch(function () {});
+  }
+
+  // ─── 搜索框：输入防抖 ───
+  var searchTimer = null;
+  el.search.addEventListener("input", function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function () {
+      state.query = el.search.value;
+      renderGrid();
+    }, 200);
+  });
+
+  // ─── 清空筛选 ───
+  el.resultClear.addEventListener("click", function () {
+    state.activeCategory = "";
+    state.activeTags = [];
+    state.query = "";
+    el.search.value = "";
+    renderTabs();
+    renderTagsBar();
+    renderGrid();
+  });
+
+  // ─── 启动 ───
+  loadData();
+})();
+</script>
+</body>
+</html>

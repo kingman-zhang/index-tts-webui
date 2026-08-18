@@ -1,0 +1,862 @@
+{
+  "title": "音色库",
+  "subtitle": "精选高保真 AI 音色 · 可按分类和标签筛选",
+  "total": 65,
+  "categories": [
+    {
+      "id": "female",
+      "label": "女声",
+      "count": 26
+    },
+    {
+      "id": "male",
+      "label": "男声",
+      "count": 26
+    },
+    {
+      "id": "emotion",
+      "label": "情感参考",
+      "count": 13
+    }
+  ],
+  "contact": {
+    "note": ""
+  },
+  "voices": [
+    {
+      "id": "女-傲娇女友-傲娇小姐姐.mp3",
+      "name": "傲娇小姐姐",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "傲娇",
+        "姐姐"
+      ],
+      "intro": "傲娇风格的女朋友音色，嘴上不饶人，心里甜如蜜，适合恋爱向短剧。",
+      "preview_url": "./assets/voices/女-傲娇女友-傲娇小姐姐.mp3",
+      "size_kb": 107.3
+    },
+    {
+      "id": "女-傲娇御姐.mp3",
+      "name": "傲娇御姐",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "御姐",
+        "高冷",
+        "霸道"
+      ],
+      "intro": "高冷御姐音，语调沉稳充满掌控感，适合反派女主或霸道总裁类角色。",
+      "preview_url": "./assets/voices/女-傲娇御姐.mp3",
+      "size_kb": 114.3
+    },
+    {
+      "id": "女-傲慢娇声-腹黑傲娇.mp3",
+      "name": "腹黑傲娇",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "傲慢娇声",
+        "傲娇"
+      ],
+      "intro": "傲慢娇声、傲娇音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-傲慢娇声-腹黑傲娇.mp3",
+      "size_kb": 123.8
+    },
+    {
+      "id": "女-初恋女友.mp3",
+      "name": "初恋女友",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "初恋",
+        "清新",
+        "校园"
+      ],
+      "intro": "清新初恋音，带一点青涩与羞涩，适合校园青春剧情。",
+      "preview_url": "./assets/voices/女-初恋女友.mp3",
+      "size_kb": 103.6
+    },
+    {
+      "id": "女-嚣张小姐.mp3",
+      "name": "嚣张小姐",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "嚣张小姐"
+      ],
+      "intro": "嚣张小姐音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-嚣张小姐.mp3",
+      "size_kb": 53.0
+    },
+    {
+      "id": "女-憨憨萌兽.mp3",
+      "name": "憨憨萌兽",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "憨憨萌兽"
+      ],
+      "intro": "表现憨憨萌兽情绪，适合短剧与有声读物。",
+      "preview_url": "./assets/voices/女-憨憨萌兽.mp3",
+      "size_kb": 113.9
+    },
+    {
+      "id": "女-成熟姐姐-御姐型女强人.mp3",
+      "name": "御姐型女强人",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "成熟",
+        "御姐型女强人"
+      ],
+      "intro": "成熟、御姐型女强人音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-成熟姐姐-御姐型女强人.mp3",
+      "size_kb": 137.8
+    },
+    {
+      "id": "女-播客1.mp3",
+      "name": "播客1",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "播客",
+        "主持人",
+        "访谈"
+      ],
+      "intro": "播客主持人腔调，轻松亲切，适合对话节目与访谈。",
+      "preview_url": "./assets/voices/女-播客1.mp3",
+      "size_kb": 701.4
+    },
+    {
+      "id": "女-新闻女生.mp3",
+      "name": "新闻女生",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "新闻",
+        "资讯",
+        "播报"
+      ],
+      "intro": "新闻播报女声，发音标准、节奏稳健，适合资讯类内容。",
+      "preview_url": "./assets/voices/女-新闻女生.mp3",
+      "size_kb": 87.8
+    },
+    {
+      "id": "女-清脆少女.mp3",
+      "name": "清脆少女",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "少女"
+      ],
+      "intro": "清脆活泼的年轻女声，充满青春气息。",
+      "preview_url": "./assets/voices/女-清脆少女.mp3",
+      "size_kb": 97.2
+    },
+    {
+      "id": "女-温暖少女.mp3",
+      "name": "温暖少女",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "少女"
+      ],
+      "intro": "少女音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-温暖少女.mp3",
+      "size_kb": 158.5
+    },
+    {
+      "id": "女-温暖闺蜜.mp3",
+      "name": "温暖闺蜜",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "温暖"
+      ],
+      "intro": "表现温暖情绪，适合短剧与有声读物。",
+      "preview_url": "./assets/voices/女-温暖闺蜜.mp3",
+      "size_kb": 103.7
+    },
+    {
+      "id": "女-温柔学姐.mp3",
+      "name": "温柔学姐",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "温柔"
+      ],
+      "intro": "温柔大姐姐音，自然亲和，适合治愈系旁白与情感对话。",
+      "preview_url": "./assets/voices/女-温柔学姐.mp3",
+      "size_kb": 93.9
+    },
+    {
+      "id": "女-灿灿-声线元气温柔.mp3",
+      "name": "声线元气温柔",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "灿灿",
+        "温柔"
+      ],
+      "intro": "灿灿、温柔音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-灿灿-声线元气温柔.mp3",
+      "size_kb": 123.3
+    },
+    {
+      "id": "女-热心大婶.mp3",
+      "name": "热心大婶",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "热心大婶"
+      ],
+      "intro": "热心大婶音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-热心大婶.mp3",
+      "size_kb": 76.3
+    },
+    {
+      "id": "女-甜美女声.mp3",
+      "name": "甜美女声",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "甜美",
+        "广告",
+        "清亮"
+      ],
+      "intro": "甜美清亮女声，适合广告与品牌宣传。",
+      "preview_url": "./assets/voices/女-甜美女声.mp3",
+      "size_kb": 144.6
+    },
+    {
+      "id": "女-病娇姐姐-病弱的姐姐.mp3",
+      "name": "病弱的姐姐",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "病娇",
+        "御姐",
+        "暗黑"
+      ],
+      "intro": "病娇系女声，温柔的表面下藏着执念，适合暗黑角色。",
+      "preview_url": "./assets/voices/女-病娇姐姐-病弱的姐姐.mp3",
+      "size_kb": 105.0
+    },
+    {
+      "id": "女-病娇萌妹-破碎感美人.mp3",
+      "name": "破碎感美人",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "病娇萌妹",
+        "破碎感"
+      ],
+      "intro": "破碎感萌妹音，柔弱中透着凄美，适合悲剧角色。",
+      "preview_url": "./assets/voices/女-病娇萌妹-破碎感美人.mp3",
+      "size_kb": 101.2
+    },
+    {
+      "id": "女-病弱少女-稚气可爱.mp3",
+      "name": "稚气可爱",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "少女",
+        "可爱"
+      ],
+      "intro": "少女、可爱风格的女声音色，适合情感对话、角色扮演场景。",
+      "preview_url": "./assets/voices/女-病弱少女-稚气可爱.mp3",
+      "size_kb": 240.5
+    },
+    {
+      "id": "女-纯澈女生.mp3",
+      "name": "纯澈女生",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "纯澈女生"
+      ],
+      "intro": "表现纯澈女生情绪，适合短剧与有声读物。",
+      "preview_url": "./assets/voices/女-纯澈女生.mp3",
+      "size_kb": 77.3
+    },
+    {
+      "id": "女-纯真少女-清冷稳重.mp3",
+      "name": "清冷稳重",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "少女",
+        "清冷稳重"
+      ],
+      "intro": "表现少女、清冷稳重情绪，适合短剧与有声读物。",
+      "preview_url": "./assets/voices/女-纯真少女-清冷稳重.mp3",
+      "size_kb": 242.8
+    },
+    {
+      "id": "女-花甲奶奶.mp3",
+      "name": "花甲奶奶",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "花甲奶奶"
+      ],
+      "intro": "花甲奶奶音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-花甲奶奶.mp3",
+      "size_kb": 119.6
+    },
+    {
+      "id": "女-调皮公主-娇俏公主.mp3",
+      "name": "娇俏公主",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "俏皮",
+        "娇俏公主"
+      ],
+      "intro": "调皮小公主音，俏皮灵巧，适合童话与儿童角色。",
+      "preview_url": "./assets/voices/女-调皮公主-娇俏公主.mp3",
+      "size_kb": 95.6
+    },
+    {
+      "id": "女-谄媚女声-成熟.mp3",
+      "name": "成熟",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "谄媚女声",
+        "成熟"
+      ],
+      "intro": "谄媚女声、成熟音色，女声质感清晰，适合广告与配音。",
+      "preview_url": "./assets/voices/女-谄媚女声-成熟.mp3",
+      "size_kb": 236.7
+    },
+    {
+      "id": "女-软软女孩.mp3",
+      "name": "软软女孩",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "软糯"
+      ],
+      "intro": "表现软糯情绪，适合短剧与有声读物。",
+      "preview_url": "./assets/voices/女-软软女孩.mp3",
+      "size_kb": 101.8
+    },
+    {
+      "id": "女-阅历姐姐.mp3",
+      "name": "阅历姐姐",
+      "category": "female",
+      "category_label": "女声",
+      "tags": [
+        "姐姐"
+      ],
+      "intro": "成熟阅历女声，沉稳大气，适合职场剧女强人角色。",
+      "preview_url": "./assets/voices/女-阅历姐姐.mp3",
+      "size_kb": 130.3
+    },
+    {
+      "id": "男-不羁青年.mp3",
+      "name": "不羁青年",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "青年",
+        "不羁",
+        "磁性"
+      ],
+      "intro": "不羁青年男声，自由洒脱略带磁性，适合个性主角。",
+      "preview_url": "./assets/voices/男-不羁青年.mp3",
+      "size_kb": 87.8
+    },
+    {
+      "id": "男-东方浩然-阳刚的军阀大叔.mp3",
+      "name": "阳刚的军阀大叔",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "大叔",
+        "阳刚",
+        "历史"
+      ],
+      "intro": "阳刚军阀大叔音，威严厚重，适合历史/战争题材。",
+      "preview_url": "./assets/voices/男-东方浩然-阳刚的军阀大叔.mp3",
+      "size_kb": 382.5
+    },
+    {
+      "id": "男-低音沉郁-高冷沉稳.wav",
+      "name": "高冷沉稳",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "低音",
+        "高冷沉稳"
+      ],
+      "intro": "低沉冷峻男声，克制内敛，适合悬疑/反派角色。",
+      "preview_url": "./assets/voices/男-低音沉郁-高冷沉稳.wav",
+      "size_kb": 50.1
+    },
+    {
+      "id": "男-傲娇霸总-磁性声音.mp3",
+      "name": "磁性声音",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "傲娇",
+        "磁性"
+      ],
+      "intro": "傲娇霸总男声，磁性强气场，适合总裁男主。",
+      "preview_url": "./assets/voices/男-傲娇霸总-磁性声音.mp3",
+      "size_kb": 342.7
+    },
+    {
+      "id": "男-南方小哥.mp3",
+      "name": "南方小哥",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "南方小哥"
+      ],
+      "intro": "南方青年小哥腔，自然亲切，适合日常对话。",
+      "preview_url": "./assets/voices/男-南方小哥.mp3",
+      "size_kb": 157.2
+    },
+    {
+      "id": "男-嘴硬竹马.mp3",
+      "name": "嘴硬竹马",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "嘴硬竹马"
+      ],
+      "intro": "沉稳嘴硬竹马音色，适配商务解说与角色演绎。",
+      "preview_url": "./assets/voices/男-嘴硬竹马.mp3",
+      "size_kb": 75.5
+    },
+    {
+      "id": "男-大壹-语气沉稳有力.wav",
+      "name": "语气沉稳有力",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "大壹",
+        "语气沉稳有力"
+      ],
+      "intro": "沉稳大壹、语气沉稳有力音色，适配商务解说与角色演绎。",
+      "preview_url": "./assets/voices/男-大壹-语气沉稳有力.wav",
+      "size_kb": 652.8
+    },
+    {
+      "id": "男-抒情男声.mp3",
+      "name": "抒情男声",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "抒情男声"
+      ],
+      "intro": "抒情细腻男声，适合情感独白与广告。",
+      "preview_url": "./assets/voices/男-抒情男声.mp3",
+      "size_kb": 158.0
+    },
+    {
+      "id": "男-抒情男生.mp3",
+      "name": "抒情男生",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "抒情男生"
+      ],
+      "intro": "抒情男生风格，适合纪录片、广告与故事讲述。",
+      "preview_url": "./assets/voices/男-抒情男生.mp3",
+      "size_kb": 158.0
+    },
+    {
+      "id": "男-搞笑大爷.mp3",
+      "name": "搞笑大爷",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "长辈"
+      ],
+      "intro": "长辈风格，适合纪录片、广告与故事讲述。",
+      "preview_url": "./assets/voices/男-搞笑大爷.mp3",
+      "size_kb": 81.2
+    },
+    {
+      "id": "男-播客1.mp3",
+      "name": "播客1",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "播客",
+        "男声",
+        "访谈"
+      ],
+      "intro": "播客腔男声，节奏分明，适合对话与访谈节目。",
+      "preview_url": "./assets/voices/男-播客1.mp3",
+      "size_kb": 489.8
+    },
+    {
+      "id": "男-播报男声.mp3",
+      "name": "播报男声",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "新闻",
+        "播报",
+        "男声"
+      ],
+      "intro": "标准新闻播报男声，发音清晰稳健。",
+      "preview_url": "./assets/voices/男-播报男声.mp3",
+      "size_kb": 131.1
+    },
+    {
+      "id": "男-机械战甲.mp3",
+      "name": "机械战甲",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "科幻"
+      ],
+      "intro": "科幻质感的男声音色，适合旁白、新闻播报与影视配音。",
+      "preview_url": "./assets/voices/男-机械战甲.mp3",
+      "size_kb": 50.2
+    },
+    {
+      "id": "男-沉稳高管.mp3",
+      "name": "沉稳高管",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "商务"
+      ],
+      "intro": "商务风格，适合纪录片、广告与故事讲述。",
+      "preview_url": "./assets/voices/男-沉稳高管.mp3",
+      "size_kb": 91.0
+    },
+    {
+      "id": "男-清澈邻家弟弟.mp3",
+      "name": "清澈邻家弟弟",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "清澈"
+      ],
+      "intro": "清澈风格，适合纪录片、广告与故事讲述。",
+      "preview_url": "./assets/voices/男-清澈邻家弟弟.mp3",
+      "size_kb": 79.2
+    },
+    {
+      "id": "男-温润男声.mp3",
+      "name": "温润男声",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "温润男声"
+      ],
+      "intro": "温润男声质感的男声音色，适合旁白、新闻播报与影视配音。",
+      "preview_url": "./assets/voices/男-温润男声.mp3",
+      "size_kb": 129.0
+    },
+    {
+      "id": "男-温润青年.mp3",
+      "name": "温润青年",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "青年"
+      ],
+      "intro": "青年风格，适合纪录片、广告与故事讲述。",
+      "preview_url": "./assets/voices/男-温润青年.mp3",
+      "size_kb": 106.2
+    },
+    {
+      "id": "男-率真弟弟.mp3",
+      "name": "率真弟弟",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "少年"
+      ],
+      "intro": "少年质感的男声音色，适合旁白、新闻播报与影视配音。",
+      "preview_url": "./assets/voices/男-率真弟弟.mp3",
+      "size_kb": 78.4
+    },
+    {
+      "id": "男-电台男主播.mp3",
+      "name": "电台男主播",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "电台",
+        "主播",
+        "情感"
+      ],
+      "intro": "电台主播腔，沉稳大气，适合深夜情感节目。",
+      "preview_url": "./assets/voices/男-电台男主播.mp3",
+      "size_kb": 98.0
+    },
+    {
+      "id": "男-真诚青年.mp3",
+      "name": "真诚青年",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "青年"
+      ],
+      "intro": "青年风格，适合纪录片、广告与故事讲述。",
+      "preview_url": "./assets/voices/男-真诚青年.mp3",
+      "size_kb": 103.7
+    },
+    {
+      "id": "男-磁性男嗓-磁性浑厚.wav",
+      "name": "磁性浑厚",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "磁性",
+        "磁性浑厚"
+      ],
+      "intro": "磁性浑厚男嗓，辨识度高，适合品牌广告。",
+      "preview_url": "./assets/voices/男-磁性男嗓-磁性浑厚.wav",
+      "size_kb": 71.3
+    },
+    {
+      "id": "男-舒朗男声.mp3",
+      "name": "舒朗男声",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "舒朗男声"
+      ],
+      "intro": "舒朗明快男声，自然流畅，适合解说。",
+      "preview_url": "./assets/voices/男-舒朗男声.mp3",
+      "size_kb": 117.6
+    },
+    {
+      "id": "男-醇厚低音-儒雅青年.mp3",
+      "name": "儒雅青年",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "低音",
+        "青年"
+      ],
+      "intro": "醇厚低音儒雅青年，温和有礼，适合文人角色。",
+      "preview_url": "./assets/voices/男-醇厚低音-儒雅青年.mp3",
+      "size_kb": 218.4
+    },
+    {
+      "id": "男-醋精男友-少年感.wav",
+      "name": "少年感",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "男友",
+        "少年感"
+      ],
+      "intro": "吃醋男友少年感，活泼带点别扭，适合恋爱喜剧。",
+      "preview_url": "./assets/voices/男-醋精男友-少年感.wav",
+      "size_kb": 577.7
+    },
+    {
+      "id": "男-醋精男生-清亮干净.wav",
+      "name": "清亮干净",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "男友",
+        "清亮干净"
+      ],
+      "intro": "男友、清亮干净质感的男声音色，适合旁白、新闻播报与影视配音。",
+      "preview_url": "./assets/voices/男-醋精男生-清亮干净.wav",
+      "size_kb": 514.9
+    },
+    {
+      "id": "男-黯刃秦主-低沉帅气.mp3",
+      "name": "低沉帅气",
+      "category": "male",
+      "category_label": "男声",
+      "tags": [
+        "黯刃秦主",
+        "低沉"
+      ],
+      "intro": "低沉帅气男主音，气场强大，适合古装剧。",
+      "preview_url": "./assets/voices/男-黯刃秦主-低沉帅气.mp3",
+      "size_kb": 152.8
+    },
+    {
+      "id": "抖音爆款-叙事.mp3",
+      "name": "抖音爆款 · 叙事",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "叙事"
+      ],
+      "intro": "抖音爆款叙事音频，提供戏剧性叙事情绪参考。",
+      "preview_url": "./assets/emotions/抖音爆款-叙事.mp3",
+      "size_kb": 285.2
+    },
+    {
+      "id": "抖音爆款-恐怖1.mp3",
+      "name": "抖音爆款 · 恐怖1",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "恐怖"
+      ],
+      "intro": "恐怖氛围情绪参考，营造惊悚悬疑氛围。",
+      "preview_url": "./assets/emotions/抖音爆款-恐怖1.mp3",
+      "size_kb": 368.5
+    },
+    {
+      "id": "抖音爆款-恐怖2.mp3",
+      "name": "抖音爆款 · 恐怖2",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "恐怖"
+      ],
+      "intro": "参考音频，可为合成提供抖音爆款、恐怖情绪方向。",
+      "preview_url": "./assets/emotions/抖音爆款-恐怖2.mp3",
+      "size_kb": 412.0
+    },
+    {
+      "id": "抖音爆款-恐怖3.mp3",
+      "name": "抖音爆款 · 恐怖3",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "恐怖"
+      ],
+      "intro": "带抖音爆款、恐怖氛围，适合电影/有声作品情感参考。",
+      "preview_url": "./assets/emotions/抖音爆款-恐怖3.mp3",
+      "size_kb": 401.9
+    },
+    {
+      "id": "抖音爆款-正说清代十二朝1.mp3",
+      "name": "抖音爆款 · 正说清代十二朝1",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "历史"
+      ],
+      "intro": "参考音频，可为合成提供抖音爆款、历史情绪方向。",
+      "preview_url": "./assets/emotions/抖音爆款-正说清代十二朝1.mp3",
+      "size_kb": 416.1
+    },
+    {
+      "id": "抖音爆款-正说清代十二朝2.mp3",
+      "name": "抖音爆款 · 正说清代十二朝2",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "历史"
+      ],
+      "intro": "参考音频，可为合成提供抖音爆款、历史情绪方向。",
+      "preview_url": "./assets/emotions/抖音爆款-正说清代十二朝2.mp3",
+      "size_kb": 264.2
+    },
+    {
+      "id": "抖音爆款-爱情1.mp3",
+      "name": "抖音爆款 · 爱情1",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "爱情"
+      ],
+      "intro": "浪漫爱情情绪参考，适合甜蜜剧情氛围。",
+      "preview_url": "./assets/emotions/抖音爆款-爱情1.mp3",
+      "size_kb": 364.7
+    },
+    {
+      "id": "抖音爆款-爱情2.mp3",
+      "name": "抖音爆款 · 爱情2",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "爱情"
+      ],
+      "intro": "参考音频，可为合成提供抖音爆款、爱情情绪方向。",
+      "preview_url": "./assets/emotions/抖音爆款-爱情2.mp3",
+      "size_kb": 299.1
+    },
+    {
+      "id": "抖音爆款-犯罪电影.mp3",
+      "name": "抖音爆款 · 犯罪电影",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "犯罪"
+      ],
+      "intro": "带抖音爆款、犯罪氛围，适合电影/有声作品情感参考。",
+      "preview_url": "./assets/emotions/抖音爆款-犯罪电影.mp3",
+      "size_kb": 212.9
+    },
+    {
+      "id": "抖音爆款-纪录片.mp3",
+      "name": "抖音爆款 · 纪录片",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "抖音爆款",
+        "纪录片"
+      ],
+      "intro": "纪录片旁白参考，提供专业稳重氛围。",
+      "preview_url": "./assets/emotions/抖音爆款-纪录片.mp3",
+      "size_kb": 513.2
+    },
+    {
+      "id": "爆款-广告专用.mp3",
+      "name": "爆款 · 广告专用",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "广告",
+        "爆款",
+        "商业"
+      ],
+      "intro": "广告专用情绪参考，适合活力商业广告氛围。",
+      "preview_url": "./assets/emotions/爆款-广告专用.mp3",
+      "size_kb": 394.0
+    },
+    {
+      "id": "爆款-舌尖上的中国1.mp3",
+      "name": "爆款 · 舌尖上的中国1",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "美食",
+        "纪录片",
+        "叙事"
+      ],
+      "intro": "舌尖上的中国风格旁白参考，提供温暖叙事的美食氛围。",
+      "preview_url": "./assets/emotions/爆款-舌尖上的中国1.mp3",
+      "size_kb": 461.1
+    },
+    {
+      "id": "爆款-舌尖上的中国2.mp3",
+      "name": "爆款 · 舌尖上的中国2",
+      "category": "emotion",
+      "category_label": "情感参考",
+      "tags": [
+        "美食",
+        "纪录片",
+        "叙事"
+      ],
+      "intro": "参考音频，可为合成提供美食、纪录片、叙事情绪方向。",
+      "preview_url": "./assets/emotions/爆款-舌尖上的中国2.mp3",
+      "size_kb": 248.9
+    }
+  ]
+}
