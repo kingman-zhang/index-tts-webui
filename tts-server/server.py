@@ -353,7 +353,7 @@ def synthesize(req: SynthesizeRequestModel):
     output_path = str(OUTPUT_DIR / f"synth_{int(time.time())}_{uuid.uuid4().hex[:6]}.wav")
 
     # 转换为引擎数据结构
-    from podcast_engine import EmotionConfig, GenerationParams
+    from podcast_engine import EmotionConfig, GenerationParams, _sanitize_text
     emo = EmotionConfig(
         mode=req.emotion.mode, audio_path=req.emotion.audio_path,
         vector=req.emotion.vector, weight=req.emotion.weight,
@@ -371,7 +371,8 @@ def synthesize(req: SynthesizeRequestModel):
 
     infer_kwargs = {
         "spk_audio_prompt": req.voice,
-        "text": req.text,
+        # 单段试听与播客路径使用同一套年份/时间/人名文本预处理。
+        "text": _sanitize_text(req.text),
         "output_path": output_path,
         "interval_silence": int(req.interval_silence),
         "verbose": False,

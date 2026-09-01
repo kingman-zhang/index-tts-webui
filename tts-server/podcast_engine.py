@@ -142,14 +142,31 @@ ProgressCallback = Callable[[int, int, str, str], None]
 
 
 _CHINESE_DIGITS = "零一二三四五六七八九"
+# 独立年份，以及“1550～1850年间 / 1550年至1850年”等年份区间。
+# 区间只在右端明确带“年”时触发，避免把普通数字减法误当成年份。
+_YEAR_RANGE_PATTERN = re.compile(
+    r"(?<!\d)(\d{4})(年)?\s*(～|~|至|到|—|-)\s*(\d{4})\s*年"
+)
 _YEAR_PATTERN = re.compile(r"(?<!\d)(\d{4})\s*年")
 _TIME_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[:：]\s*(\d{2})(?!\d)")
 
 
+def _year_digits(digits: str) -> str:
+    return "".join(_CHINESE_DIGITS[int(digit)] for digit in digits)
+
+
+def _replace_year_range(match: re.Match) -> str:
+    """将年份区间两端都改为逐位读法，保留左端原有的“年”。"""
+    left_year = _year_digits(match.group(1))
+    left_suffix = match.group(2) or ""
+    separator = match.group(3)
+    right_year = _year_digits(match.group(4))
+    return f"{left_year}{left_suffix}{separator}{right_year}年"
+
+
 def _replace_year(match: re.Match) -> str:
     """将明确的四位数字年份改为逐位读法，避免按数量读法播报。"""
-    digits = match.group(1)
-    return "".join(_CHINESE_DIGITS[int(digit)] for digit in digits) + "年"
+    return _year_digits(match.group(1)) + "年"
 
 
 def _chinese_hour(hour: int) -> str:
@@ -179,8 +196,9 @@ def _replace_time(match: re.Match) -> str:
 
 
 def _normalize_reading_text(text: str) -> str:
-    """仅规范化明确的年份和时间，其他数字保持原文。"""
-    text = _YEAR_PATTERN.sub(_replace_year, str(text))
+    """规范化年份区间、明确年份和时间，其他数字保持原文。"""
+    text = _YEAR_RANGE_PATTERN.sub(_replace_year_range, str(text))
+    text = _YEAR_PATTERN.sub(_replace_year, text)
     return _TIME_PATTERN.sub(_replace_time, text)
 
 

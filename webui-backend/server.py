@@ -1078,6 +1078,7 @@ async def delete_voice_preset(preset_id: str):
 
 class QueueTaskStatus:
     QUEUED = "queued"        # 排队中
+    PAUSED = "paused"        # 已暂停，暂不参与调度
     RUNNING = "running"      # 正在 TTS 上合成
     SUCCESS = "success"      # 完成
     FAILED = "failed"        # 失败
@@ -1409,13 +1410,17 @@ async def list_queue():
             running_tasks.append(t)
         elif st == QueueTaskStatus.QUEUED:
             queued_tasks.append(t)
+        elif st == QueueTaskStatus.PAUSED:
+            pass
         else:
             terminal_tasks.append(t)
     # 排队任务按 queue_order 顺序排列
     queued_tasks.sort(key=lambda t: queue_order.index(t["id"]) if t["id"] in queue_order else 999)
+    paused_tasks = [t for t in queue_tasks.values() if t.get("status") == QueueTaskStatus.PAUSED]
+    paused_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     # 终态任务按创建时间倒序
     terminal_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-    tasks = running_tasks + queued_tasks + terminal_tasks
+    tasks = running_tasks + queued_tasks + paused_tasks + terminal_tasks
     return {
         "tasks": tasks,
         "count": len(tasks),
@@ -1461,6 +1466,7 @@ async def update_queue_task_name(task_id: str, payload: QueueTaskNameModel):
         raise HTTPException(404, "任务不存在")
     editable_statuses = {
         QueueTaskStatus.QUEUED,
+        QueueTaskStatus.PAUSED,
         QueueTaskStatus.FAILED,
         QueueTaskStatus.INTERRUPTED,
         QueueTaskStatus.CANCELLED,
@@ -1480,13 +1486,13 @@ async def update_queue_task_name(task_id: str, payload: QueueTaskNameModel):
 
 @app.post("/api/queue/{task_id}/retry")
 async def retry_queue_task(task_id: str):
-    """重新排队执行失败或中断的任务，从第一行重新生成。"""
+    """重新排队执行失败、中断、暂停或取消的任务，从第一行重新生成。"""
     global current_task_id
     task = queue_tasks.get(task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
-    if task.get("status") not in (QueueTaskStatus.FAILED, QueueTaskStatus.INTERRUPTED):
-        raise HTTPException(409, "只有失败或中断任务可以重新提交")
+    if task.get("status") not in (QueueTaskStatus.FAILED, QueueTaskStatus.INTERRUPTED, QueueTaskStatus.PAUSED, QueueTaskStatus.CANCELLED):
+        raise HTTPException(409, "只有失败、中断、暂停或取消任务可以重新提交")
     if current_task_id == task_id:
         raise HTTPException(409, "任务当前仍在执行")
     task.update({
@@ -1511,6 +1517,46 @@ async def retry_queue_task(task_id: str):
     _persist_queue_order()
     asyncio.create_task(_process_queue())
     return {"task_id": task_id, "status": task["status"], "queue_position": queue_order.index(task_id) + 1}
+
+
+@app.post("/api/queue/bulk-pause")
+async def pause_queued_tasks():
+    """暂停所有排队中的任务；正在合成的任务不受影响。"""
+    paused = []
+    for task_id in list(queue_order):
+        task = queue_tasks.get(task_id)
+        if task and task.get("status") == QueueTaskStatus.QUEUED:
+            task["status"] = QueueTaskStatus.PAUSED
+            task["message"] = "已暂停"
+            task["paused_at"] = datetime.now().isoformat()
+            _persist_task(task_id)
+            paused.append(task_id)
+    queue_order.clear()
+    _persist_queue_order()
+    return {"paused": paused, "count": len(paused)}
+
+
+@app.post("/api/queue/bulk-resume")
+async def resume_paused_tasks():
+    """将所有暂停任务按原创建时间恢复到队列末尾。"""
+    resumed = []
+    paused = [
+        task for task in queue_tasks.values()
+        if task.get("status") == QueueTaskStatus.PAUSED
+    ]
+    paused.sort(key=lambda task: task.get("created_at", ""))
+    for task in paused:
+        task_id = task["id"]
+        task["status"] = QueueTaskStatus.QUEUED
+        task["message"] = "已重新排队"
+        task["resumed_at"] = datetime.now().isoformat()
+        queue_order.append(task_id)
+        _persist_task(task_id)
+        resumed.append(task_id)
+    _persist_queue_order()
+    if resumed:
+        asyncio.create_task(_process_queue())
+    return {"resumed": resumed, "count": len(resumed)}
 
 
 @app.get("/api/queue/{task_id}")

@@ -263,6 +263,12 @@ export const api = {
   async retryQueueTask(taskId: string): Promise<{ task_id: string; status: string; queue_position: number }> {
     return fetchJSON(`${BASE}/queue/${taskId}/retry`, { method: "POST" });
   },
+  async pauseQueuedTasks(): Promise<{ paused: string[]; count: number }> {
+    return fetchJSON(`${BASE}/queue/bulk-pause`, { method: "POST" });
+  },
+  async resumePausedTasks(): Promise<{ resumed: string[]; count: number }> {
+    return fetchJSON(`${BASE}/queue/bulk-resume`, { method: "POST" });
+  },
   async cancelQueueTask(taskId: string): Promise<any> {
     return fetchJSON(`${BASE}/queue/${taskId}`, { method: "DELETE" });
   },

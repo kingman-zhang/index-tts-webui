@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical } from "lucide-react";
+import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
 import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
@@ -39,6 +39,7 @@ const STATUS_CONFIG: Record<string, {
   spin?: boolean;
 }> = {
   queued: { icon: Clock, color: "blue", label: "排队中" },
+  paused: { icon: Pause, color: "gray", label: "已暂停" },
   running: { icon: Loader2, color: "amber", label: "合成中", spin: true },
   success: { icon: CheckCircle2, color: "green", label: "完成" },
   failed: { icon: XCircle, color: "red", label: "失败" },
@@ -52,6 +53,8 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
   const [current, setCurrent] = useState<string | null>(null);
   const [queued, setQueued] = useState(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
 
@@ -81,7 +84,23 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     success: tasks.filter(t => t.status === "success").length,
     failed: tasks.filter(t => t.status === "failed" || t.status === "interrupted").length,
     queued: tasks.filter(t => t.status === "queued").length,
+    paused: tasks.filter(t => t.status === "paused").length,
   };
+
+  const filteredTasks = activeFilter === "failed"
+    ? tasks.filter(t => t.status === "failed" || t.status === "interrupted")
+    : activeFilter
+      ? tasks.filter(t => t.status === activeFilter)
+      : tasks;
+
+  const toggleFilter = (status: string) => {
+    setActiveFilter(current => current === status ? null : status);
+  };
+
+  const filterButtonClass = (status: string) => cn(
+    "rounded-md px-2 py-1 text-[11px] transition-colors",
+    activeFilter === status ? "bg-indigo-100 text-indigo-700 ring-1 ring-indigo-200" : "hover:bg-gray-100 text-gray-500"
+  );
 
   if (collapsed) {
     return (
@@ -115,6 +134,32 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     load();
   };
 
+  const bulkPause = async () => {
+    if (!stats.queued || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      await api.pauseQueuedTasks();
+      await load();
+    } catch (e: any) {
+      window.alert(`暂停排队任务失败: ${e.message}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkResume = async () => {
+    if (!tasks.some(t => t.status === "paused") || bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      await api.resumePausedTasks();
+      await load();
+    } catch (e: any) {
+      window.alert(`恢复暂停任务失败: ${e.message}`);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const viewContent = (task: QueueTask) => {
     const lines = task.lines || [];
     const preview = lines.slice(0, 3).map(line => `${line.speaker}: ${line.text}`).join("\n");
@@ -123,7 +168,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
   };
 
   const beginEditName = (task: QueueTask) => {
-    if (!["queued", "failed", "interrupted", "cancelled"].includes(task.status)) return;
+    if (!["queued", "failed", "interrupted", "paused", "cancelled"].includes(task.status)) return;
     setEditingId(task.id);
     setEditingName(task.project_name);
   };
@@ -221,17 +266,31 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
   return (
     <Card>
       <CardHeader className="cursor-pointer" onClick={onToggle}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ListVideo className="w-4 h-4 text-indigo-600" />
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <ListVideo className="w-4 h-4 shrink-0 text-indigo-600" />
             <CardTitle>任务队列</CardTitle>
+            <span className="text-[11px] text-gray-400">共 {stats.total} 个</span>
           </div>
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span>总数 {stats.total}</span>
-            <span className="text-green-600">成功 {stats.success}</span>
-            <span className="text-red-500">失败 {stats.failed}</span>
-            <span className="text-amber-600">排队 {stats.queued}</span>
+          <div className="flex shrink-0 items-center gap-1">
+            {stats.queued > 0 && (
+              <button onClick={(e) => { e.stopPropagation(); bulkPause(); }} disabled={bulkBusy} className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 disabled:opacity-50" title="暂停全部排队任务">
+                <Pause className="w-3 h-3" /> 暂停全部
+              </button>
+            )}
+            {stats.paused > 0 && (
+              <button onClick={(e) => { e.stopPropagation(); bulkResume(); }} disabled={bulkBusy} className="inline-flex items-center gap-1 rounded-md border border-indigo-200 px-2 py-1 text-[11px] text-indigo-600 hover:bg-indigo-50 disabled:opacity-50" title="将全部暂停任务重新加入队列">
+                <PlayCircle className="w-3 h-3" /> 全部入队
+              </button>
+            )}
           </div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2" onClick={e => e.stopPropagation()}>
+          <button className={filterButtonClass("success")} onClick={() => toggleFilter("success")}>成功 <b>{stats.success}</b></button>
+          <button className={filterButtonClass("failed")} onClick={() => toggleFilter("failed")}>失败 <b>{stats.failed}</b></button>
+          <button className={filterButtonClass("queued")} onClick={() => toggleFilter("queued")}>排队 <b>{stats.queued}</b></button>
+          <button className={filterButtonClass("paused")} onClick={() => toggleFilter("paused")}>暂停 <b>{stats.paused}</b></button>
+          {activeFilter && <span className="ml-auto text-[10px] text-indigo-500">再次点击可取消筛选</span>}
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -240,8 +299,12 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
         ) : (
           <>
             {/* 任务列表 */}
-            <div className="space-y-1.5 max-h-[300px] overflow-y-auto scrollbar-thin">
-              {tasks.map(task => {
+            <div className="space-y-1.5 max-h-[520px] overflow-y-auto scrollbar-thin">
+              {filteredTasks.length === 0 ? (
+                <p className="py-8 text-center text-xs text-gray-400">
+                  {activeFilter ? "当前状态暂无任务" : "暂无任务"}
+                </p>
+              ) : filteredTasks.map(task => {
                 const cfg = STATUS_CONFIG[task.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.queued;
                 const Icon = cfg.icon;
                 const isQueued = task.status === "queued";
@@ -260,6 +323,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                       task.status === "running" || task.status === "syncing" ? "border-amber-300 bg-amber-50" :
                       task.status === "success" ? "border-green-200 bg-green-50" :
                       task.status === "failed" || task.status === "interrupted" ? "border-red-200 bg-red-50" :
+                      task.status === "paused" ? "border-gray-300 bg-gray-100" :
                       "border-gray-200 bg-gray-50",
                       isDragging && "opacity-40",
                       isDragOver && "border-t-2 border-t-indigo-400",
@@ -292,9 +356,9 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                           />
                         ) : (
                           <span
-                            className={cn("text-xs font-medium text-gray-700 truncate", ["queued", "failed", "interrupted", "cancelled"].includes(task.status) && "cursor-text")}
+                            className={cn("text-xs font-medium text-gray-700 truncate", ["queued", "failed", "interrupted", "paused", "cancelled"].includes(task.status) && "cursor-text")}
                             onDoubleClick={() => beginEditName(task)}
-                            title={["queued", "failed", "interrupted", "cancelled"].includes(task.status) ? "双击修改任务名称" : task.project_name}
+                            title={["queued", "failed", "interrupted", "paused", "cancelled"].includes(task.status) ? "双击修改任务名称" : task.project_name}
                           >
                             {task.project_name}
                           </span>
@@ -320,7 +384,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                             <Square className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        {(task.status === "failed" || task.status === "interrupted") && (
+                        {(task.status === "failed" || task.status === "interrupted" || task.status === "paused" || task.status === "cancelled") && (
                           <button onClick={() => retry(task.id)} className="p-1 text-indigo-600 hover:bg-indigo-100 rounded" title="重新提交">
                             <RefreshCw className="w-3.5 h-3.5" />
                           </button>
@@ -373,7 +437,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
             </div>
 
             {/* 清空按钮 */}
-            {(stats.success > 0 || stats.failed > 0) && (
+            {(stats.success > 0 || stats.failed > 0) && !activeFilter && (
               <Button variant="outline" size="sm" icon={Trash2} onClick={clearFinished} className="w-full">
                 清空已完成任务
               </Button>
