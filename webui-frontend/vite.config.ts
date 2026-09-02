@@ -12,6 +12,9 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 6006,
+    allowedHosts: [
+        '.seetacloud.com' // 放行这个域名
+    ],
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
