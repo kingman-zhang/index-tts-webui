@@ -27,6 +27,9 @@ mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_FILE") 2>&1
 export PYTHONUNBUFFERED=1
 
+export OMP_NUM_THREADS=8
+export MKL_NUM_THREADS=8
+
 echo "========================================="
 echo "  IndexTTS2 TTS Server"
 echo "  Model:  $MODEL_DIR"
@@ -34,6 +37,7 @@ echo "  Voices: $VOICES_DIR"
 echo "  Output: $OUTPUT_DIR"
 echo "  Device: $DEVICE  FP16: ${FP16:-no}"
 echo "  Listen: $HOST:$PORT"
+echo "  Log Dir: $OUTPUT_DIR"
 echo "========================================="
 
 $INDEXTTS_HOME/.venv/bin/python server.py \
@@ -43,9 +47,5 @@ $INDEXTTS_HOME/.venv/bin/python server.py \
   --output-dir "$OUTPUT_DIR" \
   --device "$DEVICE" \
   $FP16 \
-  $DEEPSPEED \
-  $CUDA_KERNEL \
-  $ACCEL \
-  $TORCH_COMPILE \
   --host "$HOST" \
   --port "$PORT"
