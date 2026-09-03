@@ -11,7 +11,9 @@ VOICES_DIR="/mnt/storage/index-tts-data/voices"
 OUTPUT_DIR="/mnt/storage/index-tts-data/outputs_25"
 DEVICE="cuda:0"
 BF16="--bf16"         # 2.5 推荐 BF16；不需要时删掉这行
-DEEPSPEED="--deepspeed"           # 可选："--deepspeed"，需先确认环境支持
+DEEPSPEED=""           # 2.5 不要用 DeepSpeed：它把 max tokens 限制为 1024，
+                       # 导致 GPT 生成超出限制后概率 nan，触发 CUDA assert。
+                       # 2.5 推荐用 accel engine（见下方 ACCEL）而非 DeepSpeed。
 CUDA_KERNEL="--cuda-kernel"         # 可选："--cuda-kernel"，BigVGAN CUDA kernel
 ACCEL=""               # 可选："--accel"，GPT2 acceleration engine
 TORCH_COMPILE=""       # 可选："--torch-compile"，首次推理会编译
