@@ -5,7 +5,7 @@
 # ============================================================
 
 # ── 配置（按你的服务器环境修改） ──
-INDEXTTS_HOME="/root/index-tts-2.5"
+INDEXTTS_HOME="/root/index-tts"
 MODEL_DIR="/root/autodl-tmp/cache/IndexTTS-2.5"
 VOICES_DIR="/root/autodl-fs/voices"
 OUTPUT_DIR="/root/autodl-fs/outputs"
