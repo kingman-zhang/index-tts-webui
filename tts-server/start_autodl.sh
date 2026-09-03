@@ -47,5 +47,9 @@ $INDEXTTS_HOME/.venv/bin/python server.py \
   --output-dir "$OUTPUT_DIR" \
   --device "$DEVICE" \
   $FP16 \
+  $DEEPSPEED \
+  $CUDA_KERNEL \
+  $ACCEL \
+  $TORCH_COMPILE \
   --host "$HOST" \
   --port "$PORT"

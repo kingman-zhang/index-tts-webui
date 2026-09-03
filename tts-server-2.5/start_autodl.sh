@@ -46,6 +46,10 @@ $INDEXTTS_HOME/.venv/bin/python server.py \
   --voices-dir "$VOICES_DIR" \
   --output-dir "$OUTPUT_DIR" \
   --device "$DEVICE" \
-  $BF16 \
+  $FP16 \
+  $DEEPSPEED \
+  $CUDA_KERNEL \
+  $ACCEL \
+  $TORCH_COMPILE \
   --host "$HOST" \
   --port "$PORT"
