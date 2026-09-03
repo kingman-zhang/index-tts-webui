@@ -97,7 +97,7 @@ print(f">> loading model (this may take a while)...")
 try:
     from indextts.infer_v2_5 import IndexTTS2
     tts = IndexTTS2(
-        cfg_path=str(Path(args.model_dir) / "config_v2_5.yaml"),
+        cfg_path=str(Path(args.model_dir) / "config.yaml"),
         model_dir=str(args.model_dir),
         use_bf16=args.bf16,
         device=args.device,

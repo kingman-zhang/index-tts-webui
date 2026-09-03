@@ -21,7 +21,7 @@ modelscope download \
   --local_dir /mnt/storage/index-tts-data/checkpoints_25
 ```
 
-- [ ] 确认目录下存在 `config_v2_5.yaml`。
+- [ ] 确认目录下存在 `config.yaml`。
 - [ ] 确认 `checkpoints_25` 与 2.0 的 `checkpoints` 目录完全独立，没有软链接覆盖。
 
 ### 3. 输出目录
