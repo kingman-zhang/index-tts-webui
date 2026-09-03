@@ -16,7 +16,7 @@ CUDA_KERNEL="--cuda-kernel"         # 可选："--cuda-kernel"，BigVGAN CUDA ke
 ACCEL=""               # 可选："--accel"，GPT2 acceleration engine
 TORCH_COMPILE=""       # 可选："--torch-compile"，首次推理会编译
 HOST="0.0.0.0"
-PORT="8001"
+PORT="8000"
 LOG_DIR="$(cd "$(dirname "$0")" && pwd)/logs"
 LOG_FILE="$LOG_DIR/tts-server.log"
 
