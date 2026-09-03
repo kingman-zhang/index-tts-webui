@@ -182,16 +182,19 @@ class SilenceModel(BaseModel):
 
 
 class GenerationParamsModel(BaseModel):
+    # 默认值对齐 IndexTTS-2.5 官方 webui.py。
+    # 第一阶段 to_infer_kwargs 会硬编码使用这些官方默认值，忽略前端传入的
+    # 2.0 调参值（temperature=0.6 等在 2.5 上会导致 CUDA assert）。
     speed: float = 1.0
     speaker_speeds: dict[str, float] = Field(default_factory=dict)
     max_text_tokens_per_segment: int = 120
     do_sample: bool = True
-    top_p: float = 0.75
-    top_k: int = 20
-    temperature: float = 0.6
+    top_p: float = 0.8
+    top_k: int = 30
+    temperature: float = 0.8
     length_penalty: float = 0.0
-    num_beams: int = 2
-    repetition_penalty: float = 5.0
+    num_beams: int = 3
+    repetition_penalty: float = 10.0
     max_mel_tokens: int = 1500
     infer_concurrency: int = 1  # GPU 模型串行推理，固定为 1
 

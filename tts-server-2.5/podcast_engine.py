@@ -100,13 +100,23 @@ class GenerationParams:
 
     def to_infer_kwargs(self, speed: float = 1.0) -> dict:
         speed = max(0.5, min(2.0, float(speed)))
+        # 第一阶段：使用 IndexTTS-2.5 官方 webui.py 的默认 generation 参数。
+        # 前端传入的 2.0 调参值（temperature=0.6 / top_k=20 / top_p=0.75）
+        # 是为 2.0 模型降低随机性、减少撕音而调的；在 2.5 上温度过低会导致
+        # GPT logits/temperature 数值尖锐，softmax 后概率出现 nan/inf，
+        # 触发 CUDA assert "probability tensor contains inf, nan or < 0"。
+        # 同时补齐 num_beams / length_penalty / max_mel_tokens，对齐官方默认。
+        # 第二阶段验证稳定后再逐步开放前端参数。
         return {
             "max_text_tokens_per_segment": int(self.max_text_tokens_per_segment),
-            "do_sample": bool(self.do_sample),
-            "top_p": float(self.top_p),
-            "top_k": int(self.top_k) if int(self.top_k) > 0 else None,
-            "temperature": float(self.temperature),
-            "repetition_penalty": float(self.repetition_penalty),
+            "do_sample": True,
+            "top_p": 0.8,
+            "top_k": 30,
+            "temperature": 0.8,
+            "length_penalty": 0.0,
+            "num_beams": 3,
+            "repetition_penalty": 10.0,
+            "max_mel_tokens": 1500,
             "duration_factor": max(0.5, min(2.0, 1.0 / speed)),
         }
 
