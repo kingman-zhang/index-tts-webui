@@ -37,7 +37,7 @@ echo "  Listen: $HOST:$PORT"
 echo "  Log Dir: $OUTPUT_DIR"
 echo "========================================="
 
-$INDEXTTS_HOME/.venv/bin/python server.py \
+python server.py \
   --indextts-home "$INDEXTTS_HOME" \
   --model-dir "$MODEL_DIR" \
   --voices-dir "$VOICES_DIR" \
