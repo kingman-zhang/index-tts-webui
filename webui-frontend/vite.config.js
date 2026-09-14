@@ -10,7 +10,7 @@ export default defineConfig({
     },
     server: {
         host: '0.0.0.0',
-        port: 6006,
+        port: 6009,
         allowedHosts: [
             '.seetacloud.com' // 放行这个域名
         ],
