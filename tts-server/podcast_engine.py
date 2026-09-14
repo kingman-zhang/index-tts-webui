@@ -267,23 +267,111 @@ def get_wav_duration(path: str) -> float:
         return wf.getnframes() / wf.getframerate()
 
 
+# ---------------------------------------------------------------------------
+# 逐行响度归一化参数
+#
+# 旧实现直接对每段执行单遍 loudnorm。loudnorm 的响度统计带门限（gating），
+# 当一次处理里既有正常电平的内容、又有偏小的内容时，偏小部分会被门限排除，
+# 增益按正常电平的部分定，于是偏小的那一段被原样保留。实测（同样素材）：
+#   单独跑 loudnorm  -> -21.7 LUFS（峰值顶到 -1.5 上限）
+#   与响内容拼在一起 -> -33.6 LUFS（峰值停在 -13.4，低于上限）
+# 现改为"先量、再加固定增益、最后限幅兜底"，每一行独立落到目标响度。
+# 环境变量 PODCAST_NORM=loudnorm 可退回旧行为。
+NORM_TARGET_LUFS = -16.0
+NORM_CEILING_DBFS = -1.5
+# alimiter 限制的是采样峰值，真峰值（过采样）会略微过冲，留出余量
+NORM_LIMITER_MARGIN_DB = 0.5
+# 单行提升量上限：超过说明该行原始输出明显偏低（模型偶发低电平），
+# 记警告提示重生成该行；仍按上限提升，避免整片电平失衡。
+NORM_MAX_GAIN_DB = 24.0
+# 需要提升超过这个量，说明该行原始输出异常偏小，值得重生成
+NORM_ABNORMAL_GAIN_DB = 12.0
+NORM_LEGACY_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+NORM_MODE = os.environ.get("PODCAST_NORM", "gain").strip().lower()
+# PODCAST_AUDIO_DEBUG=1 时保留每段原始音频（{idx}.raw.wav）供事后核对
+AUDIO_DEBUG = os.environ.get("PODCAST_AUDIO_DEBUG", "").strip() == "1"
+
+
+def _measure_loudness(ffmpeg: str, path: str):
+    """用 ebur128 量一段音频的积分响度与真峰值，不做任何处理。
+
+    返回 (lufs, peak_dbfs)，测不出时对应项为 None。
+    """
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-nostats", "-i", path,
+         "-af", "ebur128=peak=true", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None, None
+    lufs = peak = None
+    for line in result.stderr.splitlines():
+        line = line.strip()
+        for prefix, setter in (("I:", "lufs"), ("Peak:", "peak")):
+            if line.startswith(prefix):
+                value = line.split()[1]
+                if value == "-inf":
+                    continue
+                try:
+                    number = float(value)
+                except ValueError:
+                    continue
+                if setter == "lufs":
+                    lufs = number
+                else:
+                    peak = number
+    return lufs, peak
+
+
 def _apply_speed(path: str, speed: float) -> None:
-    """使用 ffmpeg 调整 WAV 速度并归一化音量；1.0 速度也做归一化防破音。"""
+    """使用 ffmpeg 调整 WAV 速度并做逐行响度归一化；1.0 速度也做归一化防破音。
+
+    归一化策略见 NORM_* 常量：默认按"测量 -> 固定增益 -> 限幅"处理，
+    保证每一行独立落到 NORM_TARGET_LUFS，且峰值不超过 NORM_CEILING_DBFS。
+    """
     speed = max(0.5, min(2.0, float(speed)))
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("音频处理需要 TTS 服务器安装 ffmpeg")
 
     tmp = f"{path}.proc.tmp.wav"
-    # 组合 atempo + loudnorm：先变速，再归一化到 -16 LUFS、峰值不超过 -1.5dB
-    # 即使 speed=1.0 也执行 loudnorm，防止 IndexTTS2 输出的峰值过高导致破音。
+    if AUDIO_DEBUG:
+        shutil.copy2(path, f"{path}.raw.wav")
+
     filters = []
     if abs(speed - 1.0) >= 0.001:
         filters.append(f"atempo={speed:g}")
-    # loudnorm: I=-16（目标响度）TP=-1.5（真峰值上限）LRA=11（动态范围）
-    filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
-    filter_str = ",".join(filters)
 
+    if NORM_MODE == "loudnorm":
+        filters.append(NORM_LEGACY_FILTER)
+    else:
+        lufs, _peak = _measure_loudness(ffmpeg, path)
+        if lufs is None:
+            logger.warning(
+                "[audio] %s 响度不可测（可能过短或全静音），退回 loudnorm",
+                Path(path).name,
+            )
+            filters.append(NORM_LEGACY_FILTER)
+        else:
+            gain = NORM_TARGET_LUFS - lufs
+            if gain > NORM_ABNORMAL_GAIN_DB:
+                logger.warning(
+                    "[audio] %s 原始响度 %.1f LUFS 偏小（需提升 %.1f dB），"
+                    "建议重生成该行并核对",
+                    Path(path).name, lufs, gain,
+                )
+            if gain > NORM_MAX_GAIN_DB:
+                gain = NORM_MAX_GAIN_DB
+            limit = 10 ** ((NORM_CEILING_DBFS - NORM_LIMITER_MARGIN_DB) / 20)
+            filters.append(f"volume={gain:.2f}dB")
+            # level=disabled 只关掉 alimiter 的自动增益，限幅仍然生效
+            filters.append(f"alimiter=limit={limit:.4f}:level=disabled")
+            logger.info(
+                "[audio] %s 归一化 in=%.1f LUFS gain=%+.1fdB (峰值上限 %.1fdBFS)",
+                Path(path).name, lufs, gain, NORM_CEILING_DBFS,
+            )
+
+    filter_str = ",".join(filters)
     result = subprocess.run(
         [ffmpeg, "-y", "-i", path, "-filter:a", filter_str, "-ar", "24000", tmp],
         capture_output=True, text=True,
@@ -295,6 +383,14 @@ def _apply_speed(path: str, speed: float) -> None:
             pass
         raise RuntimeError(f"音频处理失败: {result.stderr[-500:]}")
     os.replace(tmp, path)
+
+
+def _cleanup_temp_dir(temp_dir) -> None:
+    """清理每段的临时目录；开启 PODCAST_AUDIO_DEBUG 时保留供核对。"""
+    if AUDIO_DEBUG:
+        logger.info("[podcast] PODCAST_AUDIO_DEBUG=1，保留分段音频: %s", temp_dir)
+        return
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def synthesize_podcast(
@@ -444,11 +540,9 @@ def synthesize_podcast(
             line_count=total,
         )
     except Exception:
-        # 合成失败时清理临时目录
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        # 合成失败时清理临时目录（调试模式下保留，便于查看失败段）
+        _cleanup_temp_dir(temp_dir)
         raise
     else:
         # 成功后也清理临时段文件（保留最终成品）
-        import shutil
-        shutil.rmtree(temp_dir, ignore_errors=True)
+        _cleanup_temp_dir(temp_dir)
