@@ -5,15 +5,15 @@
 # ============================================================
 
 # ── 配置（按你的服务器环境修改） ──
-INDEXTTS_HOME="/root/index-tts"
-MODEL_DIR="/root/index-tts/checkpoints"
-VOICES_DIR="/root/autodl-tmp/index-tts/voices"
-OUTPUT_DIR="/root/autodl-tmp/index-tts/outputs"
+INDEXTTS_HOME="/root/autodl-tmp/index-tts-main"
+MODEL_DIR="/root/autodl-tmp/cache/IndexTTS-2"
+VOICES_DIR="/root/autodl-fs/voices"
+OUTPUT_DIR="/root/autodl-fs/outputs"
 DEVICE="cuda:0"
 FP16="--fp16"         # 不需要 FP16 就删掉这行（改成空字符串）
 DEEPSPEED="--deepspeed"           # 可选："--deepspeed"，需先确认环境支持
 CUDA_KERNEL="--cuda-kernel"         # 可选："--cuda-kernel"，BigVGAN CUDA kernel
-ACCEL="--accel"               # 可选："--accel"，GPT2 acceleration engine
+ACCEL=""               # 可选："--accel"，GPT2 acceleration engine
 TORCH_COMPILE=""       # 可选："--torch-compile"，首次推理会编译
 HOST="0.0.0.0"
 PORT="8000"
@@ -26,6 +26,9 @@ mkdir -p "$LOG_DIR"
 # 同时输出到当前终端和日志文件，便于排查远程任务。
 exec > >(tee -a "$LOG_FILE") 2>&1
 export PYTHONUNBUFFERED=1
+
+export OMP_NUM_THREADS=8
+export MKL_NUM_THREADS=8
 
 echo "========================================="
 echo "  IndexTTS2 TTS Server"
