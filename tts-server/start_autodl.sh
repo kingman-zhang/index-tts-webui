@@ -27,6 +27,13 @@ mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG_FILE") 2>&1
 export PYTHONUNBUFFERED=1
 
+# ── HuggingFace 镜像 ────────────────────────────────────────
+# 本机无法访问 huggingface.co（Network is unreachable），而 IndexTTS-2.0
+# 加载时需从 HF 拉取 facebook/w2v-bert-2.0 等辅助模型，故改走国内镜像。
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+# 模型缓存放数据盘，避免撑爆系统盘（w2v-bert-2.0 约 2GB+）。
+export HF_HOME="${HF_HOME:-/root/autodl-tmp/hf_home}"
+
 echo "========================================="
 echo "  IndexTTS2 TTS Server"
 echo "  Model:  $MODEL_DIR"
@@ -34,7 +41,8 @@ echo "  Voices: $VOICES_DIR"
 echo "  Output: $OUTPUT_DIR"
 echo "  Device: $DEVICE  FP16: ${FP16:-no}"
 echo "  Listen: $HOST:$PORT"
-echo "  Log Dir: $OUTPUT_DIR"
+echo "  Log Dir: $LOG_DIR"
+echo "  HF Mirror: $HF_ENDPOINT"
 echo "========================================="
 
 python server.py \
