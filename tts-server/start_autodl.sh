@@ -31,8 +31,21 @@ export PYTHONUNBUFFERED=1
 # 本机无法访问 huggingface.co（Network is unreachable），而 IndexTTS-2.0
 # 加载时需从 HF 拉取 facebook/w2v-bert-2.0 等辅助模型，故改走国内镜像。
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-# 模型缓存放数据盘，避免撑爆系统盘（w2v-bert-2.0 约 2GB+）。
+# 模型缓存放数据盘，避免撑爆系统盘（w2v-bert-2.0 快照约 4.4GB）。
+# ⚠ 注意：indextts/infer_v2.py 第 4 行硬写 os.environ['HF_HUB_CACHE']='./checkpoints/hf_cache'
+# （相对路径 + 直接赋值），会覆盖这里的 HF_HOME。所以 v2.0.0 真正读的缓存目录是
+# $(pwd)/checkpoints/hf_cache，已软链 -> /root/autodl-tmp/hf_home/hub。
 export HF_HOME="${HF_HOME:-/root/autodl-tmp/hf_home}"
+
+# 容器里 OMP_NUM_THREADS 可能是空值/非法值，libgomp 会打印
+# "Invalid value for environment variable OMP_NUM_THREADS"，显式给一个干净值。
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
+
+# 4 个辅助模型已备齐后打开离线模式：完全不联网、启动秒过这一段；
+# 万一缓存缺文件会明确报错，而不是像现在这样静默卡住。
+# 需要临时恢复联网：HF_HUB_OFFLINE=0 bash start_autodl.sh
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
 echo "========================================="
 echo "  IndexTTS2 TTS Server"

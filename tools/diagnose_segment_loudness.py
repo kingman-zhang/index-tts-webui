@@ -35,6 +35,10 @@ DEVIATION_FLAG_DB = 2.0
 # 太短或太轻的区间不是语音，是拼接边界的碎片，需剔除后再统计
 MIN_SPEECH_SEC = 0.30
 MIN_SPEECH_LUFS = -45.0
+# 峰值上限（与 podcast_engine.py 的 NORM_CEILING_DBFS 一致）。
+# 偏低区间里，峰值是否贴住这个上限，指向完全不同的两种成因。
+CEILING_DBFS = -1.5
+CEILING_NEAR_DB = 1.0
 
 
 FALLBACK_FFMPEG_PATHS = (
@@ -180,10 +184,13 @@ def main() -> None:
                  if row["peak"] is not None else "n/a")
 
         verdict = ""
+        at_ceiling = (row["peak"] is not None
+                      and row["peak"] >= CEILING_DBFS - CEILING_NEAR_DB)
         if median is not None:
             delta = row["lufs"] - median
             if delta <= -DEVIATION_FLAG_DB:
-                verdict = f"<<< 偏低 {delta:+.1f} dB"
+                hint = "峰值贴上限" if at_ceiling else "峰值未达上限"
+                verdict = f"<<< 偏低 {delta:+.1f} dB（{hint}）"
             elif delta >= DEVIATION_FLAG_DB:
                 verdict = f"<<< 偏高 {delta:+.1f} dB"
 
@@ -197,8 +204,12 @@ def main() -> None:
         crests = [r["peak"] - r["lufs"] for r in kept if r["peak"] is not None]
         if crests:
             print(f"峰均比中位数: {statistics.median(crests):.1f} dB")
-        print("提示: 峰均比明显高于其他区间的，说明段内存在瞬时高峰，"
-              "是 loudnorm 压住整段增益的典型特征。\n")
+        print("判读要点（两种成因必须分开）:")
+        print(f"  · 偏低 + 峰值未达 {CEILING_DBFS:g} 上限 → 该段几乎没被归一化，")
+        print("    是 loudnorm 响度门限把小声内容排除在统计之外的症状。")
+        print(f"  · 偏低 + 峰值贴住 {CEILING_DBFS:g} 上限 → 段内瞬态峰大，可达响度")
+        print("    被真峰上限锁死。这是物理约束，不是缺陷；想抬高只能先压瞬态。")
+        print()
 
 
 if __name__ == "__main__":
