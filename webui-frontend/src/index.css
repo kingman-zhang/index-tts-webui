@@ -80,3 +80,46 @@ input[type="range"]::-moz-range-thumb {
   cursor: pointer;
   border: 2px solid white;
 }
+
+/* ─── 配音画布：行内标记芯片（contentEditable 内的不可编辑块） ─── */
+.mono-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 3px;
+  padding: 0 10px;
+  border-radius: 9999px;
+  border-width: 1px;
+  border-style: solid;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.55;
+  vertical-align: baseline;
+  user-select: none;
+  white-space: nowrap;
+  transition: box-shadow 0.15s ease;
+}
+.mono-chip:hover {
+  box-shadow: 0 0 0 2px rgb(16 185 129 / 0.15);
+}
+.mono-chip-pause {
+  border-color: #e5e7eb;
+  background: #f9fafb;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+/* 情绪作用域：芯片后直到下一个芯片/行尾的文字带淡色底 */
+.mono-scope {
+  border-radius: 6px;
+  padding: 2px 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.mono-canvas:focus {
+  outline: none;
+}
+.mono-canvas:empty::before {
+  content: attr(data-placeholder);
+  color: #d1d5db;
+  pointer-events: none;
+}

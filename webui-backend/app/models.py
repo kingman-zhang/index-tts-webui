@@ -113,6 +113,7 @@ class VoicePresetModel(BaseModel):
 
 class QueueTaskModel(BaseModel):
     project_name: str = "未命名"
+    kind: str = "podcast"  # podcast=双人播客（tts-server 播客引擎）；mono=单音色配音（引擎适配层）
     lines: list
     voices: dict
     silence: dict = Field(default_factory=lambda: {"within_segment": 200, "between_lines": 300, "speaker_switch": 500})

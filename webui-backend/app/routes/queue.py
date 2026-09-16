@@ -25,6 +25,7 @@ async def submit_to_queue(task: QueueTaskModel):
     qs.queue_tasks[task_id] = {
         "id": task_id,
         "project_name": task.project_name,
+        "kind": task.kind,
         "lines": task.lines,
         "voices": task.voices,
         "silence": task.silence,

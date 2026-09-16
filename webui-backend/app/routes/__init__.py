@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import system, voices, podcast, projects, presets, glossary, voice_presets, queue
+from . import system, voices, podcast, projects, presets, glossary, voice_presets, queue, mono
 
 all_routers = [
     system.router,
@@ -13,4 +13,5 @@ all_routers = [
     glossary.router,
     voice_presets.router,
     queue.router,
+    mono.router,
 ]

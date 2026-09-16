@@ -156,3 +156,92 @@ export function makeLine(speaker: "A" | "B", text = "", emotion?: EmotionConfig)
     emotion: emotion ? { ...emotion, vector: [...emotion.vector] } : defaultEmotion(),
   };
 }
+
+// ─── 配音模式（单音色，标记文本模型） ───────────────────────
+//
+// 文稿是唯一真源：一块画布文本，情绪用行首【标记】、停顿用行内 [pause:秒]。
+// 提交时由 textToMonoLines 解析为后端协议的行列表。
+
+/** 旧版逐段模型（仅用于 v1 草稿迁移） */
+export interface MonoLine {
+  id: string;
+  text: string;
+  /** null=跟随音色；统一 8 标签 + neutral（与后端引擎适配层对齐） */
+  emotion_label: string | null;
+  /** 段后停顿毫秒（旧模型，已由行内 [pause:N] 取代） */
+  silence_after_ms?: number;
+}
+
+/** 情绪元数据：中文标签 + 预览芯片配色（value 与后端引擎适配层 8 标签对齐） */
+export const MONO_EMOTION_META: Record<string, { label: string; chip: string; dot: string; scope: string }> = {
+  happy:       { label: "喜悦", chip: "bg-amber-50 text-amber-700 border-amber-200", dot: "bg-amber-400", scope: "bg-amber-100/70" },
+  angry:       { label: "愤怒", chip: "bg-red-50 text-red-700 border-red-200", dot: "bg-red-400", scope: "bg-red-100/70" },
+  sad:         { label: "悲伤", chip: "bg-sky-50 text-sky-700 border-sky-200", dot: "bg-sky-400", scope: "bg-sky-100/70" },
+  melancholic: { label: "低落", chip: "bg-indigo-50 text-indigo-700 border-indigo-200", dot: "bg-indigo-400", scope: "bg-indigo-100/70" },
+  afraid:      { label: "恐惧", chip: "bg-violet-50 text-violet-700 border-violet-200", dot: "bg-violet-400", scope: "bg-violet-100/70" },
+  disgusted:   { label: "厌恶", chip: "bg-lime-50 text-lime-700 border-lime-200", dot: "bg-lime-400", scope: "bg-lime-100/70" },
+  surprised:   { label: "惊喜", chip: "bg-orange-50 text-orange-700 border-orange-200", dot: "bg-orange-400", scope: "bg-orange-100/70" },
+  calm:        { label: "平静", chip: "bg-teal-50 text-teal-700 border-teal-200", dot: "bg-teal-400", scope: "bg-teal-100/70" },
+  neutral:     { label: "中性", chip: "bg-gray-100 text-gray-600 border-gray-200", dot: "bg-gray-400", scope: "bg-gray-100" },
+};
+
+/** 行首【中文】标记 → 情绪 value */
+export const MONO_EMOTION_MARKERS: Record<string, string> = Object.fromEntries(
+  Object.entries(MONO_EMOTION_META).map(([value, m]) => [m.label, value])
+);
+
+export interface MonoParsedLine {
+  text: string;
+  /** null=跟随音色 */
+  emotion_label: string | null;
+}
+
+/** 把画布文本解析为后端协议的段列表（作用域语义）。
+ *
+ * 情绪标记【label】是该作用域的起点：从标记到下一个标记或行尾的文字都使用该情绪。
+ * 因此一行内可以有多个情绪段（MiniMax 式），提交时按标记拆成多个合成段、段间零停顿。
+ * 空行跳过；纯标记段跳过；未知【xx】按普通文本保留。
+ */
+export function textToMonoLines(text: string): MonoParsedLine[] {
+  const out: MonoParsedLine[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    // 找出本行所有已知情绪标记的起点
+    const starts: { idx: number; end: number; emotion: string }[] = [];
+    for (const m of line.matchAll(/【[^【】]+】/g)) {
+      const value = MONO_EMOTION_MARKERS[m[0].slice(1, -1)];
+      if (value !== undefined) starts.push({ idx: m.index ?? 0, end: (m.index ?? 0) + m[0].length, emotion: value });
+    }
+    if (starts.length === 0) {
+      out.push({ text: line, emotion_label: null });
+      continue;
+    }
+    // 段：行首→第一个标记（无情绪）；每个标记→下一个标记/行尾
+    const push = (body: string, emotion: string | null) => {
+      const t = body.trim();
+      if (t) out.push({ text: t, emotion_label: emotion });
+    };
+    push(line.slice(0, starts[0].idx), null);
+    for (let i = 0; i < starts.length; i++) {
+      const end = i + 1 < starts.length ? starts[i + 1].idx : line.length;
+      push(line.slice(starts[i].end, end), starts[i].emotion);
+    }
+  }
+  return out;
+}
+
+/** 旧版逐段模型 → 画布文本（v1 草稿迁移用） */
+export function monoLinesToText(lines: MonoLine[]): string {
+  return lines
+    .map(l => {
+      const meta = l.emotion_label ? MONO_EMOTION_META[l.emotion_label] : null;
+      const prefix = meta ? `【${meta.label}】` : "";
+      const tail =
+        l.silence_after_ms && l.silence_after_ms > 0
+          ? ` [pause:${String(Math.round((l.silence_after_ms / 1000) * 10) / 10)}]`
+          : "";
+      return prefix + l.text + tail;
+    })
+    .join("\n");
+}

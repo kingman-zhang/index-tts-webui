@@ -128,8 +128,13 @@ def load_persisted_tasks() -> None:
                 queue_order.append(task_id)
             # WebUI 重启后，带 TTS task id 的运行任务由启动逻辑恢复轮询。
             elif data.get("status") in (QueueTaskStatus.RUNNING, QueueTaskStatus.SYNCING):
-                data["status"] = QueueTaskStatus.RUNNING
-                data["message"] = data.get("message") or "WebUI 重启后恢复"
+                if data.get("kind") == "mono":
+                    # 配音任务在 backend 进程内执行，无法跨重启恢复
+                    data["status"] = QueueTaskStatus.INTERRUPTED
+                    data["message"] = "服务重启中断，可重新提交"
+                else:
+                    data["status"] = QueueTaskStatus.RUNNING
+                    data["message"] = data.get("message") or "WebUI 重启后恢复"
         except Exception as e:
             logger.warning("[queue] load persisted task failed file=%s error=%s", f, e)
     logger.info("[queue] loaded %d persisted tasks", len(queue_tasks))

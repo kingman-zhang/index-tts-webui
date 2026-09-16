@@ -229,3 +229,16 @@ Voice {                       # 平台自己的音色目录，引擎无关
 1. 确认方案 C 与 MVP 范围 → 进入 G0
 2. G0 第一件事：实测 RTF（不同长度文本 × 音色 × 2.0/2.5 引擎），产出计费系数表
 3. G0 并行：补齐 `tools/autodl_body.json` 请求体模板，跑通 `test_autodl_indextts2.py` 冒烟 → 评估 autodl.art 作为备援引擎的可行性（效果/耗时/单价）
+
+---
+
+## 进度记录
+
+### 2026-09-16 · G0 完成并真机验证 + G1 本地完成
+
+- **G0 三项全部完成**：backend 拆模块（app/ 包，行为不变）、引擎适配层（indextts_local + indextts_art + 2048 分片器）、tts-server 停顿标记 `[pause:秒]`/`<#>`。**停顿标记已在真机验证通过**（用户实测停 1 秒达效）。
+- **G1（单音色配音模式）本地完成**：
+  - 后端：`app/mono_runner.py`（走引擎适配层逐段合成，任务内固定单引擎防混流，backend 侧 wave 拼接 + 段后静音，落盘 `data/outputs/`）；`/api/queue/submit` 加 `kind` 字段（podcast/mono），process_queue 按 kind 分流；新增 `GET /api/mono/audio/{task_id}`；mono 任务重启后标记 INTERRUPTED 可重试。
+  - 前端：`App.tsx` 模式切换（双人播客 / 单人配音，localStorage 记忆）；`MonoVoiceCard`（音色选择/上传/试听/语速）；`MonoEditor`（导入文本按行拆段、每段情绪标签 10 选项 + 段后停顿秒数、字数统计）；QueuePanel 加「配音」徽标；配音草稿 localStorage 持久化。
+  - 验证：mono 单测（拼接/情绪映射/注册表）全过；mock TTS 端到端（提交→合成→拼接→`/api/mono/audio` 取回，3×0.6s+0.5s 停顿=2.3s 精确）；无 kind 老任务回归走播客路径正常；tsc + vite build 通过。
+  - **待真机回归**：部署拆分后 backend + 前端到 AutoDL，实测配音模式全流程。

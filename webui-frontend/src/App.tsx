@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { FolderOpen, Trash2, X, FileText } from "lucide-react";
+import { FolderOpen, Trash2, X, FileText, Podcast, MicVocal } from "lucide-react";
 import { Header } from "./components/Header";
 import { SpeakerPanel } from "./components/SpeakerPanel";
 import { ScriptEditor } from "./components/ScriptEditor";
@@ -7,12 +7,51 @@ import { ParamsPanel } from "./components/ParamsPanel";
 import { OutputPanel } from "./components/OutputPanel";
 import { GlossaryPanel } from "./components/GlossaryPanel";
 import { QueuePanel } from "./components/QueuePanel";
+import { MonoEditor } from "./components/MonoEditor";
+import { MonoVoiceCard, type MonoVoice } from "./components/MonoVoiceCard";
 import { Button, Card, EmptyState, Badge } from "./components/ui";
 import { api } from "./api/client";
 import {
-  defaultProject, makeLine, defaultEmotion, defaultParams, defaultSilence, type PodcastProject, type PodcastLine,
+  defaultProject, makeLine, defaultEmotion, defaultParams, defaultSilence,
+  textToMonoLines, monoLinesToText,
+  type PodcastProject, type PodcastLine,
   type VoiceFile, type TaskInfo,
 } from "./types";
+import { cn } from "./lib/utils";
+
+type AppMode = "podcast" | "dubbing";
+
+const MONO_DRAFT_KEY = "wb-mono-draft-v2";
+
+/** v2 草稿 = { voice, speed, text }；读到 v1（逐段模型）时迁移为标记文本 */
+function loadMonoDraft(): { voice: MonoVoice; speed: number; text: string } {
+  const empty = { voice: { voice_path: null, voice_name: null } as MonoVoice, speed: 1.0, text: "" };
+  try {
+    const raw = localStorage.getItem(MONO_DRAFT_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && typeof d === "object" && typeof d.text === "string") {
+        return {
+          voice: { voice_path: d.voice?.voice_path ?? null, voice_name: d.voice?.voice_name ?? null },
+          speed: Number(d.speed) > 0 ? Number(d.speed) : 1.0,
+          text: d.text,
+        };
+      }
+    }
+    const old = localStorage.getItem("wb-mono-draft-v1");
+    if (old) {
+      const d = JSON.parse(old);
+      if (d && typeof d === "object") {
+        return {
+          voice: { voice_path: d.voice?.voice_path ?? null, voice_name: d.voice?.voice_name ?? null },
+          speed: Number(d.speed) > 0 ? Number(d.speed) : 1.0,
+          text: Array.isArray(d.lines) ? monoLinesToText(d.lines) : "",
+        };
+      }
+    }
+  } catch { /* 忽略损坏的草稿 */ }
+  return empty;
+}
 
 export default function App() {
   const [project, setProject] = useState<PodcastProject>(defaultProject());
@@ -20,6 +59,22 @@ export default function App() {
   const [ttsOnline, setTtsOnline] = useState<boolean | null>(null);
   const [ttsInfo, setTtsInfo] = useState<{ model_loaded: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // 模式：podcast=双人播客；dubbing=单音色配音
+  const [mode, setMode] = useState<AppMode>(() =>
+    localStorage.getItem("wb-mode") === "dubbing" ? "dubbing" : "podcast"
+  );
+  const switchMode = (m: AppMode) => { setMode(m); localStorage.setItem("wb-mode", m); };
+
+  // 配音模式状态（localStorage 草稿，刷新不丢；text 为画布文本唯一真源）
+  const initialMono = loadMonoDraft();
+  const [monoVoice, setMonoVoice] = useState<MonoVoice>(initialMono.voice);
+  const [monoSpeed, setMonoSpeed] = useState<number>(initialMono.speed);
+  const [monoText, setMonoText] = useState<string>(initialMono.text);
+
+  useEffect(() => {
+    localStorage.setItem(MONO_DRAFT_KEY, JSON.stringify({ voice: monoVoice, speed: monoSpeed, text: monoText }));
+  }, [monoVoice, monoSpeed, monoText]);
 
   // 生成相关
   const [task, setTask] = useState<TaskInfo | null>(null);
@@ -212,11 +267,60 @@ export default function App() {
   const activeSpeakers = Array.from(new Set(
     project.lines.filter(l => l.text.trim().length > 0).map(l => l.speaker)
   )) as ("A" | "B")[];
-  const canGenerate =
+  const podcastCanGenerate =
     activeSpeakers.length > 0 &&
     activeSpeakers.every(s => !!project.voices[s]?.voice_path);
+  const dubbingParsed = textToMonoLines(monoText);
+  const dubbingCanGenerate =
+    !!monoVoice.voice_path &&
+    dubbingParsed.length > 0 &&
+    dubbingParsed.every(l => l.text.trim().length > 0);
+  const canGenerate = mode === "podcast" ? podcastCanGenerate : dubbingCanGenerate;
+
+  // ─── 配音模式提交（kind=mono，后端走引擎适配层） ───────────
+  const handleDubbingGenerate = async () => {
+    setError(null);
+    if (!monoVoice.voice_path) {
+      const message = "请先在左侧选择配音音色";
+      setError(message); showToast(message);
+      return;
+    }
+    const parsed = textToMonoLines(monoText);
+    if (parsed.length === 0) {
+      const message = "请先在画布中输入要配音的文稿";
+      setError(message); showToast(message);
+      return;
+    }
+    setGenerating(true);
+    try {
+      const lines = parsed.map(l => ({
+        speaker: "A" as const,
+        text: l.text,
+        emotion: l.emotion_label ? { label: l.emotion_label } : null,
+      }));
+      const params = { ...defaultParams(), speed: monoSpeed, speaker_speeds: { A: monoSpeed } };
+      const result = await api.submitToQueue({
+        project_name: project.name,
+        kind: "mono",
+        lines,
+        voices: { A: monoVoice.voice_path },
+        silence: defaultSilence(),
+        params,
+        glossary_enabled: true,
+      });
+      showToast(`已加入队列（位置 ${result.queue_position}）`);
+      setQueueRefreshKey(k => k + 1);
+      setQueueCollapsed(false);
+      setGenerating(false);
+    } catch (e: any) {
+      setGenerating(false);
+      setError(e.message);
+      showToast(`提交失败: ${e.message}`);
+    }
+  };
 
   const handleGenerate = async () => {
+    if (mode === "dubbing") return handleDubbingGenerate();
     setError(null);
     const blankLines = project.lines
       .map((line, index) => ({ line, index: index + 1 }))
@@ -301,8 +405,73 @@ export default function App() {
         saving={saving}
       />
 
+      {/* 模式切换 */}
+      <div className="px-3 pt-2 shrink-0">
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
+          <button
+            onClick={() => switchMode("podcast")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+              mode === "podcast" ? "bg-indigo-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-700"
+            )}
+          >
+            <Podcast className="w-3.5 h-3.5" /> 双人播客
+          </button>
+          <button
+            onClick={() => switchMode("dubbing")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+              mode === "dubbing" ? "bg-emerald-600 text-white shadow-sm" : "text-gray-500 hover:text-gray-700"
+            )}
+          >
+            <MicVocal className="w-3.5 h-3.5" /> 单人配音
+          </button>
+        </div>
+      </div>
+
+      {mode === "dubbing" ? (
+        /* ── 配音模式：左音色 / 中画布 / 右队列 ── */
+        <div className="flex-1 flex gap-4 p-4 overflow-hidden">
+          <aside className="w-72 shrink-0 overflow-y-auto scrollbar-thin space-y-4">
+            <MonoVoiceCard
+              voice={monoVoice}
+              speed={monoSpeed}
+              onChange={patch => {
+                if (patch.speed !== undefined) setMonoSpeed(patch.speed);
+                setMonoVoice(v => ({ ...v, voice_path: patch.voice_path !== undefined ? patch.voice_path : v.voice_path, voice_name: patch.voice_name !== undefined ? patch.voice_name : v.voice_name }));
+              }}
+              voiceFiles={voiceFiles}
+              onUpload={handleUploadVoice}
+            />
+            <GlossaryPanel
+              collapsed={glossaryCollapsed}
+              onToggle={() => setGlossaryCollapsed(!glossaryCollapsed)}
+            />
+          </aside>
+
+          <main className="flex-1 min-w-0">
+            <MonoEditor
+              text={monoText}
+              onChange={setMonoText}
+              onGenerate={handleDubbingGenerate}
+              canGenerate={dubbingCanGenerate}
+              generating={generating}
+              error={error}
+            />
+          </main>
+
+          <aside className="w-80 shrink-0 overflow-y-auto scrollbar-thin">
+            <QueuePanel
+              collapsed={queueCollapsed}
+              onToggle={() => setQueueCollapsed(!queueCollapsed)}
+              refreshKey={queueRefreshKey}
+            />
+          </aside>
+        </div>
+      ) : (
+      /* ── 播客模式 ── */
       <div className="flex-1 flex gap-3 p-3 overflow-hidden">
-        {/* 左侧：角色配置 + 术语表 */}
+        {/* 左侧：角色/音色配置 + 术语表 */}
         <aside className="w-96 shrink-0 overflow-y-auto scrollbar-thin">
           <div className="mb-2 flex items-center gap-2">
             <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">角色与音色</h2>
@@ -365,6 +534,7 @@ export default function App() {
           />
         </aside>
       </div>
+      )}
 
       {/* 项目列表弹窗 */}
       {showProjects && (

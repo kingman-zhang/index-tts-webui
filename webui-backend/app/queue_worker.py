@@ -112,21 +112,27 @@ async def process_queue():
     task = qs.queue_tasks[qs.current_task_id]
     try:
         validate_queue_lines(task.get("lines", []))
-        # 应用术语替换
+        # 应用术语替换（播客与配音模式共用；req_data["lines"] 与 task["lines"] 是同一列表）
+        if task.get("glossary_enabled", True):
+            terms = load_glossary()
+            if terms:
+                for line in task["lines"]:
+                    for t in terms:
+                        line["text"] = line["text"].replace(t["original"], t["replacement"])
+
+        # 配音模式（G1）：不进 tts-server 播客引擎，走引擎适配层在 backend 进程内合成
+        if task.get("kind") == "mono":
+            from .mono_runner import run_mono_task
+            await run_mono_task(task)
+            return
+
         req_data = {
             "lines": task["lines"],
             "voices": task["voices"],
             "silence": task["silence"],
             "params": task["params"],
         }
-        if task.get("glossary_enabled", True):
-            terms = load_glossary()
-            if terms:
-                for line in req_data["lines"]:
-                    for t in terms:
-                        line["text"] = line["text"].replace(t["original"], t["replacement"])
 
-        # 提交到 TTS 服务
         resp = await http_client.post(f"{TTS_URL}/api/podcast", json=req_data, timeout=30.0)
         if resp.status_code != 200:
             try:

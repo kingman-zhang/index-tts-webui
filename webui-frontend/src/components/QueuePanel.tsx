@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 interface QueueTask {
   id: string;
   project_name: string;
+  kind?: string; // podcast=双人播客；mono=单音色配音
   status: string;
   progress: number;
   current_line: number;
@@ -363,6 +364,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                             {task.project_name}
                           </span>
                         )}
+                        {task.kind === "mono" && <Badge color="green" className="shrink-0">配音</Badge>}
                         <Badge color={cfg.color as any} className="shrink-0">{cfg.label}</Badge>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">

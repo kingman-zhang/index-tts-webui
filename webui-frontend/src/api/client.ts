@@ -221,6 +221,7 @@ export const api = {
   // ─── 任务队列 ───
   async submitToQueue(req: {
     project_name: string;
+    kind?: string; // podcast=双人播客（默认）；mono=单音色配音
     lines: any[];
     voices: Record<string, string>;
     silence: any;
