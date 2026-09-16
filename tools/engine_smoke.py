@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """引擎适配层冒烟工具：同一份参数在自建 / autodl.art 引擎上合成单段音频。
 
-用法（在 webui-backend 目录下）：
+用法（任意目录，脚本自动定位 webui-backend）：
   python tools/engine_smoke.py --engine local  --voice /path/ref.mp3 --text "你好"
   python tools/engine_smoke.py --engine art    --voice /path/ref.mp3 --text "你好" \
       [--token $AUTODL_API_TOKEN] [--emotion happy]
@@ -17,7 +17,8 @@ import asyncio
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+_BACKEND_DIR = pathlib.Path(__file__).resolve().parents[1] / "webui-backend"
+sys.path.insert(0, str(_BACKEND_DIR))
 
 import httpx  # noqa: E402
 
