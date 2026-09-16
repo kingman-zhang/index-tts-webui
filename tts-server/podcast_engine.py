@@ -445,6 +445,91 @@ def _cleanup_temp_dir(temp_dir) -> None:
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# 行内停顿标记支持（2026-09-16 G0 新增）
+#
+# 语法：[pause:秒数]（如 [pause:0.5]、[pause:1]）或 <#>（= 0.5 秒）。
+# 实现：把行文本按标记拆成子段，逐子段推理，再按标记时长插入静音拼接。
+# 标记必须在 _sanitize_text 之前拆出，避免数字/冒号相关正则误伤。
+PAUSE_PATTERN = re.compile(r"\[pause:([0-9]*\.?[0-9]+)\]|<#>")
+PAUSE_TAG_SECONDS = 0.5
+PAUSE_MIN_SECONDS = 0.05
+PAUSE_MAX_SECONDS = 5.0
+
+
+def split_pauses(text: str) -> list[tuple[str, float]]:
+    """把文本按停顿标记拆成 [(子文本, 标记后静音秒数)]。
+
+    无标记时返回 [(原文, 0.0)]；空子文本被跳过，其后的标记时长会累加到
+    上一段上（连续标记、行首标记均安全）。
+    """
+    parts: list[tuple[str, float]] = []
+    last_end = 0
+    for m in PAUSE_PATTERN.finditer(text):
+        seg = text[last_end:m.start()].strip()
+        pause = (
+            float(m.group(1)) if m.group(1) is not None else PAUSE_TAG_SECONDS
+        )
+        pause = min(PAUSE_MAX_SECONDS, max(PAUSE_MIN_SECONDS, pause))
+        if parts and not seg:
+            parts[-1] = (parts[-1][0], min(PAUSE_MAX_SECONDS, parts[-1][1] + pause))
+        elif seg:
+            parts.append((seg, pause))
+        last_end = m.end()
+    tail = text[last_end:].strip()
+    if tail:
+        parts.append((tail, 0.0))
+    if not parts:
+        parts = [(text.strip(), 0.0)]
+    return parts
+
+
+def synthesize_line_with_pauses(
+    tts,
+    raw_text: str,
+    output_path: str,
+    base_infer_kwargs: dict,
+    speed: float,
+    token_log_tag: str = "",
+) -> None:
+    """带停顿标记的单行合成。
+
+    base_infer_kwargs 是已包含情感/采样参数、但 text/output_path 以整行为准的
+    kwargs（内部会按子段覆盖）。无标记时行为与原先"一次 infer + _apply_speed"
+    完全一致。
+    """
+    parts = split_pauses(raw_text)
+    if len(parts) == 1:
+        infer_kwargs = dict(base_infer_kwargs)
+        infer_kwargs["text"] = _sanitize_text(parts[0][0])
+        infer_kwargs["output_path"] = output_path
+        log_text_tokens(tts, infer_kwargs["text"], token_log_tag)
+        tts.infer(**infer_kwargs)
+        _apply_speed(output_path, speed)
+        return
+
+    # 多子段：逐段推理 → 每段变速/响度归一 → 按标记时长插静音拼接
+    out_path = Path(output_path)
+    parts_dir = out_path.parent / (out_path.stem + "_parts")
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    sub_segments = []
+    for i, (sub_text, pause_sec) in enumerate(parts):
+        part_path = str(parts_dir / f"p{i:02d}.wav")
+        infer_kwargs = dict(base_infer_kwargs)
+        infer_kwargs["text"] = _sanitize_text(sub_text)
+        infer_kwargs["output_path"] = part_path
+        log_text_tokens(tts, infer_kwargs["text"], f"{token_log_tag} p{i}")
+        tts.infer(**infer_kwargs)
+        _apply_speed(part_path, speed)
+        sub_segments.append({
+            "audio_path": part_path,
+            "silence_after_ms": int(round(pause_sec * 1000)),
+        })
+    _concatenate_wav_segments(sub_segments, output_path)
+    if not AUDIO_DEBUG:
+        shutil.rmtree(parts_dir, ignore_errors=True)
+
+
 def synthesize_podcast(
     tts,
     request: PodcastRequest,
@@ -486,6 +571,8 @@ def synthesize_podcast(
             segment_path = str(temp_dir / f"{idx:04d}.wav")
             infer_kwargs = {
                 "spk_audio_prompt": voice_path,
+                # text/output_path 由 synthesize_line_with_pauses 按子段覆盖，
+                # 这里保留整行值仅用于异常时排查。
                 "text": _sanitize_text(line.text),
                 "output_path": segment_path,
                 "interval_silence": int(request.silence.within_segment),
@@ -493,12 +580,6 @@ def synthesize_podcast(
             }
             infer_kwargs.update(line.emotion.to_infer_kwargs(tts))
             infer_kwargs.update(request.params.to_infer_kwargs())
-
-            # 文本进模型前的最终形态（受 TTS_LOG_TOKENS 控制）
-            log_text_tokens(
-                tts, infer_kwargs["text"],
-                f"line {idx}/{total} speaker={line.speaker}",
-            )
 
             speaker_speeds = getattr(request.params, "speaker_speeds", {})
             speed = speaker_speeds.get(line.speaker, request.params.speed)
@@ -522,12 +603,18 @@ def synthesize_podcast(
         completed_segments = [None] * total
 
         def _run_one(job: dict) -> dict:
-            """单个段的完整推理+后处理。"""
+            """单个段的完整推理+后处理（含行内停顿标记拆分）。"""
             idx = job["idx"]
             t_infer_start = time.time()
-            tts.infer(**job["infer_kwargs"])
+            synthesize_line_with_pauses(
+                tts,
+                job["line"].text,
+                job["segment_path"],
+                job["infer_kwargs"],
+                job["speed"],
+                token_log_tag=f"line {idx}/{total} speaker={job['line'].speaker}",
+            )
             t_infer_end = time.time()
-            _apply_speed(job["segment_path"], job["speed"])
             t_end = time.time()
             logger.info(
                 "[podcast] line %d/%d speaker=%s infer=%.2fs total=%.2fs",

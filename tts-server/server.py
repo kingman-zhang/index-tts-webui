@@ -387,9 +387,11 @@ def synthesize(req: SynthesizeRequestModel):
 
     with _model_lock:
         try:
-            tts.infer(**infer_kwargs)
-            from podcast_engine import _apply_speed
-            _apply_speed(output_path, req.params.speed)
+            from podcast_engine import synthesize_line_with_pauses
+            synthesize_line_with_pauses(
+                tts, req.text, output_path, infer_kwargs, req.params.speed,
+                token_log_tag="synthesize",
+            )
         except Exception as e:
             raise HTTPException(500, f"合成失败: {e}")
 

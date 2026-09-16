@@ -7,6 +7,7 @@ all provider-specific details in one JSON template and does not touch the
 existing podcast-webui code.
 """
 import argparse
+import base64
 import json
 import os
 import pathlib
@@ -18,6 +19,19 @@ import requests
 
 DEFAULT_SUBMIT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/indextts2-v1"
 DEFAULT_RESULT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/result/{task_id}"
+
+
+def audio_data_uri(path: pathlib.Path) -> str:
+    """把本地参考音频转成 data URI（autodl.art 的 prompt_simple 字段格式）。"""
+    mime = {
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".ogg": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".flac": "audio/flac",
+    }.get(path.suffix.lower(), "audio/wav")
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
 
 
 def replace_values(value: Any, text: str, audio: str) -> Any:
@@ -50,7 +64,7 @@ def save_result(session: requests.Session, result: Any, output: pathlib.Path) ->
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="测试 AutoDL IndexTTS2 工作流")
-    parser.add_argument("--audio", required=True, help="参考音频路径；如果 API 要求 URL/文件 ID，请在模板中按要求传入")
+    parser.add_argument("--audio", required=True, help="参考音频本地路径；脚本会自动转成 data URI 填入 prompt_simple")
     parser.add_argument("--text", default="哈喽，大家好，欢迎收听我们的播客。这里是慢半拍，我是半熟老哥。", help="要合成的文字")
     parser.add_argument("--body-template", required=True, help="AutoDL 在线调用页面复制出的请求体 JSON 文件")
     parser.add_argument("--token", default=os.getenv("AUTODL_API_TOKEN"), help="API Token，也可用 AUTODL_API_TOKEN")
@@ -63,7 +77,15 @@ def main() -> int:
         print("缺少 Token：请设置 AUTODL_API_TOKEN 或传入 --token", file=sys.stderr)
         return 2
     template_path = pathlib.Path(args.body_template)
-    body = replace_values(json.loads(template_path.read_text(encoding="utf-8")), args.text, args.audio)
+    audio_path = pathlib.Path(args.audio)
+    if not audio_path.is_file():
+        print(f"参考音频不存在: {audio_path}", file=sys.stderr)
+        return 2
+    body = replace_values(
+        json.loads(template_path.read_text(encoding="utf-8")),
+        args.text,
+        audio_data_uri(audio_path),
+    )
 
     session = requests.Session()
     session.headers.update({"Authorization": args.token, "Content-Type": "application/json"})
