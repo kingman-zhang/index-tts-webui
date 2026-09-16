@@ -353,7 +353,9 @@ def synthesize(req: SynthesizeRequestModel):
     output_path = str(OUTPUT_DIR / f"synth_{int(time.time())}_{uuid.uuid4().hex[:6]}.wav")
 
     # 转换为引擎数据结构
-    from podcast_engine import EmotionConfig, GenerationParams, _sanitize_text
+    from podcast_engine import (
+        EmotionConfig, GenerationParams, _sanitize_text, log_text_tokens,
+    )
     emo = EmotionConfig(
         mode=req.emotion.mode, audio_path=req.emotion.audio_path,
         vector=req.emotion.vector, weight=req.emotion.weight,
@@ -379,6 +381,9 @@ def synthesize(req: SynthesizeRequestModel):
     }
     infer_kwargs.update(emo.to_infer_kwargs(tts))
     infer_kwargs.update(gen.to_infer_kwargs())
+
+    # 文本进模型前的最终形态（受 TTS_LOG_TOKENS 控制）
+    log_text_tokens(tts, infer_kwargs["text"], "synthesize")
 
     with _model_lock:
         try:

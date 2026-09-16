@@ -47,6 +47,13 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
 # 需要临时恢复联网：HF_HUB_OFFLINE=0 bash start_autodl.sh
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 
+# 文本 token 日志：每合成一行前，把「归一化后的 token / token id / unk」
+# 写进日志，用于排查多音字与拼音标注（如 CHONG2 是否存活、有无 unk）。
+# 关闭：TTS_LOG_TOKENS=0 bash start_autodl.sh
+export TTS_LOG_TOKENS="${TTS_LOG_TOKENS:-1}"
+# 日志级别（LOG_LEVEL=DEBUG 可看到更详细信息）
+export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+
 echo "========================================="
 echo "  IndexTTS2 TTS Server"
 echo "  Model:  $MODEL_DIR"
@@ -56,6 +63,7 @@ echo "  Device: $DEVICE  FP16: ${FP16:-no}"
 echo "  Listen: $HOST:$PORT"
 echo "  Log Dir: $LOG_DIR"
 echo "  HF Mirror: $HF_ENDPOINT"
+echo "  TokenLog: $TTS_LOG_TOKENS  (TTS_LOG_TOKENS, 0=off)  Level: $LOG_LEVEL"
 echo "========================================="
 
 python server.py \

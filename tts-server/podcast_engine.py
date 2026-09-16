@@ -212,6 +212,58 @@ def _sanitize_text(text: str) -> str:
     return text.translate(str.maketrans(replacements))
 
 
+# ── 文本 token 日志（排查多音字 / 拼音标注用） ──────────────────
+# 由环境变量 TTS_LOG_TOKENS 控制，1=每行打印，0=关闭（默认关闭）。
+# 说明：TextTokenizer.tokenize() 内部会先调用 normalizer.normalize()，
+# 所以这里打印的 token 就是**真正喂给模型**的形态——可用它确认
+# 拼音标注（如 CHONG2）是否存活、是否退化成 unk。
+LOG_TOKENS = os.environ.get("TTS_LOG_TOKENS", "0").strip().lower() not in (
+    "", "0", "false", "no", "off",
+)
+
+# 单行最多打印多少个 token，避免超长台词刷屏
+_TOKEN_DUMP_LIMIT = 300
+
+
+def log_text_tokens(tts, text: str, tag: str = "") -> None:
+    """把一行文本经归一化/分词后的 token、id、unk 写进日志。
+
+    诊断用途，默认关闭；任何异常都只记 warning，绝不影响合成。
+    """
+    if not LOG_TOKENS:
+        return
+    try:
+        tokenizer = tts.tokenizer
+        tokens = tokenizer.tokenize(text)
+        ids = tokenizer.convert_tokens_to_ids(tokens)
+        unk_id = tokenizer.unk_token_id
+
+        # unk 汇总：同名字符合并成 `字×N`，避免超长台词刷屏
+        unknown = [t for t, i in zip(tokens, ids) if i == unk_id]
+        unk_desc = "无"
+        if unknown:
+            counts: dict = {}
+            for tok in unknown:
+                counts[tok] = counts.get(tok, 0) + 1
+            parts = [f"{tok}×{n}" if n > 1 else tok for tok, n in counts.items()]
+            unk_desc = ", ".join(parts[:20])
+            if len(parts) > 20:
+                unk_desc += f" ...(共 {len(parts)} 种)"
+
+        shown_tokens, shown_ids = tokens, ids
+        if len(tokens) > _TOKEN_DUMP_LIMIT:
+            note = f"...(+{len(tokens) - _TOKEN_DUMP_LIMIT})"
+            shown_tokens = tokens[:_TOKEN_DUMP_LIMIT] + [note]
+            shown_ids = ids[:_TOKEN_DUMP_LIMIT] + [note]
+
+        logger.info(
+            "[tokens]%s in=%r\n    tokens=%s\n    ids=%s\n    unk=%s",
+            f" {tag}" if tag else "", text, shown_tokens, shown_ids, unk_desc,
+        )
+    except Exception as exc:
+        logger.warning("[tokens] 打印失败: %s", exc)
+
+
 def _read_wav_format(path: str):
     """读取 WAV 文件的格式信息。"""
     with wave.open(path, "rb") as wf:
@@ -441,6 +493,12 @@ def synthesize_podcast(
             }
             infer_kwargs.update(line.emotion.to_infer_kwargs(tts))
             infer_kwargs.update(request.params.to_infer_kwargs())
+
+            # 文本进模型前的最终形态（受 TTS_LOG_TOKENS 控制）
+            log_text_tokens(
+                tts, infer_kwargs["text"],
+                f"line {idx}/{total} speaker={line.speaker}",
+            )
 
             speaker_speeds = getattr(request.params, "speaker_speeds", {})
             speed = speaker_speeds.get(line.speaker, request.params.speed)
