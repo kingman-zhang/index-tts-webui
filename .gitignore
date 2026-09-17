@@ -7,4 +7,6 @@ __pycache__/
 *.pyc
 .venv/
 
+logs/
+
 .workbuddy/
