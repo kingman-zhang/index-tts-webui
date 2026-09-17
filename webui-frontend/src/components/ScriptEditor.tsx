@@ -282,14 +282,14 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
   return (
     <div className="flex flex-col h-full">
       {/* 工具栏 */}
-      <div className="flex items-center justify-between px-1 py-2 shrink-0">
-        <div className="flex items-center gap-2">
-          <ListChecks className="w-4 h-4 text-gray-400" />
+      <div className="flex items-center justify-between gap-2 px-1 py-2 shrink-0">
+        <div className="flex items-center gap-2 whitespace-nowrap shrink-0">
+          <ListChecks className="w-4 h-4 text-gray-400 shrink-0" />
           <span className="text-sm font-semibold text-gray-700">对话脚本</span>
           <Badge color="gray">{lines.length} 行</Badge>
           <Badge color="gray">{totalChars} 字</Badge>
         </div>
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap justify-end min-w-0">
           <Button variant="outline" size="sm" icon={FileText} onClick={() => setShowImport(true)}>
             批量导入
           </Button>
@@ -331,7 +331,7 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
             JSONL 代码
           </button>
         </div>
-        {scriptView === "code" && <span className="text-[11px] text-gray-400">每行一个 JSON 对象，修改后点击应用</span>}
+        {scriptView === "code" && <span className="text-[0.75rem] text-gray-400">每行一个 JSON 对象，修改后点击应用</span>}
       </div>
 
       {scriptView === "code" ? (
@@ -346,7 +346,7 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
           />
           {codeError && <p className="text-xs text-red-600">{codeError}</p>}
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-gray-400">必填：text、role（A/B）；可选：emotion、silence_after_ms 等</span>
+            <span className="text-[0.75rem] text-gray-400">必填：text、role（A/B）；可选：emotion、silence_after_ms 等</span>
             <Button size="sm" onClick={applyCode}>应用到可视化</Button>
           </div>
         </div>
@@ -456,12 +456,12 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
               {/* 格式说明 */}
               <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3 space-y-1.5">
                 <p className="text-xs font-medium text-indigo-700">支持两种格式（自动识别）：</p>
-                <p className="text-[11px] text-indigo-600">
+                <p className="text-[0.75rem] text-indigo-600">
                   <strong>1. JSON / JSONL 格式</strong>：支持每行一个 JSON 对象，也支持包含 <code className="px-1 bg-white/60 rounded">lines</code> 数组的 WebUI 队列文件；对话项必填 <code className="px-1 bg-white/60 rounded">text</code>，可用 <code className="px-1 bg-white/60 rounded">role</code> 或 <code className="px-1 bg-white/60 rounded">speaker</code> 指定说话人。
                   可选字段：<code className="px-1 bg-white/60 rounded">emotion</code>、<code className="px-1 bg-white/60 rounded">silence_after_ms</code> 等，不填则使用界面角色和参数。
                   兼容旧格式的 <code className="px-1 bg-white/60 rounded">voice</code> / <code className="px-1 bg-white/60 rounded">speaker</code> 字段。
                 </p>
-                <p className="text-[11px] text-indigo-600">
+                <p className="text-[0.75rem] text-indigo-600">
                   <strong>2. 纯文本格式</strong>：每行一段对话，用 <code className="px-1 bg-white/60 rounded">A:</code> 或 <code className="px-1 bg-white/60 rounded">B:</code> 开头指定说话人。
                 </p>
               </div>
@@ -478,7 +478,7 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
                 <Button variant="outline" size="sm" icon={UploadCloud} onClick={() => fileRef.current?.click()}>
                   选择文件
                 </Button>
-                <span className="text-[11px] text-gray-400">支持 .json / .jsonl / .txt 文件</span>
+                <span className="text-[0.75rem] text-gray-400">支持 .json / .jsonl / .txt 文件</span>
               </div>
 
               <Textarea

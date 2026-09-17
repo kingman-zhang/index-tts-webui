@@ -40,6 +40,13 @@ export const api = {
     return fetchJSON(`${BASE}/voices/upload`, { method: "POST", body: form });
   },
 
+  // 导入文档（配音画布）：doc/docx/pdf/txt/md，≤20MB、解析后 ≤1 万字
+  async extractDocument(file: File): Promise<{ text: string; chars: number }> {
+    const form = new FormData();
+    form.append("file", file);
+    return fetchJSON(`${BASE}/mono/extract`, { method: "POST", body: form });
+  },
+
   async renameVoice(oldName: string, newName: string): Promise<{ name: string; path: string }> {
     return fetchJSON(`${BASE}/voices/rename`, {
       method: "POST",

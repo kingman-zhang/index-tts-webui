@@ -61,7 +61,7 @@ export function EmotionEditor({ emotion, onChange, voiceFiles, collapsed, onTogg
               </button>
             ))}
           </div>
-          <p className="text-[11px] text-gray-400 -mt-1">{MODE_DESC[emotion.mode]}</p>
+          <p className="text-[0.75rem] text-gray-400 -mt-1">{MODE_DESC[emotion.mode]}</p>
 
           {/* mode 1: 情感参考音频 */}
           {emotion.mode === 1 && (
@@ -92,7 +92,7 @@ export function EmotionEditor({ emotion, onChange, voiceFiles, collapsed, onTogg
                     key={preset.name}
                     onClick={() => update({ vector: [...preset.vector], weight: preset.weight })}
                     className={cn(
-                      "px-2 py-1 rounded-md text-[11px] border transition-colors",
+                      "px-2 py-1 rounded-md text-[0.75rem] border transition-colors",
                       matchesPreset(emotion, preset)
                         ? "bg-indigo-600 border-indigo-600 text-white"
                         : "bg-white border-gray-200 text-gray-600 hover:border-indigo-300 hover:text-indigo-600"

@@ -99,7 +99,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
   };
 
   const filterButtonClass = (status: string) => cn(
-    "rounded-md px-2 py-1 text-[11px] transition-colors",
+    "rounded-md px-2 py-1 text-[0.75rem] transition-colors",
     activeFilter === status ? "bg-indigo-100 text-indigo-700 ring-1 ring-indigo-200" : "hover:bg-gray-100 text-gray-500"
   );
 
@@ -271,16 +271,16 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
           <div className="flex min-w-0 items-center gap-2">
             <ListVideo className="w-4 h-4 shrink-0 text-indigo-600" />
             <CardTitle>任务队列</CardTitle>
-            <span className="text-[11px] text-gray-400">共 {stats.total} 个</span>
+            <span className="text-[0.75rem] text-gray-400">共 {stats.total} 个</span>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {stats.queued > 0 && (
-              <button onClick={(e) => { e.stopPropagation(); bulkPause(); }} disabled={bulkBusy} className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 disabled:opacity-50" title="暂停全部排队任务">
+              <button onClick={(e) => { e.stopPropagation(); bulkPause(); }} disabled={bulkBusy} className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-[0.75rem] text-gray-600 hover:bg-gray-100 disabled:opacity-50" title="暂停全部排队任务">
                 <Pause className="w-3 h-3" /> 暂停全部
               </button>
             )}
             {stats.paused > 0 && (
-              <button onClick={(e) => { e.stopPropagation(); bulkResume(); }} disabled={bulkBusy} className="inline-flex items-center gap-1 rounded-md border border-indigo-200 px-2 py-1 text-[11px] text-indigo-600 hover:bg-indigo-50 disabled:opacity-50" title="将全部暂停任务重新加入队列">
+              <button onClick={(e) => { e.stopPropagation(); bulkResume(); }} disabled={bulkBusy} className="inline-flex items-center gap-1 rounded-md border border-indigo-200 px-2 py-1 text-[0.75rem] text-indigo-600 hover:bg-indigo-50 disabled:opacity-50" title="将全部暂停任务重新加入队列">
                 <PlayCircle className="w-3 h-3" /> 全部入队
               </button>
             )}
@@ -291,7 +291,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
           <button className={filterButtonClass("failed")} onClick={() => toggleFilter("failed")}>失败 <b>{stats.failed}</b></button>
           <button className={filterButtonClass("queued")} onClick={() => toggleFilter("queued")}>排队 <b>{stats.queued}</b></button>
           <button className={filterButtonClass("paused")} onClick={() => toggleFilter("paused")}>暂停 <b>{stats.paused}</b></button>
-          {activeFilter && <span className="ml-auto text-[10px] text-indigo-500">再次点击可取消筛选</span>}
+          {activeFilter && <span className="ml-auto text-[0.6875rem] text-indigo-500">再次点击可取消筛选</span>}
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -337,7 +337,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                           <GripVertical className="w-3.5 h-3.5 shrink-0 text-gray-300" />
                         )}
                         {isQueued && task.queue_position != null && (
-                          <span className="shrink-0 w-4 h-4 flex items-center justify-center rounded-full bg-indigo-100 text-indigo-600 text-[10px] font-medium">
+                          <span className="shrink-0 w-4 h-4 flex items-center justify-center rounded-full bg-indigo-100 text-indigo-600 text-[0.6875rem] font-medium">
                             {task.queue_position}
                           </span>
                         )}
@@ -368,7 +368,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                         <Badge color={cfg.color as any} className="shrink-0">{cfg.label}</Badge>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
-                        <button onClick={() => viewContent(task)} className="px-1.5 py-0.5 text-[10px] text-gray-500 hover:bg-gray-200 rounded" title="查看任务内容">
+                        <button onClick={() => viewContent(task)} className="px-1.5 py-0.5 text-[0.6875rem] text-gray-500 hover:bg-gray-200 rounded" title="查看任务内容">
                           查看内容
                         </button>
                         {task.status === "success" && task.audio_url && (
@@ -402,7 +402,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                     {/* 进度信息 */}
                     {(task.status === "running" || task.status === "syncing") && task.total_lines > 0 && (
                       <div className="mt-1.5">
-                        <div className="flex items-center justify-between text-[11px] text-gray-500 mb-0.5">
+                        <div className="flex items-center justify-between text-[0.75rem] text-gray-500 mb-0.5">
                           <span>{task.message || `第 ${task.current_line}/${task.total_lines} 行`}</span>
                           <span>{Math.round(task.progress * 100)}%</span>
                         </div>
@@ -417,10 +417,10 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
 
                     {/* 完成信息 */}
                     {task.status === "success" && task.duration_sec && (
-                      <p className="text-[11px] text-gray-500 mt-1">时长 {task.duration_sec.toFixed(1)} 秒</p>
+                      <p className="text-[0.75rem] text-gray-500 mt-1">时长 {task.duration_sec.toFixed(1)} 秒</p>
                     )}
                     {(task.status === "failed" || task.status === "interrupted") && task.error && (
-                      <p className="text-[11px] text-red-500 mt-1 truncate">{task.error}</p>
+                      <p className="text-[0.75rem] text-red-500 mt-1 truncate">{task.error}</p>
                     )}
 
                     {/* 内嵌播放器 */}

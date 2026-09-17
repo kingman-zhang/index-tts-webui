@@ -199,17 +199,17 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
           <input type="text" value={config.name} onChange={e => onChange({ name: e.target.value })}
             className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             placeholder={`主持人${speakerKey}的名字`} />
-          <p className="mt-1 text-[10px] text-gray-400">用于脚本中的说话人标识，并会随当前项目保存。</p>
+          <p className="mt-1 text-[0.6875rem] text-gray-400">用于脚本中的说话人标识，并会随当前项目保存。</p>
         </div>
 
         {showPresetList && savedPresets.length > 0 && (
           <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 space-y-1">
-            <p className="text-[11px] font-medium text-indigo-700 px-1">已保存的角色预设</p>
+            <p className="text-[0.75rem] font-medium text-indigo-700 px-1">已保存的角色预设</p>
             {savedPresets.map(p => (
               <div key={p.id} onClick={() => loadPreset(p.id)} className="flex items-center justify-between px-2 py-1.5 rounded bg-white cursor-pointer hover:bg-indigo-100 group">
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-gray-700 truncate">{p.name}</p>
-                  <p className="text-[10px] text-gray-400 truncate">{p.voice_name}</p>
+                  <p className="text-[0.6875rem] text-gray-400 truncate">{p.voice_name}</p>
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
                   <button onClick={e => renamePreset(p, e)} className="p-1 text-gray-300 hover:text-indigo-600" title="重命名"><Pencil className="w-3 h-3" /></button>
@@ -222,7 +222,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
 
         {showSavePreset && (
           <div className="rounded-lg border border-green-200 bg-green-50 p-2 space-y-2">
-            <Label className="text-[11px] text-green-700">保存当前角色配置（含音色+默认情感）</Label>
+            <Label className="text-[0.75rem] text-green-700">保存当前角色配置（含音色+默认情感）</Label>
             <div className="flex gap-2">
               <input type="text" value={presetName} onChange={e => setPresetName(e.target.value)}
                 className="h-8 flex-1 rounded border border-green-300 bg-white px-2 text-xs" placeholder="如 温柔女声" autoFocus />
@@ -239,7 +239,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
               className="flex-1 accent-indigo-600" />
             <span className="w-12 text-right text-xs font-medium text-gray-600">{config.speed.toFixed(2)}x</span>
           </div>
-          <p className="mt-1 text-[10px] text-gray-400">只影响“{config.name || `角色${speakerKey}`}”的发言，1.0x 为正常速度。</p>
+          <p className="mt-1 text-[0.6875rem] text-gray-400">只影响“{config.name || `角色${speakerKey}`}”的发言，1.0x 为正常速度。</p>
         </div>
 
         <div>
@@ -257,7 +257,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
           <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-50 border border-gray-100">
             <Mic2 className="w-3.5 h-3.5 text-gray-400 shrink-0" />
             <span className="text-xs text-gray-600 truncate flex-1">{config.voice_name}</span>
-            <span className="text-[10px] text-gray-400">{isPresetVoice ? "预设音色" : "我的音色"}</span>
+            <span className="text-[0.6875rem] text-gray-400">{isPresetVoice ? "预设音色" : "我的音色"}</span>
           </div>
         )}
 
@@ -288,7 +288,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
             <span className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
               <Settings2 className="w-3.5 h-3.5 text-indigo-500" /> 默认情感 <Badge color="indigo">{emoBadgeText}</Badge>
             </span>
-            <span className="text-[11px] text-gray-400">新发言行将继承此设置</span>
+            <span className="text-[0.75rem] text-gray-400">新发言行将继承此设置</span>
           </button>
           {!emoCollapsed && (
             <div className="px-2 pb-2">
@@ -316,9 +316,9 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => !uploading && setUploadDialog(null)}>
           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-4 space-y-3" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-semibold text-gray-800">{uploadDialog.mode === "upload" ? "保存上传的音频" : "保存录制的音频"}</h3>
-            <p className="text-[11px] text-gray-400">原始文件: {uploadDialog.file.name}</p>
+            <p className="text-[0.75rem] text-gray-400">原始文件: {uploadDialog.file.name}</p>
             <div>
-              <Label className="text-[11px]">音频名称</Label>
+              <Label className="text-[0.75rem]">音频名称</Label>
               <input type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)}
                 className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm" autoFocus
                 onKeyDown={e => { if (e.key === "Enter") confirmUpload(); }} />

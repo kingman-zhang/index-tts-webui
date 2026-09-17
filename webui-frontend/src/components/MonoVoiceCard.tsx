@@ -3,7 +3,7 @@
  * 视觉：白底大圆角卡片 + 翡翠绿点缀，与画布格调一致。
  */
 import { useEffect, useRef, useState } from "react";
-import { MicVocal, Play, Square, Library, Upload } from "lucide-react";
+import { MicVocal, Play, Square, AudioLines, Upload } from "lucide-react";
 import { Card, CardContent, Button } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 import { api } from "@/api/client";
@@ -35,12 +35,28 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
   const [playing, setPlaying] = useState(false);
   const [playingName, setPlayingName] = useState<string | null>(null);
   const [showVoicePicker, setShowVoicePicker] = useState(false);
+  const [speedText, setSpeedText] = useState(speed.toFixed(2));
   const [presetVoices, setPresetVoices] = useState<PresetVoices>({ female: [], male: [], emotion: [] });
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     api.listPresetVoices().then(r => setPresetVoices(r.categories || { female: [], male: [], emotion: [] })).catch(() => {});
   }, [voiceFiles]);
+
+  // 语速输入框跟随外部状态（如草稿加载）
+  useEffect(() => { setSpeedText(speed.toFixed(2)); }, [speed]);
+
+  // 对数刻度：0.5–2 关于 1.0 对称（log2 空间），1.0x 恰在滑条正中
+  const sliderPos = Math.log2(speed / 0.5) / 2;
+  const fillPct = Math.round(sliderPos * 1000) / 10;
+
+  const commitSpeed = () => {
+    const v = Number.parseFloat(speedText);
+    if (Number.isNaN(v)) { setSpeedText(speed.toFixed(2)); return; }
+    const clamped = Math.min(2, Math.max(0.5, Math.round(v * 100) / 100));
+    onChange({ speed: clamped });
+    setSpeedText(clamped.toFixed(2));
+  };
 
   const preview = (name?: string) => {
     const target = name || voice.voice_name;
@@ -80,53 +96,77 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
   return (
     <Card className="rounded-2xl border-gray-200 shadow-sm">
       <CardContent className="p-5 space-y-4">
-        {/* 音色主体 */}
+        {/* 音色主体：头像悬停即试听/停止 */}
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-full bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0">
-            {voice.voice_name ? (
-              <span className="text-base font-semibold text-emerald-700">
-                {voice.voice_name.replace(/\.[^.]+$/, "").slice(0, 1)}
-              </span>
-            ) : (
-              <MicVocal className="w-5 h-5 text-emerald-500" />
+          <button
+            type="button"
+            onClick={() => preview()}
+            disabled={!voice.voice_name}
+            title={playing ? "停止试听" : "试听"}
+            className="group relative w-11 h-11 rounded-full shrink-0 disabled:cursor-not-allowed"
+          >
+            <div className="w-11 h-11 rounded-full bg-emerald-50 border border-emerald-100 flex items-center justify-center">
+              {voice.voice_name ? (
+                <span className="text-base font-semibold text-emerald-700">
+                  {voice.voice_name.replace(/\.[^.]+$/, "").slice(0, 1)}
+                </span>
+              ) : (
+                <MicVocal className="w-5 h-5 text-emerald-500" />
+              )}
+            </div>
+            {voice.voice_name && (
+              <div className="absolute inset-0 rounded-full bg-emerald-900/45 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                {playing ? (
+                  <Square className="w-4 h-4 text-white fill-white" />
+                ) : (
+                  <Play className="w-4 h-4 text-white fill-white translate-x-[1px]" />
+                )}
+              </div>
             )}
-          </div>
+          </button>
           <div className="min-w-0 flex-1">
             <p className={cn("text-sm font-medium truncate", voice.voice_name ? "text-gray-800" : "text-gray-400")}>
               {voice.voice_name ? voice.voice_name.replace(/\.[^.]+$/, "") : "未选择音色"}
             </p>
-            <p className="text-[11px] text-gray-400 mt-0.5">
-              {voice.voice_name ? "试听确认效果后再生成" : "从预设库选择，或上传参考音频"}
+            <p className="text-[0.75rem] text-gray-400 mt-0.5">
+              {voice.voice_name ? "悬停头像可试听" : "从预设库选择，或上传参考音频"}
             </p>
           </div>
         </div>
 
-        {/* 操作三键 */}
-        <div className="grid grid-cols-3 gap-2">
-          <Button variant="outline" size="sm" icon={Library} onClick={() => setShowVoicePicker(true)}>
+        {/* 操作两键 */}
+        <div className="grid grid-cols-2 gap-2">
+          <Button variant="outline" size="sm" icon={AudioLines} onClick={() => setShowVoicePicker(true)}>
             选择
           </Button>
           <Button variant="outline" size="sm" icon={Upload} onClick={() => fileRef.current?.click()} disabled={uploading}>
             {uploading ? "上传中" : "上传"}
           </Button>
-          <Button variant="outline" size="sm" icon={playing ? Square : Play} onClick={() => preview()} disabled={!voice.voice_name}>
-            {playing ? "停止" : "试听"}
-          </Button>
         </div>
 
-        {/* 语速 */}
+        {/* 语速：对数刻度滑条（1.0x 居中）+ 数值输入 */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-xs font-medium text-gray-600">语速</span>
-            <span className="text-xs font-medium text-gray-600 tabular-nums">{speed.toFixed(2)}x</span>
-          </div>
-          <input
-            type="range" min={0.5} max={2} step={0.05} value={speed}
-            onChange={e => onChange({ speed: Number(e.target.value) })}
-            className="w-full accent-emerald-600"
-          />
-          <div className="flex justify-between text-[10px] text-gray-300 mt-1">
-            <span>0.5x</span><span>1x</span><span>2x</span>
+          <span className="text-xs font-medium text-gray-600">语速</span>
+          <div className="flex items-center gap-2.5 mt-1.5">
+            <input
+              type="range" min={0} max={1} step={0.005} value={sliderPos}
+              onChange={e => {
+                const v = 0.5 * Math.pow(2, Number(e.target.value) * 2);
+                onChange({ speed: Math.round(v * 20) / 20 }); // 吸附到 0.05 步进
+              }}
+              className="flex-1 min-w-0 speed-range"
+              style={{
+                background: `linear-gradient(to right, #10b981 0%, #34d399 ${fillPct}%, #e5e7eb ${fillPct}%, #e5e7eb 100%)`,
+              }}
+            />
+            <input
+              value={speedText}
+              onChange={e => setSpeedText(e.target.value)}
+              onBlur={commitSpeed}
+              onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              inputMode="decimal"
+              className="w-[4.5rem] h-8 text-center text-xs font-medium tabular-nums rounded-lg border border-gray-200 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-colors shrink-0"
+            />
           </div>
         </div>
       </CardContent>

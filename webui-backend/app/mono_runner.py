@@ -9,11 +9,18 @@
   voices: {"A": 参考音频路径}
   params: {speed / speaker_speeds: {A: x}}
 情绪标签为统一 8 标签（EMO_VECTOR_ORDER）+ neutral；缺省/None = 跟随音色。
+
+分段规则（与前端配音画布所见即所得一致）：
+  - 行内停顿 [pause:秒] / <#> 由 backend 的 split_by_pauses 切分并在拼接时
+    插入精确静音，不依赖 tts-server 的行内停顿实现；
+  - autodl.art 引擎先按 2048 字符切满片（chunker.split_for_art），
+    再按停顿切子段（注意：停顿切分会增加 art 的按次提交数）。
 """
 
 from __future__ import annotations
 
 import io
+import re
 import wave
 from pathlib import Path
 
@@ -33,6 +40,58 @@ OUTPUTS_DIR = DATA_DIR / "outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_GAP_MS = 10000  # 单段尾部静音上限，与 tts-server [pause] 钳制一致
+MIN_GAP_MS = 50     # 单个停顿下限，与前端编辑器 0.05s 钳制一致
+
+# 行内停顿标记：[pause:秒]（支持两位小数）与 <#>（固定 0.5 秒）
+PAUSE_TOKEN_RE = re.compile(r"\[pause:\s*([\d.]+)\s*\]|<#>")
+
+
+def split_by_pauses(text: str) -> list[tuple[str, int]]:
+    """按行内停顿标记把合成段切成子段，返回 [(子段文本, 段后静音ms)]。
+
+    与前端配音画布的所见即所得模型对齐：停顿不再交给引擎侧处理
+    （自建引擎依赖 tts-server 的 split_pauses、autodl.art 只能降级成逗号），
+    而是 backend 精确切分并在拼接时插入静音——两个引擎行为一致，
+    且 tts-server 只需最基础的 /api/synthesize 即可。
+
+    规则：
+      - 停顿属于其左侧文字的尾随静音；相邻停顿叠加（连插两个芯片即相加），
+        整体钳制 MAX_GAP_MS；
+      - 行首停顿无法前置（backend 只能做段间静音），顺延为首段尾随静音；
+      - 单个停顿钳制 MIN_GAP_MS–MAX_GAP_MS。
+    """
+    # 先切成 (文字, 其后紧邻停顿ms) 的 token 序列
+    tokens: list[tuple[str, int]] = []
+    last = 0
+    for m in PAUSE_TOKEN_RE.finditer(text):
+        raw = m.group(1)
+        try:
+            sec = float(raw) if raw else 0.5
+        except ValueError:
+            sec = 0.5
+        gap = min(max(int(round(sec * 1000)), MIN_GAP_MS), MAX_GAP_MS)
+        tokens.append((text[last:m.start()], gap))
+        last = m.end()
+    tokens.append((text[last:], 0))
+
+    pieces: list[list] = []  # [子段文本, 段后静音ms]
+    pending = 0  # 距上一个非空子段以来累积的停顿
+    for seg, gap in tokens:
+        if seg.strip():
+            if pieces:
+                # 之前累积的停顿位于上一个子段与本段之间 → 归入上一个子段尾部
+                pieces[-1][1] = min(pieces[-1][1] + pending, MAX_GAP_MS)
+                pending = gap
+            else:
+                # 首个子段：行首停顿无法前置，顺延为其尾随静音（保留总时长）
+                pending = min(pending + gap, MAX_GAP_MS)
+            pieces.append([seg.strip(), 0])
+        else:
+            pending = min(pending + gap, MAX_GAP_MS)
+    # 段尾剩余停顿并入最后子段
+    if pieces and pending:
+        pieces[-1][1] = min(pieces[-1][1] + pending, MAX_GAP_MS)
+    return [(seg_text, gap) for seg_text, gap in pieces]
 
 
 def build_registry() -> EngineRegistry:
@@ -131,14 +190,17 @@ async def run_mono_task(task: dict) -> None:
         # autodl.art 按次计费且单次 ≤2048 字符：切满片省费用；自建引擎整段交给模型侧分段
         pieces = split_for_art(text) if engine.name == "indextts_art" else [text]
         for piece in pieces:
-            audio = await engine.synthesize_segment(
-                SegmentRequest(text=piece, voice=voice, emotion_label=emotion_label, speed=speed)
-            )
-            chunks.append(audio)
-            gaps.append(0)
+            # 行内停顿由 backend 统一切分并插静音（与前端画布所见即所得一致，
+            # 不依赖 tts-server 的行内停顿实现）
+            for sub_text, gap_ms in split_by_pauses(piece):
+                audio = await engine.synthesize_segment(
+                    SegmentRequest(text=sub_text, voice=voice, emotion_label=emotion_label, speed=speed)
+                )
+                chunks.append(audio)
+                gaps.append(gap_ms)
         gap_ms = int(line.get("silence_after_ms") or 0)
         if gap_ms > 0:
-            gaps[-1] = min(gap_ms, MAX_GAP_MS)
+            gaps[-1] = min(gaps[-1] + gap_ms, MAX_GAP_MS) if gaps else min(gap_ms, MAX_GAP_MS)
         task["progress"] = round((idx + 1) / total, 4)
         task["current_line"] = idx + 1
         task["message"] = f"已合成 {idx + 1}/{total} 段"

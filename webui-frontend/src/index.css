@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── 全局字号旋钮：Tailwind 全部用 rem，改这一个数即可整体缩放 ───
+   16px = 默认；当前 18px（整体 +12.5%）。觉得还小就调到 19-20px。 */
+html {
+  font-size: 18px;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -81,6 +87,34 @@ input[type="range"]::-moz-range-thumb {
   border: 2px solid white;
 }
 
+/* ─── 语速滑条：左侧已填充颜色由内联渐变控制，这里定义轨道与拇指 ─── */
+.speed-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+}
+.speed-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #10b981;
+  border: 2.5px solid white;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+}
+.speed-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #10b981;
+  border: 2.5px solid white;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+}
+
 /* ─── 配音画布：行内标记芯片（contentEditable 内的不可编辑块） ─── */
 .mono-chip {
   display: inline-flex;
@@ -91,7 +125,7 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 9999px;
   border-width: 1px;
   border-style: solid;
-  font-size: 15px;
+  font-size: 0.9375rem; /* 与画布正文 text-[0.9375rem] 保持一致，随根字号缩放 */
   font-weight: 500;
   line-height: 1.55;
   vertical-align: baseline;
@@ -101,6 +135,12 @@ input[type="range"]::-moz-range-thumb {
 }
 .mono-chip:hover {
   box-shadow: 0 0 0 2px rgb(16 185 129 / 0.15);
+}
+
+/* 芯片可点击（弹出更换/删除/时长编辑浮层） */
+.mono-chip {
+  cursor: pointer;
+  user-select: none;
 }
 .mono-chip-pause {
   border-color: #e5e7eb;

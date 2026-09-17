@@ -1,9 +1,14 @@
 /**
  * 配音模式编辑器：contentEditable 所见即所得画布（MiniMax 式作用域模型）。
- * - 情绪芯片【喜悦】是作用域起点：其后直到下一个芯片/行尾的文字带淡色高亮，
+ * - 情绪芯片【喜悦】是作用域起点：其后直到【/】终止符/下一个芯片/行尾的文字带淡色高亮，
  *   一行内可有多个情绪段；已覆盖区域内禁止再插情绪（不支持嵌套/叠加）。
+ *   选区套情绪时作用域终点以【/】写进标记文本（换情绪/刷新/撤销/提交都不丢范围）。
  * - 停顿 [pause:1] 是点状芯片，可插在任意位置（含作用域内）。
+ * - 点击芯片弹出浮层：情绪芯片可更换情绪或删除；停顿芯片可选预设时长
+ *   （0.25/0.5/1.0/1.5s）、自定义（两位小数，0.05–5s）或删除。
  * - 光标紧邻芯片按 Backspace/Delete 时整块删除，所属行重渲染以更新作用域归属。
+ * - 程序化 DOM 修改会破坏浏览器原生 undo 栈，因此自维护 undo/redo
+ *   （Cmd/Ctrl+Z 撤回、Cmd/Ctrl+Shift+Z 或 Ctrl+Y 重做），恢复文本与光标。
  * 画布 DOM 是显示层，标记文本（props.text）仍是唯一真源。
  */
 import { useEffect, useRef, useState } from "react";
@@ -13,13 +18,21 @@ import {
   Sparkles,
   Loader2,
   AlertCircle,
+  X,
+  FileUp,
+  CloudUpload,
 } from "lucide-react";
 import {
   MONO_EMOTION_META,
   MONO_EMOTION_MARKERS,
+  MONO_SCOPE_END,
   textToMonoLines,
 } from "@/types";
+import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
+
+/** 导入文档限制：≤20MB、解析后 ≤1 万字 */
+const IMPORT_MAX_BYTES = 20 * 1024 * 1024;
 
 interface MonoEditorProps {
   text: string;
@@ -45,10 +58,15 @@ function escapeHtml(s: string): string {
 const PAUSE_TOKEN_RE = /\[pause:\s*([\d.]+)\s*\]/g;
 const EMOTION_TOKEN_RE = /【[^【】]+】/g;
 
+/** 秒数 → 标记字符串：两位小数、去掉多余尾零（0.50→"0.5"、1.00→"1"） */
+function fmtSec(v: number): string {
+  return String(Math.round(v * 100) / 100);
+}
+
 function pauseChipHtml(sec: string): string {
   return (
     `<span contenteditable="false" data-marker="[pause:${sec}]" ` +
-    `class="mono-chip mono-chip-pause"><i class="not-italic" style="font-size:12px">⏸</i>${sec}s</span>`
+    `class="mono-chip mono-chip-pause"><i class="not-italic" style="font-size:0.72em">⏸</i>${sec}s</span>`
   );
 }
 
@@ -61,7 +79,7 @@ function emotionChipHtml(meta: EmotionMeta): string {
   );
 }
 
-/** 无情绪区间：[pause] 转芯片、未知【xx】按普通文本转义 */
+/** 无情绪区间：[pause] 转芯片、未知【xx】按普通文本转义；【/】终止符不渲染 */
 function renderPlain(txt: string, pauseAsChip: boolean): string {
   if (!txt) return "";
   let inner = "";
@@ -72,35 +90,54 @@ function renderPlain(txt: string, pauseAsChip: boolean): string {
     inner += pauseAsChip ? pauseChipHtml(p[1]) : escapeHtml(p[0]);
     last = i + p[0].length;
   }
-  inner += escapeHtml(txt.slice(last));
+  inner += escapeHtml(txt.slice(last).split(MONO_SCOPE_END).join(""));
   return inner;
 }
 
-/** 单行标记文本 → 行内 HTML；情绪芯片后的文字包进作用域高亮 span */
+/**
+ * 单行标记文本 → 行内 HTML。
+ * 作用域终点 = 【/】终止符、下一个情绪标记、或行尾三者中最早出现的；
+ * 无【/】时与旧语义一致（到下一个标记/行尾），旧草稿无缝兼容。
+ */
 function lineToHtml(line: string): string {
-  const chips: { idx: number; end: number; meta: EmotionMeta }[] = [];
+  type Ev = { idx: number; end: number; kind: "emo" | "end"; meta?: EmotionMeta };
+  const events: Ev[] = [];
   for (const m of line.matchAll(EMOTION_TOKEN_RE)) {
+    const idx = m.index ?? 0;
+    if (m[0] === MONO_SCOPE_END) {
+      events.push({ idx, end: idx + m[0].length, kind: "end" });
+      continue;
+    }
     const value = MONO_EMOTION_MARKERS[m[0].slice(1, -1)];
     const meta = value ? MONO_EMOTION_META[value] : null;
-    if (meta) chips.push({ idx: m.index ?? 0, end: (m.index ?? 0) + m[0].length, meta });
+    if (meta) events.push({ idx, end: idx + m[0].length, kind: "emo", meta });
   }
+  events.sort((a, b) => a.idx - b.idx);
+
   let out = "";
   let pos = 0;
-  for (let i = 0; i <= chips.length; i++) {
-    const segEnd = i < chips.length ? chips[i].idx : line.length;
-    const seg = line.slice(pos, segEnd);
-    const scopeMeta = i > 0 ? chips[i - 1].meta : null;
-    const inner = renderPlain(seg, true);
-    if (scopeMeta && inner) {
-      out += `<span class="mono-scope ${scopeMeta.scope}">${inner}</span>`;
+  let scopeMeta: EmotionMeta | null = null;
+  const emit = (stop: number) => {
+    if (stop > pos) {
+      // 段内可能残留未知【xx】（保留为文本）；终止符/情绪标记已被段边界切开，不会出现
+      const inner = renderPlain(line.slice(pos, stop), true);
+      if (inner) {
+        out += scopeMeta ? `<span class="mono-scope ${scopeMeta.scope}">${inner}</span>` : inner;
+      }
+    }
+    pos = stop;
+  };
+  for (const ev of events) {
+    emit(ev.idx);
+    if (ev.kind === "emo") {
+      out += emotionChipHtml(ev.meta!);
+      scopeMeta = ev.meta!;
     } else {
-      out += inner;
+      scopeMeta = null; // 【/】：作用域显式终止，其后文字跟随音色
     }
-    if (i < chips.length) {
-      out += emotionChipHtml(chips[i].meta);
-      pos = chips[i].end;
-    }
+    pos = ev.end;
   }
+  emit(line.length);
   return out;
 }
 
@@ -112,12 +149,27 @@ export function markerTextToHtml(text: string): string {
     .join("");
 }
 
+/** BR 的序列化语义：行 div 内的 BR 是空行占位符（空字符串），
+ *  画布根级裸文本结构的 BR 才代表换行（"\n"）。三者（序列化/偏移统计/光标恢复）必须一致 */
+function brSerChar(node: Node): string {
+  const p = node.parentElement?.tagName;
+  return p === "DIV" || p === "P" ? "" : "\n";
+}
+
 function serializeInline(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
   if (!(node instanceof HTMLElement)) return "";
   const marker = node.getAttribute("data-marker");
   if (marker) return marker;
-  if (node.tagName === "BR") return "\n";
+  if (node.tagName === "BR") return brSerChar(node);
+  // 作用域 span 是模型的一部分：序列化时输出终止符，把作用域终点写进文本真源
+  if (node.classList.contains("mono-scope")) {
+    let inner = "";
+    node.childNodes.forEach(n => {
+      inner += serializeInline(n);
+    });
+    return inner + MONO_SCOPE_END;
+  }
   let out = "";
   node.childNodes.forEach(n => {
     out += serializeInline(n);
@@ -147,10 +199,10 @@ function serializeCanvas(root: HTMLElement): string {
     }
     cur += serializeInline(n);
   });
-  lines.push(cur);
+  // 末节点是行 div/BR 时 cur 已 flush 过（为空），再 push 会凭空多出一个尾部换行
+  if (cur.length > 0 || lines.length === 0) lines.push(cur);
   return lines.join("\n");
 }
-
 /** target 节点之前的标记文本长度（chip 按 marker 长度计） */
 function serializeBefore(root: HTMLElement, target: Node): number {
   let acc = 0;
@@ -167,7 +219,7 @@ function serializeBefore(root: HTMLElement, target: Node): number {
         return false;
       }
       if (node.tagName === "BR") {
-        acc += 1;
+        acc += brSerChar(node).length;
         return false;
       }
       for (const c of Array.from(node.childNodes)) {
@@ -178,6 +230,22 @@ function serializeBefore(root: HTMLElement, target: Node): number {
   };
   walk(root);
   return acc;
+}
+
+/** 当前光标的标记文本偏移（undo 恢复用）；不在画布内返回 null */
+function caretOffsetIn(root: HTMLElement): number | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const r = sel.getRangeAt(0);
+  if (!root.contains(r.startContainer)) return null;
+  if (r.startContainer.nodeType === Node.TEXT_NODE) {
+    return serializeBefore(root, r.startContainer) + r.startOffset;
+  }
+  if (r.startContainer instanceof HTMLElement) {
+    const child = r.startContainer.childNodes[r.startOffset] ?? null;
+    return child ? serializeBefore(root, child) : serializeBefore(root, r.startContainer);
+  }
+  return null;
 }
 
 /** 把光标放到标记文本偏移 offset 处（chip 按整体计，落点在中间时放到其后；支持画布级跨行） */
@@ -221,7 +289,7 @@ function setCaretAtMarkerOffset(root: HTMLElement, offset: number): void {
         return false;
       }
       if (node.tagName === "BR") {
-        rest -= 1;
+        rest -= brSerChar(node).length;
         return false;
       }
       // 行容器：递归内容后补换行长度（serializeCanvas 的行由块级元素边界决定）
@@ -308,32 +376,72 @@ function lineOfNode(node: Node, canvas: HTMLElement): HTMLElement | null {
 // ─── 组件 ───────────────────────────────────────────────────
 
 const TOOL_BTN =
-  "inline-flex items-center gap-1 h-8 px-3 rounded-full border border-gray-200 bg-white text-xs text-gray-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed";
+  "inline-flex items-center gap-1 h-8 px-3 rounded-full border border-gray-200 bg-white text-xs text-gray-600 whitespace-nowrap shrink-0 transition-colors hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed";
 
-function formatDur(sec: number): string {
-  if (sec < 60) return `${sec} 秒`;
-  return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+/** 停顿预设（秒），与 MiniMax 一致 + 自定义 */
+const PAUSE_PRESETS = [0.25, 0.5, 1.0, 1.5];
+const PAUSE_MIN = 0.05;
+const PAUSE_MAX = 5;
+
+type Popover =
+  | { kind: "emotion"; chip: HTMLElement; rect: DOMRect }
+  | { kind: "pause"; chip: HTMLElement; rect: DOMRect; sec: number };
+
+interface HistoryEntry {
+  text: string;
+  caret: number | null;
 }
-
-/** 预估时长：汉语播报约 4.3 字/秒（含标点停顿，粗估值） */
-const CHARS_PER_SEC = 4.3;
 
 export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error }: MonoEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const textRef = useRef(text);
+  const undoStack = useRef<HistoryEntry[]>([]);
+  const redoStack = useRef<HistoryEntry[]>([]);
   const [emoOpen, setEmoOpen] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
+  const [popover, setPopover] = useState<Popover | null>(null);
+  const [customSec, setCustomSec] = useState("");
+  const [customOpen, setCustomOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
 
   const parsed = textToMonoLines(text);
   const totalChars = parsed.reduce(
     (acc, l) => acc + l.text.replace(/\[pause:\s*[\d.]+\s*\]/g, "").length,
     0
   );
-  const estSec = Math.round(totalChars / CHARS_PER_SEC);
   const isEmpty = text.trim().length === 0;
 
-  // 外部 text 变化（导入/草稿迁移）时同步画布 DOM；
+  // ─── 导入文档（弹窗上传/拖拽；doc/docx/pdf/txt/md → 纯文本填充画布） ──────
+  const handleImportFile = async (file: File) => {
+    if (file.size > IMPORT_MAX_BYTES) {
+      setImportError("文件超过 20MB 上限");
+      return;
+    }
+    if (textRef.current.trim() && !window.confirm("导入将替换当前文稿内容，是否继续？")) return;
+    setImportError(null);
+    setImporting(true);
+    try {
+      const r = await api.extractDocument(file);
+      // 入 undo 栈，导入后可 Cmd+Z 撤回
+      undoStack.current.push({ text: textRef.current, caret: null });
+      if (undoStack.current.length > 100) undoStack.current.shift();
+      redoStack.current = [];
+      onChange(r.text);
+      setImportOpen(false);
+    } catch (e: any) {
+      setImportError(`导入失败：${e.message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // 外部 text 变化（导入/草稿迁移/undo 恢复）时同步画布 DOM；
   // 内部输入触发的 onChange 会在这里因 serialize 相等而被跳过，不扰动光标。
   useEffect(() => {
     const el = canvasRef.current;
@@ -344,10 +452,66 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     }
   }, [text]);
 
+  // text 变化后芯片 DOM 可能已被替换，弹窗引用失效 → 关闭
+  useEffect(() => {
+    textRef.current = text;
+    setPopover(null);
+    setCustomOpen(false);
+  }, [text]);
+
+  // 弹窗打开时支持 Esc 关闭
+  useEffect(() => {
+    if (!popover) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPopover(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [popover]);
+
   const showHint = (msg: string) => {
     setHint(msg);
     if (hintTimer.current) clearTimeout(hintTimer.current);
     hintTimer.current = setTimeout(() => setHint(null), 2500);
+  };
+
+  // ─── undo / redo（自维护栈；程序化 DOM 修改会破坏浏览器原生 undo）───
+
+  const applyHistory = (entry: HistoryEntry) => {
+    textRef.current = entry.text;
+    onChange(entry.text); // 触发 App 状态更新 → useEffect 重渲染画布
+    requestAnimationFrame(() => {
+      const el = canvasRef.current;
+      if (!el) return;
+      if (serializeCanvas(el) !== entry.text) {
+        el.innerHTML = markerTextToHtml(entry.text);
+      }
+      if (entry.caret !== null) setCaretAtMarkerOffset(el, entry.caret);
+      savedRange.current = null;
+      saveSelection();
+    });
+  };
+
+  const undo = () => {
+    const entry = undoStack.current.pop();
+    if (!entry) {
+      showHint("没有可撤回的编辑");
+      return;
+    }
+    const el = canvasRef.current;
+    redoStack.current.push({ text: textRef.current, caret: el ? caretOffsetIn(el) : null });
+    applyHistory(entry);
+  };
+
+  const redo = () => {
+    const entry = redoStack.current.pop();
+    if (!entry) {
+      showHint("没有可重做的编辑");
+      return;
+    }
+    const el = canvasRef.current;
+    undoStack.current.push({ text: textRef.current, caret: el ? caretOffsetIn(el) : null });
+    applyHistory(entry);
   };
 
   const emitChange = () => {
@@ -357,7 +521,15 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     el.querySelectorAll(".mono-scope").forEach(sp => {
       if ((sp.textContent?.length ?? 0) === 0 && !sp.querySelector("[data-marker]")) sp.remove();
     });
-    onChange(serializeCanvas(el));
+    const newText = serializeCanvas(el);
+    const prev = textRef.current;
+    if (newText === prev) return;
+    // 入 undo 栈（记录当前光标，撤回时恢复）
+    undoStack.current.push({ text: prev, caret: caretOffsetIn(el) });
+    if (undoStack.current.length > 100) undoStack.current.shift();
+    redoStack.current = [];
+    textRef.current = newText;
+    onChange(newText);
   };
 
   const saveSelection = () => {
@@ -391,6 +563,60 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     return true;
   };
 
+  // ─── 行重渲染与芯片操作 ────────────────────────────────────
+
+  /** 重渲染单个行容器（更新作用域归属/配色）；裸文本结构时重渲染整个画布 */
+  const rerenderLine = (line: HTMLElement) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (line === canvas) {
+      canvas.innerHTML = markerTextToHtml(serializeCanvas(canvas));
+    } else {
+      line.innerHTML = lineToHtml(serializeCanvas(line));
+    }
+  };
+
+  /** 删除芯片并重渲染所属行，光标落回原芯片位置 */
+  const deleteChip = (chip: HTMLElement) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const line = lineOfNode(chip, canvas) ?? canvas;
+    const before = serializeBefore(line, chip);
+    chip.remove();
+    rerenderLine(line);
+    setCaretAtMarkerOffset(line, before);
+    saveSelection();
+    emitChange();
+  };
+
+  /** 更换情绪芯片（替换 marker 与配色，重渲染行更新作用域颜色） */
+  const replaceEmotionChip = (chip: HTMLElement, meta: EmotionMeta) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const line = lineOfNode(chip, canvas) ?? canvas;
+    const before = serializeBefore(line, chip);
+    chip.replaceWith(htmlToElement(emotionChipHtml(meta)));
+    rerenderLine(line);
+    setCaretAtMarkerOffset(line, before);
+    saveSelection();
+    emitChange();
+  };
+
+  /** 修改停顿芯片时长（支持两位小数） */
+  const updatePauseChip = (chip: HTMLElement, sec: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const line = lineOfNode(chip, canvas) ?? canvas;
+    const before = serializeBefore(line, chip);
+    chip.replaceWith(htmlToElement(pauseChipHtml(fmtSec(sec))));
+    rerenderLine(line);
+    setCaretAtMarkerOffset(line, before);
+    saveSelection();
+    emitChange();
+  };
+
+  // ─── 光标处插入 ────────────────────────────────────────────
+
   /** 光标是否处于某个情绪作用域内（含 scope 尾边界） */
   const caretInScope = (): boolean => {
     const sel = window.getSelection();
@@ -407,10 +633,30 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     return false;
   };
 
-  /** 在光标处插入停顿芯片（允许插在作用域内） */
+  /** 在光标处插入停顿芯片（允许插在作用域内）。
+   *  手动 DOM 插入而非 execCommand("insertHTML")：后者在行首/空行等边界会把
+   *  块级元素拆开造成"自动多出一行"，且光标可能落回错误位置（如标点之后）。 */
   const insertPause = (html: string) => {
+    const el = canvasRef.current;
+    if (!el) return;
     if (!restoreSelection()) return;
-    document.execCommand("insertHTML", false, html);
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const r = sel.getRangeAt(0);
+    const chip = htmlToElement(html);
+    r.deleteContents();
+    r.insertNode(chip);
+    // 空行占位 <br> 清理：整行只剩芯片时移除行内 br，避免序列化出幽灵换行
+    const line = chip.parentElement;
+    if (line && line !== el && (line.textContent ?? "").trim() === "") {
+      line.querySelectorAll("br").forEach(br => br.remove());
+    }
+    // 光标停在芯片正后方
+    const after = document.createRange();
+    after.setStartAfter(chip);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
     saveSelection();
     emitChange();
   };
@@ -492,28 +738,47 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     emitChange();
   };
 
-  // 紧邻芯片时整块删除，并重渲染所属行以更新作用域归属
+  // 键盘：undo/redo 快捷键 + 紧邻芯片整块删除
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (k === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
+    }
     if (e.key !== "Backspace" && e.key !== "Delete") return;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return; // 有选区时浏览器默认整体删
     const chip = adjacentChip(sel.getRangeAt(0), e.key === "Backspace" ? -1 : 1);
     if (!chip) return;
     e.preventDefault();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    // 行容器：画布的行 div；裸文本结构时为画布自身
-    const line = lineOfNode(chip, canvas) ?? canvas;
-    const before = serializeBefore(line, chip);
-    chip.remove();
-    if (line === canvas) {
-      canvas.innerHTML = markerTextToHtml(serializeCanvas(canvas));
+    deleteChip(chip);
+  };
+
+  // 点击芯片弹出编辑浮层（不移动光标）
+  const handleCanvasMouseDown = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const chip = target.closest?.("[data-marker]") as HTMLElement | null;
+    if (!chip || !canvasRef.current?.contains(chip)) return;
+    e.preventDefault();
+    const marker = chip.getAttribute("data-marker") ?? "";
+    if (marker.startsWith("【")) {
+      setPopover({ kind: "emotion", chip, rect: chip.getBoundingClientRect() });
     } else {
-      line.innerHTML = lineToHtml(serializeCanvas(line));
+      const m = marker.match(/\[pause:\s*([\d.]+)\s*\]/);
+      const sec = m ? parseFloat(m[1]) : 1;
+      setCustomSec(m ? fmtSec(sec) : "1");
+      setCustomOpen(false);
+      setPopover({ kind: "pause", chip, rect: chip.getBoundingClientRect(), sec });
     }
-    setCaretAtMarkerOffset(line, before);
-    saveSelection();
-    emitChange();
   };
 
   // 粘贴一律转纯文本，避免外部 HTML 破坏芯片结构
@@ -521,6 +786,31 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     e.preventDefault();
     const txt = e.clipboardData.getData("text/plain");
     document.execCommand("insertText", false, txt);
+  };
+
+  // ─── 芯片弹窗 ──────────────────────────────────────────────
+
+  /** 弹窗 fixed 定位：贴芯片下方，右缘不越出视口 */
+  const popoverStyle = (rect: DOMRect, width: number): React.CSSProperties => ({
+    left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 12)),
+    top: rect.bottom + 6,
+  });
+
+  const curEmotionValue = (() => {
+    if (popover?.kind !== "emotion") return null;
+    const label = (popover.chip.getAttribute("data-marker") ?? "").slice(1, -1);
+    return MONO_EMOTION_MARKERS[label] ?? null;
+  })();
+
+  const applyCustomPause = () => {
+    if (popover?.kind !== "pause") return;
+    const v = parseFloat(customSec);
+    if (!Number.isFinite(v) || v < PAUSE_MIN || v > PAUSE_MAX) {
+      showHint(`停顿时长需在 ${PAUSE_MIN}–${PAUSE_MAX} 秒之间（支持两位小数）`);
+      return;
+    }
+    updatePauseChip(popover.chip, v);
+    setPopover(null);
   };
 
   return (
@@ -539,12 +829,13 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
               "在这里粘贴或输入要配音的文稿……\n每行一段；行首加【喜悦】等情绪标记，行内可插入停顿。"
             }
             className={cn(
-              "mono-canvas w-full min-h-full text-[15px] leading-8 text-gray-800",
+              "mono-canvas w-full min-h-full text-[0.9375rem] leading-8 text-gray-800",
               isEmpty && "text-gray-300"
             )}
             onInput={emitChange}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            onMouseDown={handleCanvasMouseDown}
             onKeyUp={saveSelection}
             onMouseUp={saveSelection}
             onFocus={saveSelection}
@@ -600,23 +891,37 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
           <button
             type="button"
             onMouseDown={e => e.preventDefault()}
-            onClick={() => insertPause(pauseChipHtml("1"))}
+            onClick={() => insertPause(pauseChipHtml("0.5"))}
             className={TOOL_BTN}
           >
             <Pause className="w-3.5 h-3.5" />
-            停顿 1s
+            停顿 0.5s
           </button>
+          <button
+            type="button"
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => {
+              setImportError(null);
+              setImportOpen(true);
+            }}
+            disabled={importing}
+            className={TOOL_BTN}
+          >
+            {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileUp className="w-3.5 h-3.5" />}
+            导入
+          </button>
+          <input ref={fileRef} type="file" accept=".doc,.docx,.pdf,.txt,.md" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleImportFile(f); e.target.value = ""; }} />
 
-          <div className="ml-auto flex items-center gap-4">
-            <span className="text-xs text-gray-400 tabular-nums hidden sm:inline">
+          <div className="ml-auto flex items-center gap-4 shrink-0">
+            <span className="text-xs text-gray-400 tabular-nums whitespace-nowrap hidden sm:inline">
               {totalChars} 字 · {parsed.length} 段
-              {estSec > 0 && <span className="hidden md:inline"> · 约 {formatDur(estSec)}</span>}
             </span>
             <button
               type="button"
               onClick={onGenerate}
               disabled={!canGenerate || generating}
-              className="inline-flex items-center gap-1.5 h-9 px-5 rounded-full bg-emerald-600 text-white text-sm font-medium shadow-sm transition-colors hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-1.5 h-9 px-5 rounded-full bg-emerald-600 text-white text-sm font-medium whitespace-nowrap shrink-0 shadow-sm transition-colors hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {generating ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -628,6 +933,229 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
           </div>
         </div>
       </div>
+
+      {/* 情绪芯片弹窗：更换情绪 / 删除 */}
+      {popover?.kind === "emotion" && (
+        <>
+          <div className="fixed inset-0 z-30" onMouseDown={() => setPopover(null)} />
+          <div
+            className="fixed z-40 w-60 rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
+            style={popoverStyle(popover.rect, 240)}
+          >
+            <div className="flex items-center justify-between px-1 pb-1.5 mb-1.5 border-b border-gray-100">
+              {(() => {
+                const cur = curEmotionValue ? MONO_EMOTION_META[curEmotionValue] : null;
+                return cur ? (
+                  <span className={cn("mono-chip", cur.chip)}>
+                    <i className={cn("not-italic w-1.5 h-1.5 rounded-full", cur.dot)} />
+                    {cur.label}
+                  </span>
+                ) : (
+                  <span className="text-xs text-gray-400">情绪</span>
+                );
+              })()}
+              <button
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => {
+                  deleteChip(popover.chip);
+                  setPopover(null);
+                }}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                删除
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {Object.entries(MONO_EMOTION_META).map(([value, m]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => {
+                    if (popover.chip.isConnected) replaceEmotionChip(popover.chip, m);
+                    setPopover(null);
+                  }}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs text-left transition-colors",
+                    value === curEmotionValue
+                      ? cn(m.chip, "font-medium ring-1 ring-gray-300")
+                      : "text-gray-600 hover:bg-gray-50"
+                  )}
+                >
+                  <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", m.dot)} />
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 停顿芯片弹窗：预设时长 / 自定义 / 删除 */}
+      {popover?.kind === "pause" && (
+        <>
+          <div className="fixed inset-0 z-30" onMouseDown={() => setPopover(null)} />
+          <div
+            className="fixed z-40 w-64 rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
+            style={popoverStyle(popover.rect, 256)}
+          >
+            <div className="flex items-center justify-between px-1 pb-1.5 mb-1.5 border-b border-gray-100">
+              <span className="mono-chip mono-chip-pause">
+                <i className="not-italic" style={{ fontSize: "0.72em" }}>⏸</i>
+                {fmtSec(popover.sec)}s
+              </span>
+              <button
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => {
+                  deleteChip(popover.chip);
+                  setPopover(null);
+                }}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-red-600 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+                删除
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              {PAUSE_PRESETS.map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => {
+                    if (popover.chip.isConnected) updatePauseChip(popover.chip, s);
+                    setPopover(null);
+                  }}
+                  className={cn(
+                    "flex-1 h-7 rounded-lg text-xs tabular-nums transition-colors",
+                    Math.abs(popover.sec - s) < 0.005
+                      ? "bg-emerald-600 text-white font-medium"
+                      : "bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700"
+                  )}
+                >
+                  {fmtSec(s)}s
+                </button>
+              ))}
+              <button
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => setCustomOpen(v => !v)}
+                className={cn(
+                  "h-7 px-2 rounded-lg text-xs transition-colors",
+                  customOpen
+                    ? "bg-emerald-600 text-white font-medium"
+                    : "bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700"
+                )}
+              >
+                自定义
+              </button>
+            </div>
+            {customOpen && (
+              <div className="mt-2 flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step={0.01}
+                  min={PAUSE_MIN}
+                  max={PAUSE_MAX}
+                  value={customSec}
+                  onChange={e => setCustomSec(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      applyCustomPause();
+                    }
+                  }}
+                  autoFocus
+                  className="w-20 h-7 px-2 rounded-lg border border-gray-300 text-xs tabular-nums focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+                <span className="text-[0.75rem] text-gray-400">秒（{PAUSE_MIN}–{PAUSE_MAX}）</span>
+                <button
+                  type="button"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={applyCustomPause}
+                  className="ml-auto h-7 px-3 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-500 transition-colors"
+                >
+                  确定
+                </button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* 导入文档弹窗：点击/拖拽上传（暂不做 URL 导入） */}
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => { if (!importing) setImportOpen(false); }}
+          />
+          <div className="relative w-full max-w-md rounded-2xl bg-white shadow-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-semibold text-gray-800">导入文档</h3>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => { if (!importing) setImportOpen(false); }}
+                className="p-1 rounded text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-2">上传文件</p>
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => !importing && fileRef.current?.click()}
+              onKeyDown={e => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  if (!importing) fileRef.current?.click();
+                }
+              }}
+              onDragOver={e => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => {
+                e.preventDefault();
+                setDragOver(false);
+                if (importing) return;
+                const f = e.dataTransfer.files?.[0];
+                if (f) handleImportFile(f);
+              }}
+              className={cn(
+                "flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center cursor-pointer transition-colors",
+                dragOver
+                  ? "border-emerald-400 bg-emerald-50"
+                  : "border-gray-200 hover:border-emerald-300 hover:bg-emerald-50/40"
+              )}
+            >
+              {importing ? (
+                <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+              ) : (
+                <CloudUpload className="w-8 h-8 text-emerald-500" />
+              )}
+              <p className="text-sm text-gray-700">
+                {importing ? "正在解析文档…" : "点击或拖拽上传到这里"}
+              </p>
+              <p className="text-xs text-gray-400">
+                支持 .doc / .docx / .pdf / .txt / .md · ≤ 20MB · ≤ 1 万字
+              </p>
+            </div>
+            {importError && (
+              <p className="mt-3 flex items-center gap-1.5 text-xs text-red-600">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {importError}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 错误提示 */}
       {error && (

@@ -135,9 +135,17 @@ export function defaultSilence(): SilenceConfig {
   return { within_segment: 200, between_lines: 300, speaker_switch: 500 };
 }
 
+/** 默认项目名：未命名_YYYYMMDD（本地日期） */
+export function defaultProjectName(): string {
+  const d = new Date();
+  const ymd =
+    `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  return `未命名_${ymd}`;
+}
+
 export function defaultProject(): PodcastProject {
   return {
-    name: "未命名播客",
+    name: defaultProjectName(),
     voices: {
       A: { name: "主持人A", voice_path: null, voice_name: null, speed: 1.0, emotion: defaultEmotion() },
       B: { name: "主持人B", voice_path: null, voice_name: null, speed: 1.0, emotion: defaultEmotion() },
@@ -190,6 +198,14 @@ export const MONO_EMOTION_MARKERS: Record<string, string> = Object.fromEntries(
   Object.entries(MONO_EMOTION_META).map(([value, m]) => [m.label, value])
 );
 
+/**
+ * 情绪作用域终止符：标记选区作用域的结束位置。
+ * 【恐惧】用来充实我们的大脑【/】，比如读书、看电影；
+ * = 「用来充实我们的大脑」是恐惧，「，比如读书、看电影；」跟随音色。
+ * 没有【/】时作用域延伸到下一个情绪标记或行尾（兼容旧格式）。
+ */
+export const MONO_SCOPE_END = "【/】";
+
 export interface MonoParsedLine {
   text: string;
   /** null=跟随音色 */
@@ -198,35 +214,50 @@ export interface MonoParsedLine {
 
 /** 把画布文本解析为后端协议的段列表（作用域语义）。
  *
- * 情绪标记【label】是该作用域的起点：从标记到下一个标记或行尾的文字都使用该情绪。
+ * 情绪标记【label】是作用域起点；作用域终点 = 【/】终止符、下一个情绪标记、
+ * 或行尾三者中最早出现的（无【/】的旧格式按原语义：到下一个标记/行尾）。
  * 因此一行内可以有多个情绪段（MiniMax 式），提交时按标记拆成多个合成段、段间零停顿。
- * 空行跳过；纯标记段跳过；未知【xx】按普通文本保留。
+ * 空行跳过；纯标记段跳过；未知【xx】按普通文本保留；【/】只作结构不进正文。
  */
 export function textToMonoLines(text: string): MonoParsedLine[] {
   const out: MonoParsedLine[] = [];
+  const stripEnds = (s: string) => s.split(MONO_SCOPE_END).join("");
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    // 找出本行所有已知情绪标记的起点
-    const starts: { idx: number; end: number; emotion: string }[] = [];
+    // 收集结构 token：已知情绪标记（起点）与【/】（作用域终点），按位置排序
+    const toks: { idx: number; end: number; kind: "emo" | "end"; emotion?: string }[] = [];
     for (const m of line.matchAll(/【[^【】]+】/g)) {
+      const idx = m.index ?? 0;
+      if (m[0] === MONO_SCOPE_END) {
+        toks.push({ idx, end: idx + m[0].length, kind: "end" });
+        continue;
+      }
       const value = MONO_EMOTION_MARKERS[m[0].slice(1, -1)];
-      if (value !== undefined) starts.push({ idx: m.index ?? 0, end: (m.index ?? 0) + m[0].length, emotion: value });
+      if (value !== undefined) toks.push({ idx, end: idx + m[0].length, kind: "emo", emotion: value });
     }
-    if (starts.length === 0) {
-      out.push({ text: line, emotion_label: null });
+    if (!toks.some(t => t.kind === "emo")) {
+      const t = stripEnds(line).trim();
+      if (t) out.push({ text: t, emotion_label: null });
       continue;
     }
-    // 段：行首→第一个标记（无情绪）；每个标记→下一个标记/行尾
+    // 按 token 切段：token 前的文字属于当前作用域状态（无/上一个情绪）
     const push = (body: string, emotion: string | null) => {
-      const t = body.trim();
+      const t = stripEnds(body).trim();
       if (t) out.push({ text: t, emotion_label: emotion });
     };
-    push(line.slice(0, starts[0].idx), null);
-    for (let i = 0; i < starts.length; i++) {
-      const end = i + 1 < starts.length ? starts[i + 1].idx : line.length;
-      push(line.slice(starts[i].end, end), starts[i].emotion);
+    let curEmotion: string | null = null;
+    let segStart = 0;
+    const flushTo = (stop: number) => {
+      push(line.slice(segStart, stop), curEmotion);
+      segStart = stop;
+    };
+    for (const t of toks) {
+      flushTo(t.idx);
+      curEmotion = t.kind === "emo" ? t.emotion! : null;
+      segStart = t.end;
     }
+    flushTo(line.length);
   }
   return out;
 }

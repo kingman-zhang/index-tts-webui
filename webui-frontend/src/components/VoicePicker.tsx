@@ -183,7 +183,7 @@ export function VoicePicker({
                   </div>
 
                   <span className={cn(
-                    "text-[10px] px-1.5 py-0.5 rounded shrink-0",
+                    "text-[0.6875rem] px-1.5 py-0.5 rounded shrink-0",
                     tab === "mine" ? "bg-indigo-50 text-indigo-600" : "bg-gray-100 text-gray-500"
                   )}>
                     {tab === "mine" ? "我的音色" : tab === "favorites" ? (f.source === "custom" ? "我的音色" : "预设") : "预设"}
@@ -210,7 +210,7 @@ export function VoicePicker({
                     </div>
                   )}
                   {isSelected && (
-                    <span className="text-[10px] text-indigo-500 font-medium shrink-0">已选中</span>
+                    <span className="text-[0.6875rem] text-indigo-500 font-medium shrink-0">已选中</span>
                   )}
                 </div>
               );

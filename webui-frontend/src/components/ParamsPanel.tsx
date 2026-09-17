@@ -47,7 +47,7 @@ export function ParamsPanel({ silence, params, onSilenceChange, onParamsChange }
         <Slider label="说话人切换间隔" min={0} max={1500} step={50}
           value={silence.speaker_switch} unit="ms"
           onChange={v => updSilence({ speaker_switch: v })} />
-        <p className="text-[11px] text-gray-400">
+        <p className="text-[0.75rem] text-gray-400">
           说话人切换时的静音建议稍长（400-600ms），模拟真实对话节奏。
         </p>
       </Section>
@@ -56,13 +56,13 @@ export function ParamsPanel({ silence, params, onSilenceChange, onParamsChange }
         <Slider label="语速" min={0.5} max={2.0} step={0.05}
           value={params.speed} unit="倍"
           onChange={v => updParams({ speed: v })} />
-        <p className="text-[11px] text-gray-400 -mt-1">1.0 为正常语速；数值越大播放越快，数值越小播放越慢。</p>
+        <p className="text-[0.75rem] text-gray-400 -mt-1">1.0 为正常语速；数值越大播放越快，数值越小播放越慢。</p>
         <div>
           <Label>分句最大 Token 数</Label>
           <Input type="number" min={20} max={500} step={10}
             value={params.max_text_tokens_per_segment}
             onChange={e => updParams({ max_text_tokens_per_segment: parseInt(e.target.value) || 120 })} />
-          <p className="text-[11px] text-gray-400 mt-1">控制每段合成的最大长度，过短会增加段数，过长可能降低质量。</p>
+          <p className="text-[0.75rem] text-gray-400 mt-1">控制每段合成的最大长度，过短会增加段数，过长可能降低质量。</p>
         </div>
 
         <div className="flex items-center justify-between pt-1">
@@ -72,11 +72,11 @@ export function ParamsPanel({ silence, params, onSilenceChange, onParamsChange }
 
         <Slider label="Temperature" min={0.1} max={2.0} step={0.1}
           value={params.temperature} onChange={v => updParams({ temperature: v })} />
-        <p className="text-[11px] text-gray-400 -mt-1">建议 0.5-0.7；过高会产生异常音素（如杂音、多余 s 音）。</p>
+        <p className="text-[0.75rem] text-gray-400 -mt-1">建议 0.5-0.7；过高会产生异常音素（如杂音、多余 s 音）。</p>
 
         <Slider label="Top-P" min={0.1} max={1.0} step={0.05}
           value={params.top_p} onChange={v => updParams({ top_p: v })} />
-        <p className="text-[11px] text-gray-400 -mt-1">建议 0.7-0.85；过高会降低稳定性。</p>
+        <p className="text-[0.75rem] text-gray-400 -mt-1">建议 0.7-0.85；过高会降低稳定性。</p>
 
         <div>
           <Label>Top-K（0 = 不限制）</Label>
@@ -94,7 +94,7 @@ export function ParamsPanel({ silence, params, onSilenceChange, onParamsChange }
 
         <Slider label="Repetition Penalty" min={1.0} max={20.0} step={0.5}
           value={params.repetition_penalty} onChange={v => updParams({ repetition_penalty: v })} />
-        <p className="text-[11px] text-gray-400 -mt-1">建议 3-6；过高会导致模型回避常见音素，产生异常发音。</p>
+        <p className="text-[0.75rem] text-gray-400 -mt-1">建议 3-6；过高会导致模型回避常见音素，产生异常发音。</p>
 
         <Slider label="Length Penalty" min={-2.0} max={2.0} step={0.1}
           value={params.length_penalty} onChange={v => updParams({ length_penalty: v })} />

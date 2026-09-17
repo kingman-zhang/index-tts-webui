@@ -80,14 +80,14 @@ export function GlossaryPanel({ collapsed, onToggle }: GlossaryPanelProps) {
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="text-[11px] text-gray-500">
+        <p className="text-[0.75rem] text-gray-500">
           合成时自动替换文本中的术语，解决专有名词发音问题。
         </p>
 
         {/* 添加新术语 */}
         <div className="flex gap-2 items-end">
           <div className="flex-1">
-            <Label className="text-[11px]">原词</Label>
+            <Label className="text-[0.75rem]">原词</Label>
             <Input
               value={newOriginal}
               onChange={e => setNewOriginal(e.target.value)}
@@ -96,7 +96,7 @@ export function GlossaryPanel({ collapsed, onToggle }: GlossaryPanelProps) {
             />
           </div>
           <div className="flex-1">
-            <Label className="text-[11px]">替换为</Label>
+            <Label className="text-[0.75rem]">替换为</Label>
             <Input
               value={newReplacement}
               onChange={e => setNewReplacement(e.target.value)}
