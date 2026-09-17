@@ -56,6 +56,7 @@ DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 # 国内站真机可用的克隆模型（IndexTTS-2 仅国际站，见模块 docstring）
 DEFAULT_MODEL = "FunAudioLLM/CosyVoice2-0.5B"
 MODEL_COSYVOICE2 = "FunAudioLLM/CosyVoice2-0.5B"
+MODEL_MOSS = "fnlp/MOSS-TTSD-v0.5"
 MODEL_ASR = "FunAudioLLM/SenseVoiceSmall"  # 免费额度内，克隆转写自动生成用
 SPEED_MIN, SPEED_MAX = 0.25, 4.0
 SAMPLE_RATE = 24000
@@ -259,12 +260,16 @@ class IndexttsSiliconflowEngine:
         真机实测（2026-09-17 ASR 校验）：CosyVoice2 必须恒加 instruct 前缀——
         不带前缀时克隆音色合成极不稳定（空音频/截断/复读乱码/转写漏出），
         带前缀 4/4 正确，不带 0/6 正常。neutral 用「自然平稳」前缀兜底。
+        MOSS-TTSD 是对话模型，mono 单人模式需 [S1] 说话人标记开头，
+        否则开头会产生插入语（实测）；无情绪控制机制。
         """
-        if model != MODEL_COSYVOICE2:
-            return text
-        if emotion_label and emotion_label != "neutral" and emotion_label in _COSY_EMOTION_PROMPT:
-            return f"请用{_COSY_EMOTION_PROMPT[emotion_label]}的语气说。<|endofprompt|>{text}"
-        return f"请用自然平稳的语气说。<|endofprompt|>{text}"
+        if model == MODEL_COSYVOICE2:
+            if emotion_label and emotion_label != "neutral" and emotion_label in _COSY_EMOTION_PROMPT:
+                return f"请用{_COSY_EMOTION_PROMPT[emotion_label]}的语气说。<|endofprompt|>{text}"
+            return f"请用自然平稳的语气说。<|endofprompt|>{text}"
+        if model == MODEL_MOSS:
+            return text if text.startswith("[S") else f"[S1]{text}"
+        return text
 
     @staticmethod
     def _repair_wav(content: bytes) -> bytes:

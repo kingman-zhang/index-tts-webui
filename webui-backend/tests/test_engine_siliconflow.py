@@ -138,6 +138,11 @@ def main():
     seg.emotion_label = "happy"
     run(eng.synthesize_segment(seg))
     check((api.last_payload or {}).get("input") == "测试文本", "IndexTTS-2 模型忽略情绪标签")
+    eng.model = "fnlp/MOSS-TTSD-v0.5"
+    run(eng.synthesize_segment(seg))
+    check((api.last_payload or {}).get("input") == "[S1]测试文本", "MOSS-TTSD 加 [S1] 说话人前缀")
+    run(eng.synthesize_segment(seg))
+    check((api.last_payload or {}).get("input") == "[S1]测试文本", "MOSS-TTSD 已有标记不重复加")
     eng.model = "FunAudioLLM/CosyVoice2-0.5B"
 
     # 4) 语速钳制
