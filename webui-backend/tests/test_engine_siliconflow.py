@@ -105,11 +105,27 @@ def main():
     check(api.upload_calls == 0, "voice_map 命中不上传")
     p = api.last_payload or {}
     check(p.get("voice") == "speech:mapped:uri:1", "voice 参数使用映射 URI")
-    check(p.get("model") == "IndexTeam/IndexTTS-2", "模型 ID 正确")
-    check(p.get("input") == "测试文本", "input 为纯文本")
+    check(p.get("model") == "FunAudioLLM/CosyVoice2-0.5B", "默认模型为 CosyVoice2（国内站实测可用）")
+    check(
+        p.get("input") == "请用开心喜悦的语气说。<|endofprompt|>测试文本",
+        "happy 情绪 → CosyVoice2 内联提示前缀",
+    )
     check(p.get("response_format") == "wav" and p.get("sample_rate") == 24000, "输出 wav/24k")
     check(abs((p.get("speed") or 0) - 1.5) < 1e-6, "语速透传")
-    check("emotion" not in p, "情绪参数不上传（SiliconFlow 未文档化）")
+    check("emotion" not in p, "无独立 emotion 字段（情绪走 input 内联提示）")
+
+    # 3b) neutral / None 不加前缀；非 CosyVoice2 模型忽略情绪
+    seg.emotion_label = "neutral"
+    run(eng.synthesize_segment(seg))
+    check((api.last_payload or {}).get("input") == "测试文本", "neutral 不加情绪前缀")
+    seg.emotion_label = None
+    run(eng.synthesize_segment(seg))
+    check((api.last_payload or {}).get("input") == "测试文本", "None 不加情绪前缀")
+    eng.model = "IndexTeam/IndexTTS-2"
+    seg.emotion_label = "happy"
+    run(eng.synthesize_segment(seg))
+    check((api.last_payload or {}).get("input") == "测试文本", "IndexTTS-2 模型忽略情绪标签")
+    eng.model = "FunAudioLLM/CosyVoice2-0.5B"
 
     # 4) 语速钳制
     seg.speed = 99
@@ -203,6 +219,91 @@ def main():
             check(False, "上传 401 应报错")
         except RuntimeError:
             check(True, "上传失败报 RuntimeError")
+
+    # 10) 坏头 wav 修复：SiliconFlow 流式 wav 的 data 大小字段=0xFFFFFFFF
+    import io
+    import struct
+    import wave as wavmod
+
+    def make_broken_wav(path, nframes=12000):
+        """生成 data 大小字段损坏的 wav（模拟 SiliconFlow 返回）。"""
+        buf = io.BytesIO()
+        with wavmod.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(b"\x00\x01" * nframes)
+        b = bytearray(buf.getvalue())
+        # 找到 data 块，把大小字段改成 0xFFFFFFFF
+        pos = 12
+        while pos + 8 <= len(b):
+            cid = bytes(b[pos:pos + 4])
+            sz = struct.unpack("<I", b[pos + 4:pos + 8])[0]
+            if cid == b"data":
+                b[pos + 4:pos + 8] = struct.pack("<I", 0xFFFFFFFF)
+                break
+            pos += 8 + sz + (sz & 1)
+        path.write_bytes(bytes(b))
+
+    with tempfile.TemporaryDirectory() as td:
+        broken = Path(td) / "broken.wav"
+        make_broken_wav(broken, nframes=12000)
+        # 直接验证修复函数
+        repaired = IndexttsSiliconflowEngine._repair_wav(broken.read_bytes())
+        with wavmod.open(io.BytesIO(repaired)) as w:
+            check(
+                (w.getnframes(), w.getframerate(), w.getnchannels(), w.getsampwidth())
+                == (12000, 24000, 1, 2),
+                "坏头 wav 修复后帧数/参数正确",
+            )
+        # 正常 wav 不被误改
+        good = Path(td) / "good.wav"
+        make_wav(good)
+        check(
+            IndexttsSiliconflowEngine._repair_wav(good.read_bytes()) == good.read_bytes(),
+            "正常 wav 原样通过",
+        )
+        # 端到端：mock 返回坏头 wav，引擎应返回修复后的
+        api2 = FakeAPI()
+        buf = io.BytesIO()
+        with wavmod.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(b"\x00\x01" * 12000)
+        ba = bytearray(buf.getvalue())
+        pos = 12
+        while pos + 8 <= len(ba):
+            cid = bytes(ba[pos:pos + 4])
+            sz = struct.unpack("<I", ba[pos + 4:pos + 8])[0]
+            if cid == b"data":
+                ba[pos + 4:pos + 8] = struct.pack("<I", 0xFFFFFFFF)
+                break
+            pos += 8 + sz + (sz & 1)
+        api2_broken = bytes(ba)
+        orig_handler = FakeAPI.handler.__func__ if hasattr(FakeAPI.handler, "__func__") else FakeAPI.handler
+
+        def broken_speech_handler(self, request):
+            if request.url.path.endswith("/audio/speech"):
+                self.speech_calls += 1
+                self.last_payload = json.loads(request.content.decode("utf-8"))
+                return httpx.Response(200, headers={"content-type": "audio/wav"}, content=api2_broken)
+            return FakeAPI.handler(self, request)
+
+        eng5 = IndexttsSiliconflowEngine(
+            api_key="sk-test",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: broken_speech_handler(api2, r))),
+            voice_map={"x.mp3": "speech:mapped:x"},
+        )
+        seg5 = SegmentRequest(
+            text="坏头测试",
+            voice=VoiceRef(local_path="/nonexistent/x.mp3", display_name="x.mp3"),
+            emotion_label=None,
+            speed=1.0,
+        )
+        out5 = run(eng5.synthesize_segment(seg5))
+        with wavmod.open(io.BytesIO(out5)) as w:
+            check(w.getnframes() == 12000, "端到端：引擎返回的 wav 已修复（帧数正确）")
 
     print(f"\n===== {PASS} passed, {FAIL} failed =====")
     return 1 if FAIL else 0
