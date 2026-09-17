@@ -31,6 +31,7 @@ from .engines import (
     EngineRegistry,
     IndexttsArtEngine,
     IndexttsLocalEngine,
+    IndexttsSiliconflowEngine,
     SegmentRequest,
     VoiceRef,
 )
@@ -95,9 +96,19 @@ def split_by_pauses(text: str) -> list[tuple[str, int]]:
 
 
 def build_registry() -> EngineRegistry:
-    """配音模式引擎注册表：自建优先，autodl.art 兜底（有 Token 即注册）。"""
+    """配音模式引擎注册表：自建 → SiliconFlow → autodl.art（有 Key/Token 即注册）。
+
+    SiliconFlow 按字节计费（$7.15/M UTF-8 bytes，与调用次数无关），
+    作为 GPU 不在线时的第一备援；autodl.art 按次计费，降级为第二备援。
+    """
+    import os
+
     registry = EngineRegistry()
     registry.register(IndexttsLocalEngine(TTS_URL, http_client))
+    if os.environ.get("SILICONFLOW_API_KEY"):
+        registry.register(
+            IndexttsSiliconflowEngine(cache_path=DATA_DIR / "siliconflow_voices.json")
+        )
     registry.register(IndexttsArtEngine())  # token 从 AUTODL_API_TOKEN 读取
     return registry
 

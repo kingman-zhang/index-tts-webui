@@ -2,6 +2,7 @@ from .base import EMOTION_LABELS, EMO_VECTOR_ORDER, EngineRegistry, SegmentReque
 from .chunker import ART_MAX_CHARS, count_chars, split_for_art
 from .indextts_art import IndexttsArtEngine
 from .indextts_local import IndexttsLocalEngine
+from .indextts_siliconflow import IndexttsSiliconflowEngine
 
 __all__ = [
     "EMOTION_LABELS",
@@ -10,6 +11,7 @@ __all__ = [
     "EngineRegistry",
     "IndexttsArtEngine",
     "IndexttsLocalEngine",
+    "IndexttsSiliconflowEngine",
     "SegmentRequest",
     "TTSEngine",
     "VoiceRef",
