@@ -137,10 +137,10 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
         {/* 操作两键 */}
         <div className="grid grid-cols-2 gap-2">
           <Button variant="outline" size="sm" icon={AudioLines} onClick={() => setShowVoicePicker(true)}>
-            选择
+            选择音色
           </Button>
           <Button variant="outline" size="sm" icon={Upload} onClick={() => fileRef.current?.click()} disabled={uploading}>
-            {uploading ? "上传中" : "上传"}
+            {uploading ? "上传中" : "上传本地音色"}
           </Button>
         </div>
 
