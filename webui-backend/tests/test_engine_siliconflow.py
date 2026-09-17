@@ -46,17 +46,23 @@ class FakeAPI:
         self.upload_calls = 0
         self.speech_calls = 0
         self.health_calls = 0
+        self.transcribe_calls = 0
         self.speech_error: tuple[int, str] | None = None
         self.upload_error: tuple[int, str] | None = None
         self.last_payload: dict | None = None
+        self.last_upload_content: bytes = b""
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = request.url.path
         if url.endswith("/audio/voice/list"):
             self.health_calls += 1
             return httpx.Response(200, json={"result": []})
+        if url.endswith("/audio/transcriptions"):
+            self.transcribe_calls += 1
+            return httpx.Response(200, json={"text": "自动转写的参考音频内容。"})
         if url.endswith("/uploads/audio/voice"):
             self.upload_calls += 1
+            self.last_upload_content = request.content
             if self.upload_error:
                 return httpx.Response(self.upload_error[0], json={"message": self.upload_error[1]})
             return httpx.Response(200, json={"uri": "speech:test_voice:abc:def"})
@@ -114,13 +120,20 @@ def main():
     check(abs((p.get("speed") or 0) - 1.5) < 1e-6, "语速透传")
     check("emotion" not in p, "无独立 emotion 字段（情绪走 input 内联提示）")
 
-    # 3b) neutral / None 不加前缀；非 CosyVoice2 模型忽略情绪
+    # 3b) neutral / None 加「自然平稳」兜底前缀（真机实测：无前缀合成极不稳定）；
+    #     非 CosyVoice2 模型忽略情绪
     seg.emotion_label = "neutral"
     run(eng.synthesize_segment(seg))
-    check((api.last_payload or {}).get("input") == "测试文本", "neutral 不加情绪前缀")
+    check(
+        (api.last_payload or {}).get("input") == "请用自然平稳的语气说。<|endofprompt|>测试文本",
+        "neutral 加自然平稳兜底前缀",
+    )
     seg.emotion_label = None
     run(eng.synthesize_segment(seg))
-    check((api.last_payload or {}).get("input") == "测试文本", "None 不加情绪前缀")
+    check(
+        (api.last_payload or {}).get("input") == "请用自然平稳的语气说。<|endofprompt|>测试文本",
+        "None 同样加兜底前缀",
+    )
     eng.model = "IndexTeam/IndexTTS-2"
     seg.emotion_label = "happy"
     run(eng.synthesize_segment(seg))
@@ -154,6 +167,8 @@ def main():
         )
         run(eng2.synthesize_segment(seg2))
         check(api.upload_calls == 1, "首次合成触发上传克隆")
+        check(api.transcribe_calls == 1, "克隆前自动 ASR 转写参考音频")
+        check("自动转写的参考音频内容".encode() in api.last_upload_content, "上传使用 ASR 转写文本")
         check(cache.exists(), "缓存文件已落盘")
         check((api.last_payload or {}).get("voice", "").startswith("speech:"), "克隆 URI 用于合成")
         run(eng2.synthesize_segment(seg2))

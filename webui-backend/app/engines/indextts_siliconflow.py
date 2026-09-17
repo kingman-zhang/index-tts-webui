@@ -56,6 +56,7 @@ DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 # 国内站真机可用的克隆模型（IndexTTS-2 仅国际站，见模块 docstring）
 DEFAULT_MODEL = "FunAudioLLM/CosyVoice2-0.5B"
 MODEL_COSYVOICE2 = "FunAudioLLM/CosyVoice2-0.5B"
+MODEL_ASR = "FunAudioLLM/SenseVoiceSmall"  # 免费额度内，克隆转写自动生成用
 SPEED_MIN, SPEED_MAX = 0.25, 4.0
 SAMPLE_RATE = 24000
 # 输入长度上限未官方文档化，真机 2048 字符验证可用；保守沿用
@@ -88,6 +89,7 @@ class IndexttsSiliconflowEngine:
         voice_map: dict[str, str] | None = None,
         default_transcript: str = "你好，这是一段用于音色克隆的参考音频。",
         transcripts: dict[str, str] | None = None,
+        auto_transcribe: bool = True,
         extra_params: dict | None = None,
     ):
         import os
@@ -102,6 +104,8 @@ class IndexttsSiliconflowEngine:
         self.default_transcript = default_transcript
         # 每个参考音频的文字转写（键=display_name），克隆上传必填，转写不准影响克隆质量
         self.transcripts = dict(transcripts or {})
+        # 克隆时无显式转写则用平台免费 ASR 自动转写参考音频
+        self.auto_transcribe = auto_transcribe
         self.extra_params = dict(extra_params or {})
         self._cache: dict = {}
         self._cache_loaded = False
@@ -170,10 +174,19 @@ class IndexttsSiliconflowEngine:
         return f"{stem[:48]}_{digest[:8]}"
 
     async def _upload_voice(self, path: Path, display_name: str) -> str:
-        """上传参考音频克隆音色，返回 speech: URI。"""
+        """上传参考音频克隆音色，返回 speech: URI。
+
+        转写文本三级来源：显式 transcripts → ASR 自动转写（免费
+        SenseVoiceSmall）→ default_transcript 兜底。真机实证：转写与
+        参考音频内容不符会污染克隆，错误文本会被漏进合成结果。
+        """
         digest = hashlib.sha1(path.read_bytes()).hexdigest()
         custom_name = self._sanitize_name(display_name or path.name, digest)
-        text = self.transcripts.get(display_name) or self.default_transcript
+        text = self.transcripts.get(display_name)
+        if text is None and self.auto_transcribe:
+            text = await self._asr_transcribe(path)
+        if text is None:
+            text = self.default_transcript
         with path.open("rb") as f:
             resp = await self.client.post(
                 f"{self.base_url}/uploads/audio/voice",
@@ -190,6 +203,28 @@ class IndexttsSiliconflowEngine:
         if not uri or not str(uri).startswith("speech:"):
             raise RuntimeError(f"SiliconFlow 未返回有效 speech: URI: {resp.text[:300]}")
         return uri
+
+    async def _asr_transcribe(self, path: Path) -> str | None:
+        """用 SiliconFlow 免费 ASR（SenseVoiceSmall）转写参考音频。
+
+        失败一律返回 None（降级到 default_transcript），绝不阻塞合成主链路。
+        """
+        if not self.api_key:
+            return None
+        try:
+            with path.open("rb") as f:
+                resp = await self.client.post(
+                    f"{self.base_url}/audio/transcriptions",
+                    headers=self._headers(),
+                    files={"file": (path.name, f)},
+                    data={"model": MODEL_ASR},
+                    timeout=120.0,
+                )
+            if resp.status_code == 200:
+                return ((resp.json() or {}).get("text") or "").strip() or None
+        except Exception:
+            return None
+        return None
 
     async def _resolve_voice_uri(self, req: SegmentRequest) -> str:
         voice = req.voice
@@ -219,15 +254,17 @@ class IndexttsSiliconflowEngine:
 
     @staticmethod
     def _emotion_input(model: str, text: str, emotion_label: str | None) -> str:
-        """CosyVoice2 用内联富文本提示控制情绪；其他模型忽略情绪标签。"""
-        if (
-            model == MODEL_COSYVOICE2
-            and emotion_label
-            and emotion_label != "neutral"
-            and emotion_label in _COSY_EMOTION_PROMPT
-        ):
+        """CosyVoice2 用内联富文本提示控制情绪；其他模型忽略情绪标签。
+
+        真机实测（2026-09-17 ASR 校验）：CosyVoice2 必须恒加 instruct 前缀——
+        不带前缀时克隆音色合成极不稳定（空音频/截断/复读乱码/转写漏出），
+        带前缀 4/4 正确，不带 0/6 正常。neutral 用「自然平稳」前缀兜底。
+        """
+        if model != MODEL_COSYVOICE2:
+            return text
+        if emotion_label and emotion_label != "neutral" and emotion_label in _COSY_EMOTION_PROMPT:
             return f"请用{_COSY_EMOTION_PROMPT[emotion_label]}的语气说。<|endofprompt|>{text}"
-        return text
+        return f"请用自然平稳的语气说。<|endofprompt|>{text}"
 
     @staticmethod
     def _repair_wav(content: bytes) -> bytes:
