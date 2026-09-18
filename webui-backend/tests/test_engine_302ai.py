@@ -149,7 +149,7 @@ def main():
     check(api.upload_calls == 0, "voice_map 命中不上传")
     p = api.last_submit_payload or {}
     check(p.get("speaker_audio_url") == "https://file.302.ai/mapped/ref.mp3", "speaker_audio_url 用映射 URL")
-    check(p.get("emotion_vector") == [1, 0, 0, 0, 0, 0, 0, 0], "happy → one-hot 向量（EMO_VECTOR_ORDER 对齐）")
+    check(p.get("emotion_vector") == [0.75, 0, 0, 0, 0, 0, 0, 0], "happy → 幅度 0.75 向量（EMO_VECTOR_ORDER 对齐）")
     check(p.get("text") == "测试文本", "text 透传")
     check("speed" not in p, "平台无 speed 参数（不透传）")
 
@@ -310,6 +310,75 @@ def main():
     check(api.upload_calls == 0, "文件名兜底复用 URL，不重复上传")
     check((api.last_submit_payload or {}).get("speaker_audio_url") == "https://file.302.ai/gpt/imgs/cached/ref.mp3",
           "payload 使用缓存中的 URL")
+
+    # 15) 情绪幅度表：每标签幅度不同，neutral/None 依旧不传
+    from app.engines.indextts_302ai import DEFAULT_AMPLITUDE, EMOTION_AMPLITUDE
+    check(Indextts302aiEngine._emotion_vector("surprised")[6] == EMOTION_AMPLITUDE["surprised"],
+          "surprised → 第 7 维取表内幅度")
+    check(Indextts302aiEngine._emotion_vector("melancholic") == [0, 0, 0, 0, 0, 0.6, 0, 0],
+          "melancholic → 0.6")
+    check(Indextts302aiEngine._emotion_vector("happy") == [0.75, 0, 0, 0, 0, 0, 0, 0],
+          "happy → 0.75")
+    check(all(v < 1.0 for v in EMOTION_AMPLITUDE.values()) and 0 < DEFAULT_AMPLITUDE < 1.0,
+          "所有幅度 < 1.0（温和化）")
+
+    # 16) 提交连接失败（ConnectError）→ 自动重试后成功
+    class Flaky302(Fake302):
+        def __init__(self):
+            super().__init__()
+            self.connect_fails = 0
+            self.fail_first = 0
+
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            if self.fail_first > 0 and request.method == "POST" and request.url.path.endswith("/302/index_tts2/task"):
+                self.fail_first -= 1
+                raise httpx.ConnectError("tls tunnel killed")
+            return super().handler(request)
+
+    api = Flaky302()
+    api.fail_first = 2  # 前两次提交连接失败，第三次成功
+    eng12 = Indextts302aiEngine(
+        api_key="sk-test", client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
+        voice_map={"男-播客1": "https://file.302.ai/mapped/ref.mp3"},
+    )
+    audio = run(eng12.synthesize_segment(seg))
+    check(audio == b"audio-from-original-host", "提交连接中断重试后成功")
+    check(api.submit_calls == 1, "前 2 次连接失败不计入服务端提交次数")
+
+    # 17) 连接持续失败 → RuntimeError（含重试信息），不静默
+    api = Flaky302()
+    api.fail_first = 99
+    eng13 = Indextts302aiEngine(
+        api_key="sk-test", client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
+        voice_map={"男-播客1": "https://file.302.ai/mapped/ref.mp3"},
+    )
+    try:
+        run(eng13.synthesize_segment(seg))
+        check(False, "持续连接失败应抛 RuntimeError")
+    except RuntimeError as e:
+        check("重试" in str(e) or "连接失败" in str(e), "持续连接失败抛 RuntimeError")
+
+    # 18) 轮询瞬时断连 → 容错继续，恢复后成功
+    class BlipPoll(Fake302):
+        def __init__(self):
+            super().__init__()
+            self.blips = 0
+
+        def handler(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path.endswith("/302/index_tts2/task") and self.blips > 0:
+                self.blips -= 1
+                raise httpx.RemoteProtocolError("server disconnected")
+            return super().handler(request)
+
+    api = BlipPoll()
+    api.poll_states = ["PENDING", "SUCCESS"]
+    api.blips = 2
+    eng14 = Indextts302aiEngine(
+        api_key="sk-test", client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
+        voice_map={"男-播客1": "https://file.302.ai/mapped/ref.mp3"},
+    )
+    audio = run(eng14.synthesize_segment(seg))
+    check(audio == b"audio-from-original-host", "轮询断连 2 次后恢复成功")
 
     print(f"\n===== {PASS}/{PASS + FAIL} passed =====")
     sys.exit(1 if FAIL else 0)

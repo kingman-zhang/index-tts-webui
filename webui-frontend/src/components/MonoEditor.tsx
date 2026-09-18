@@ -191,6 +191,9 @@ function serializeCanvas(root: HTMLElement): string {
       return;
     }
     if (n instanceof HTMLDivElement || n instanceof HTMLParagraphElement) {
+      // 先关闭挂起的裸文本行：Chrome 粘贴/首行会产生"根级裸文本 + 行 div"混合结构，
+      // 不先 flush 会把裸文本与该 div 的内容并进同一行（实测吞行 bug）
+      if (cur.length > 0) flush();
       n.childNodes.forEach(c => {
         cur += serializeInline(c);
       });
@@ -203,23 +206,38 @@ function serializeCanvas(root: HTMLElement): string {
   if (cur.length > 0 || lines.length === 0) lines.push(cur);
   return lines.join("\n");
 }
-/** target 节点之前的标记文本长度（chip 按 marker 长度计） */
+/** target 节点之前的标记文本长度（chip 按 marker 长度计；行边界计 1 个 \n，
+ *  与 serializeCanvas 的分行规则严格一致，否则混合结构下偏移会错位） */
 function serializeBefore(root: HTMLElement, target: Node): number {
-  let acc = 0;
+  let acc = 0; // 已完成行的总长（含每行末尾的 \n）
+  let cur = 0; // 当前行已累积长度
   const walk = (node: Node): boolean => {
     if (node === target) return true;
     if (node.nodeType === Node.TEXT_NODE) {
-      acc += node.textContent?.length ?? 0;
+      cur += node.textContent?.length ?? 0;
       return false;
     }
     if (node instanceof HTMLElement) {
       const mk = node.getAttribute("data-marker");
       if (mk) {
-        acc += mk.length;
+        cur += mk.length;
         return false;
       }
       if (node.tagName === "BR") {
-        acc += brSerChar(node).length;
+        cur += brSerChar(node).length;
+        return false;
+      }
+      if ((node.tagName === "DIV" || node.tagName === "P") && node.parentElement === root) {
+        // 行容器：先关闭挂起的裸文本行（同 serializeCanvas）
+        if (cur > 0) {
+          acc += cur + 1;
+          cur = 0;
+        }
+        for (const c of Array.from(node.childNodes)) {
+          if (walk(c)) return true;
+        }
+        acc += cur + 1; // 行内容 + 行尾 \n（空行也占 1）
+        cur = 0;
         return false;
       }
       for (const c of Array.from(node.childNodes)) {
@@ -229,23 +247,27 @@ function serializeBefore(root: HTMLElement, target: Node): number {
     return false;
   };
   walk(root);
-  return acc;
+  return acc + cur;
 }
 
 /** 当前光标的标记文本偏移（undo 恢复用）；不在画布内返回 null */
+function markerOffsetAt(root: HTMLElement, container: Node, offset: number): number | null {
+  if (!root.contains(container)) return null;
+  if (container.nodeType === Node.TEXT_NODE) {
+    return serializeBefore(root, container) + offset;
+  }
+  if (container instanceof HTMLElement) {
+    const child = container.childNodes[offset] ?? null;
+    return child ? serializeBefore(root, child) : serializeBefore(root, container);
+  }
+  return null;
+}
+
 function caretOffsetIn(root: HTMLElement): number | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return null;
   const r = sel.getRangeAt(0);
-  if (!root.contains(r.startContainer)) return null;
-  if (r.startContainer.nodeType === Node.TEXT_NODE) {
-    return serializeBefore(root, r.startContainer) + r.startOffset;
-  }
-  if (r.startContainer instanceof HTMLElement) {
-    const child = r.startContainer.childNodes[r.startOffset] ?? null;
-    return child ? serializeBefore(root, child) : serializeBefore(root, r.startContainer);
-  }
-  return null;
+  return markerOffsetAt(root, r.startContainer, r.startOffset);
 }
 
 /** 把光标放到标记文本偏移 offset 处（chip 按整体计，落点在中间时放到其后；支持画布级跨行） */
@@ -639,38 +661,52 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   };
 
   /** 在光标处插入停顿芯片（允许插在作用域内）。
-   *  手动 DOM 插入而非 execCommand("insertHTML")：后者在行首/空行等边界会把
-   *  块级元素拆开造成"自动多出一行"，且光标可能落回错误位置（如标点之后）。 */
-  const insertPause = (html: string) => {
+   *  纯文本模型拼接而非 DOM 手术：Chrome 的 Range.insertNode 在"裸文本 + 行 div"
+   *  混合结构（粘贴后/首行未换行时）会重组块级结构，把下一行并进当前行（实测 bug），
+   *  execCommand("insertHTML") 也有同类问题。直接在标记文本上拼接再整体重渲染。 */
+  const insertPause = (sec: string) => {
     const el = canvasRef.current;
     if (!el) return;
     if (!restoreSelection()) return;
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const r = sel.getRangeAt(0);
-    const chip = htmlToElement(html);
-    r.deleteContents();
-    r.insertNode(chip);
-    // 空行占位 <br> 清理：整行只剩芯片时移除行内 br，避免序列化出幽灵换行
-    const line = chip.parentElement;
-    if (line && line !== el && (line.textContent ?? "").trim() === "") {
-      line.querySelectorAll("br").forEach(br => br.remove());
+    if (!el.contains(r.startContainer) || !el.contains(r.endContainer)) return;
+    const offA = markerOffsetAt(el, r.startContainer, r.startOffset);
+    if (offA === null) return;
+    let offB = offA;
+    if (!r.collapsed) {
+      const end = markerOffsetAt(el, r.endContainer, r.endOffset);
+      if (end === null || end < offA) return;
+      offB = end;
     }
-    // 光标停在芯片正后方
-    const after = document.createRange();
-    after.setStartAfter(chip);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
+    const marker = `[pause:${sec}]`;
+    const prev = textRef.current;
+    applyMarkerInsert(prev.slice(0, offA) + marker + prev.slice(offB), offA, marker.length);
+  };
+
+  /** 纯文本模型插入的收尾：整体重渲染 + 光标落到插入内容之后 + 入 undo 栈。
+   *  onChange 触发 App 状态更新后，useEffect 因 serialize 相等而跳过，不扰动 DOM。 */
+  const applyMarkerInsert = (newText: string, at: number, insertedLen: number) => {
+    const el = canvasRef.current;
+    if (!el) return;
+    undoStack.current.push({ text: textRef.current, caret: at });
+    if (undoStack.current.length > 100) undoStack.current.shift();
+    redoStack.current = [];
+    el.innerHTML = markerTextToHtml(newText);
+    textRef.current = newText;
+    setCaretAtMarkerOffset(el, at + insertedLen);
     saveSelection();
-    emitChange();
+    onChange(newText);
   };
 
   /** 情绪作用域操作。
    * - 无选区：光标处插芯片，光标后到行尾的内容包进该情绪的作用域（继续输入即属于该情绪）
    * - 有选区：选区整体变成该情绪的作用域（MiniMax 式"选中文字套情绪"）
    * - 任何与已有情绪作用域的重叠都被拒绝（不支持嵌套/叠加）
-   */
+   * 两条路径都是纯文本模型拼接（marker + 内容 + 【/】 终止符写进文本真源），
+   * 绝不做 DOM 手术——Chrome 的 Range.insertNode / execCommand("insertHTML") 在
+   * "裸文本 + 行 div"混合结构下会重组块级结构导致吞并相邻行（实测 bug）。 */
   const insertEmotion = (meta: EmotionMeta) => {
     const el = canvasRef.current;
     if (!el) return;
@@ -678,6 +714,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0) return;
     const r = sel.getRangeAt(0);
+    if (!el.contains(r.startContainer) || !el.contains(r.endContainer)) return;
 
     const nodeInScope = (node: Node, atEnd = false): boolean => {
       if (node.nodeType === Node.TEXT_NODE) {
@@ -690,6 +727,9 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
       }
       return false;
     };
+
+    const prev = textRef.current;
+    const marker = `【${meta.label}】`;
 
     // ── 有选区：选区 → 作用域 ──────────────────────────────
     if (!r.collapsed) {
@@ -707,38 +747,27 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
         showHint("该区域已包含情绪，暂不支持情绪嵌套或叠加");
         return;
       }
-      const frag = r.extractContents();
-      const scopeEl = document.createElement("span");
-      scopeEl.className = `mono-scope ${meta.scope}`;
-      scopeEl.appendChild(frag);
-      r.insertNode(htmlToElement(emotionChipHtml(meta)));
-      r.collapse(false);
-      r.insertNode(scopeEl);
-      const after = document.createRange();
-      after.setStartAfter(scopeEl);
-      after.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(after);
-      saveSelection();
-      emitChange();
+      const offA = markerOffsetAt(el, r.startContainer, r.startOffset);
+      const offB = markerOffsetAt(el, r.endContainer, r.endOffset);
+      if (offA === null || offB === null || offB < offA) return;
+      if (prev.slice(offA, offB).includes("\n")) {
+        showHint("情绪作用域暂不支持跨行，请按行选择");
+        return;
+      }
+      const inserted =
+        prev.slice(0, offA) + marker + prev.slice(offA, offB) + MONO_SCOPE_END + prev.slice(offB);
+      applyMarkerInsert(inserted, offA, marker.length + (offB - offA) + MONO_SCOPE_END.length);
       return;
     }
 
     // ── 无选区：任意位置都可插芯片（插在已有作用域内时，原作用域被截断到芯片前，
     //    重渲染后自动形成"一行多情绪段"）─────────────────────
-    // 手动 Range 插入而非 execCommand("insertHTML")：后者在行首/粘贴后的裸文本
-    // 结构下会把相邻行合并、拆坏块级结构（与 insertPause 同原因，实测 bug）
-    const marker = `【${meta.label}】`;
     const off = caretOffsetIn(el);
-    const chip = htmlToElement(emotionChipHtml(meta));
-    r.deleteContents();
-    r.insertNode(chip);
-    // 序列化 → 重渲染整画布：lineToHtml 会把芯片后到行尾的文字包进作用域
-    el.innerHTML = markerTextToHtml(serializeCanvas(el));
-    // 光标落回芯片正后方（off 是插入前的标记文本偏移，加上 marker 自身长度）
-    if (off !== null) setCaretAtMarkerOffset(el, off + marker.length);
-    saveSelection();
-    emitChange();
+    if (off === null) {
+      showHint("请先把光标放回文稿内再插入情绪");
+      return;
+    }
+    applyMarkerInsert(prev.slice(0, off) + marker + prev.slice(off), off, marker.length);
   };
 
   // 键盘：undo/redo 快捷键 + 紧邻芯片整块删除
@@ -894,7 +923,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
           <button
             type="button"
             onMouseDown={e => e.preventDefault()}
-            onClick={() => insertPause(pauseChipHtml("0.5"))}
+            onClick={() => insertPause("0.5")}
             className={TOOL_BTN}
           >
             <Pause className="w-3.5 h-3.5" />

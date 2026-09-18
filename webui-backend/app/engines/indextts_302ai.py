@@ -33,7 +33,8 @@
     本地缓存（cache_path JSON，键=路径+大小+mtime）→ 参考音频在 backend
     侧可读时自动上传并缓存 → 文件不可读时按文件名在 voice_map/缓存中
     复用同名参考音频的已上传 URL。都不命中才报 ValueError。
-  - 情绪：8 标签 → one-hot 向量；neutral/None 不传 emotion_vector（跟随音色）。
+  - 情绪：8 标签 → 带幅度 one-hot 向量（EMOTION_AMPLITUDE 按标签温和化，
+    one-hot 1.0 实测偏激动）；neutral/None 不传 emotion_vector（跟随音色）。
   - 停顿：[pause:x] 已由 backend split_by_pauses 切分，本引擎只收纯文本。
   - 轮询：2s 间隔，单段超时 300s。
 """
@@ -61,6 +62,27 @@ AUDIO_MIRRORS = ("file.302ai.cn", "file.302ai.com")
 
 # 轮询中判定为终态失败的 state（其余一律视为进行中）
 _FAILED_STATES = {"FAILURE", "FAILED", "ERROR", "CANCELLED", "TIMEOUT"}
+
+# 情绪幅度表（0-1）。one-hot 1.0 实测情绪偏激动（用户听感：喜悦/惊喜过烈），
+# 按标签给不同幅度做温和化；纯经验值，待听感反馈继续微调。
+# 顺序对齐 EMO_VECTOR_ORDER；未列出的标签用 DEFAULT_AMPLITUDE。
+DEFAULT_AMPLITUDE = 0.8
+EMOTION_AMPLITUDE: dict[str, float] = {
+    "happy": 0.75,
+    "surprised": 0.75,
+    "angry": 0.7,
+    "sad": 0.7,
+    "afraid": 0.7,
+    "disgusted": 0.7,
+    "melancholic": 0.6,
+    "calm": 0.5,
+}
+
+# 提交/上传的连接级重试：仅针对"连接未建立"类错误（请求确定没到服务器，
+# 重试不会重复计费）。读超时/响应中断不重试提交（可能已提交，重试会重复扣费），
+# 由调用方 queue_worker 的 interrupted 状态兜底。
+_CONNECT_RETRIES = 3
+_CONNECT_RETRY_BASE_S = 1.5
 
 
 class Indextts302aiEngine:
@@ -152,7 +174,7 @@ class Indextts302aiEngine:
     async def _upload_voice(self, path: Path) -> str:
         """上传参考音频获取公网 URL（0.001 PTC/次，调用方负责缓存）。"""
         with path.open("rb") as f:
-            resp = await self.client.post(
+            resp = await self._post_with_connect_retry(
                 f"{self.base_url}/302/upload-file",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 files={"file": (path.name, f)},
@@ -207,14 +229,28 @@ class Indextts302aiEngine:
     # ---------- 合成 ----------
 
     @staticmethod
-    def _emotion_vector(label: str | None) -> list[int] | None:
-        """8 标签 → one-hot 向量；neutral/None → 不传（跟随音色）。"""
+    def _emotion_vector(label: str | None) -> list[float] | None:
+        """8 标签 → 带幅度的 one-hot 向量；neutral/None → 不传（跟随音色）。"""
         if not label or label == "neutral" or label not in EMO_VECTOR_ORDER:
             return None
-        return [1 if i == EMO_VECTOR_ORDER.index(label) else 0 for i in range(8)]
+        amp = EMOTION_AMPLITUDE.get(label, DEFAULT_AMPLITUDE)
+        return [amp if i == EMO_VECTOR_ORDER.index(label) else 0.0 for i in range(8)]
+
+    async def _post_with_connect_retry(self, url: str, **kwargs) -> httpx.Response:
+        """POST 带连接级重试（仅 ConnectError/ConnectTimeout——请求未到达服务器，
+        重试不产生重复计费；其他异常原样抛出）。"""
+        last: Exception | None = None
+        for attempt in range(_CONNECT_RETRIES):
+            if attempt:
+                await asyncio.sleep(_CONNECT_RETRY_BASE_S * attempt)
+            try:
+                return await self.client.post(url, **kwargs)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                last = e
+        raise RuntimeError(f"302.ai 连接失败（已重试 {_CONNECT_RETRIES - 1} 次）: {last}")
 
     async def _submit(self, payload: dict) -> str:
-        resp = await self.client.post(
+        resp = await self._post_with_connect_retry(
             f"{self.base_url}/302/index_tts2/task",
             headers=self._headers(),
             json=payload,
@@ -262,8 +298,17 @@ class Indextts302aiEngine:
         loop = asyncio.get_event_loop()
         t0 = loop.time()
         last_state = ""
+        poll_failures = 0  # 连续网络失败计数（瞬时断连容错，GET 幂等可安全重试）
         while loop.time() - t0 < timeout:
-            data = await self._poll_once(task_id)
+            try:
+                data = await self._poll_once(task_id)
+                poll_failures = 0
+            except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
+                poll_failures += 1
+                if poll_failures >= 5:
+                    raise RuntimeError(f"302.ai 轮询连续断连 {poll_failures} 次: {e}") from e
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
             state = str(data.get("state", "") or "").upper()
             if state != last_state:
                 last_state = state
