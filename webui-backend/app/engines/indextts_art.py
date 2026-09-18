@@ -83,12 +83,15 @@ class IndexttsArtEngine:
 
         art_text = _re.sub(r"\[pause:[0-9]*\.?[0-9]+\]", "，", req.text).replace("<#>", "，")
         body = self._replace(body, "{{TEXT}}", art_text)
-        # 统一 8 标签 → 平台 8 滑杆（未选标签时保持模板原值=跟随参考音频）
+        # 统一 8 标签 → 平台 8 滑杆（未选标签时保持模板原值=跟随参考音频）。
+        # 赋值必须保持各字段在模板中的原类型：emo_surprised 等枚举字段平台要求
+        # 字符串（"0"/"1"），写成 int 会被拒（"enum 参数值必须是字符串"）
         if req.emotion_label and _LABEL_TO_FIELD.get(req.emotion_label):
             field_name = _LABEL_TO_FIELD[req.emotion_label]
             for label, f in _LABEL_TO_FIELD.items():
                 if f and f in body:
-                    body[f] = 1 if f == field_name else 0
+                    selected = f == field_name
+                    body[f] = ("1" if selected else "0") if isinstance(body[f], str) else (1 if selected else 0)
         return body
 
     def _replace(self, value, placeholder: str, content: str):
