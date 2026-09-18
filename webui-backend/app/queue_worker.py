@@ -210,6 +210,13 @@ async def process_queue():
                 task["error"] = str(e)
                 break
 
+    except FileNotFoundError as e:
+        # 参考音频等文件缺失是永久性配置错误，重试无意义，不能误报"连接中断"
+        logger.error("[queue] missing file task=%s error=%s", qs.current_task_id, e)
+        task["status"] = qs.QueueTaskStatus.FAILED
+        task["message"] = "参考音频文件不存在，请检查任务音色配置"
+        task["error"] = f"参考音频文件不存在: {e}"
+        qs.persist_task(qs.current_task_id)
     except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError) as e:
         logger.error("[queue] request disconnected before task tracking task=%s error=%s", qs.current_task_id, e)
         task["status"] = qs.QueueTaskStatus.INTERRUPTED

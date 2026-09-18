@@ -29,8 +29,11 @@ DEFAULT_RESULT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/result/{tas
 # autodl.art 单次提交的字符上限（平台按次计费的硬限制）
 MAX_CHARS_PER_SUBMIT = 2048
 
-# 情绪标签 → autodl.art 滑杆字段（emo_surprised 平台样例为字符串，保持原样传）
+# 情绪标签 → autodl.art 滑杆字段
 # 注意：平台字段含 emo_melancholic、无 neutral（全零滑杆即中性）
+# 实测（2026-09-18）：工作流 indextts2-v1 的 emo_surprised 是单选项枚举
+# （options 仅 ["0"]，int 会报"enum 参数值必须是字符串"，其它值不在 options），
+# 平台侧锁死无法表达惊喜 → surprised 映射 None，降级为跟随参考音频
 _LABEL_TO_FIELD = {
     "happy": "emo_happy",
     "sad": "emo_sad",
@@ -38,7 +41,7 @@ _LABEL_TO_FIELD = {
     "afraid": "emo_afraid",
     "disgusted": "emo_disgusted",
     "melancholic": "emo_melancholic",
-    "surprised": "emo_surprised",
+    "surprised": None,  # 平台 v1 锁死为 "0"，无法表达；降级跟随音色
     "calm": "emo_calm",
     "neutral": None,  # 中性：保持全零滑杆
 }

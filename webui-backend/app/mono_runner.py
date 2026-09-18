@@ -198,6 +198,29 @@ def _concat_wavs(chunks: list[bytes], gaps_ms: list[int]) -> tuple[bytes, float]
     return out.getvalue(), total_frames / framerate
 
 
+def _resolve_local_voice(voice_path: str) -> str:
+    """任务音色路径在 backend 侧不可读时，按文件名在本地音色目录找同名替身。
+
+    背景：任务文件可能带着部署机路径（如 /root/autodl-tmp/...），换环境运行
+    时读不到；art（base64 内联）/SiliconFlow（克隆上传）等引擎都要求本地可读。
+    原路径可读时原样返回（保证 302ai 等按路径+大小+mtime 做缓存键的引擎稳定）。
+    """
+    import os
+
+    p = Path(voice_path)
+    if p.is_file():
+        return voice_path
+    search_dirs = [DATA_DIR / "preset-voices", DATA_DIR / "voices"]
+    extra = os.environ.get("VOICE_FALLBACK_DIRS", "")
+    search_dirs += [Path(d) for d in extra.split(os.pathsep) if d.strip()]
+    for d in search_dirs:
+        cand = d / p.name
+        if cand.is_file():
+            logger.warning("[mono] 音色路径本地不可读 %s，改用同名文件 %s", voice_path, cand)
+            return str(cand)
+    return voice_path  # 找不到就原样返回，让引擎给出明确报错
+
+
 async def run_mono_task(task: dict) -> None:
     """执行配音任务：逐段合成 → 拼接 → 落盘。异常向上抛由 process_queue 收尾。"""
     task_id = task["id"]
@@ -214,7 +237,7 @@ async def run_mono_task(task: dict) -> None:
     # 任务内固定单一引擎，避免中途故障切换导致音频参数不一致
     engine = await build_registry().resolve()
     logger.info("[mono] task=%s engine=%s lines=%d speed=%.2f", task_id, engine.name, len(lines), speed)
-    voice = VoiceRef(tts_path=voice_path, local_path=voice_path, display_name=Path(voice_path).name)
+    voice = VoiceRef(tts_path=voice_path, local_path=_resolve_local_voice(voice_path), display_name=Path(voice_path).name)
 
     total = len(lines)
     chunks: list[bytes] = []
