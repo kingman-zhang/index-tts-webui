@@ -15,11 +15,18 @@
     插入精确静音，不依赖 tts-server 的行内停顿实现；
   - autodl.art 引擎先按 2048 字符切满片（chunker.split_for_art），
     再按停顿切子段（注意：停顿切分会增加 art 的按次提交数）。
+
+并发规则（2026-09-18）：
+  - 所有行先扁平化为段（_flatten_segments），第三方 API 引擎按
+    TTS_CONCURRENCY（默认 3，钳 1-8）并发合成，自建 GPU 引擎恒串行；
+  - gather 保序 → 拼接顺序与文本顺序一致；失败段自动重试一次。
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
+import os
 import re
 import wave
 from pathlib import Path
@@ -160,6 +167,52 @@ def _emotion_label(line: dict) -> str | None:
     return None
 
 
+class _TaskCancelled(Exception):
+    """用户取消（在并发 worker 内抛出，由 run_mono_task 汇总处理）。"""
+
+
+def _flatten_segments(lines: list[dict], engine_name: str) -> list[dict]:
+    """把任务行扁平化为合成段列表（并发调度的最小单元）。
+
+    每段：{text, emotion, gap_ms, line_idx}。行内停顿/backend 切分、
+    art 满片切分、行尾 silence_after_ms 并入本行最后一段的静音，
+    与旧串行版语义一致；顺序即拼接顺序（gather 保序）。
+    """
+    entries: list[dict] = []
+    for idx, line in enumerate(lines):
+        text = (line.get("text") or "").strip()
+        if not text:
+            continue
+        emotion_label = _emotion_label(line)
+        # autodl.art 按次计费且单次 ≤2048 字符：切满片省费用；自建引擎整段交给模型侧分段
+        pieces = split_for_art(text) if engine_name == "indextts_art" else [text]
+        line_entries: list[dict] = []
+        for piece in pieces:
+            for sub_text, gap_ms in split_by_pauses(piece):
+                line_entries.append({"text": sub_text, "emotion": emotion_label, "gap_ms": gap_ms})
+        if not line_entries:
+            continue
+        gap_after = int(line.get("silence_after_ms") or 0)
+        if gap_after > 0:
+            last = line_entries[-1]
+            last["gap_ms"] = min(last["gap_ms"] + gap_after, MAX_GAP_MS)
+        for e in line_entries:
+            e["line_idx"] = idx
+        entries.extend(line_entries)
+    return entries
+
+
+def _concurrency(engine_name: str) -> int:
+    """并发度：自建 GPU 引擎恒为 1；第三方 API 读 TTS_CONCURRENCY（默认 3，钳 1-8）。"""
+    if engine_name == "indextts_local":
+        return 1
+    try:
+        n = int(os.environ.get("TTS_CONCURRENCY", "3").strip())
+    except ValueError:
+        n = 3
+    return max(1, min(n, 8))
+
+
 def _concat_wavs(chunks: list[bytes], gaps_ms: list[int]) -> tuple[bytes, float]:
     """拼接 wav 字节；gaps_ms[i] 为第 i 段之后的静音毫秒。返回 (wav_bytes, 总时长秒)。
 
@@ -222,7 +275,13 @@ def _resolve_local_voice(voice_path: str) -> str:
 
 
 async def run_mono_task(task: dict) -> None:
-    """执行配音任务：逐段合成 → 拼接 → 落盘。异常向上抛由 process_queue 收尾。"""
+    """执行配音任务：分段 → 并发合成（第三方 API）/串行（自建）→ 拼接 → 落盘。
+
+    并发说明：TTS_CONCURRENCY（默认 3）只作用于第三方 API 引擎；自建 GPU
+    引擎恒为串行。失败段自动重试一次（只重试失败段，不整任务重来）；
+    重试仍失败时抛出首个原始异常（保留 httpx 错误类型供 queue_worker
+    正确归类 INTERRUPTED/FAILED）。
+    """
     task_id = task["id"]
     lines = task.get("lines") or []
     params = task.get("params") or {}
@@ -239,40 +298,96 @@ async def run_mono_task(task: dict) -> None:
     logger.info("[mono] task=%s engine=%s lines=%d speed=%.2f", task_id, engine.name, len(lines), speed)
     voice = VoiceRef(tts_path=voice_path, local_path=_resolve_local_voice(voice_path), display_name=Path(voice_path).name)
 
-    total = len(lines)
-    chunks: list[bytes] = []
-    gaps: list[int] = []
-    for idx, line in enumerate(lines):
-        if task.get("cancel_requested"):
-            task["status"] = qs.QueueTaskStatus.CANCELLED
-            task["message"] = "已取消"
-            qs.persist_task(task_id)
-            return
-        text = (line.get("text") or "").strip()
-        if not text:
-            continue
-        emotion_label = _emotion_label(line)
-        # autodl.art 按次计费且单次 ≤2048 字符：切满片省费用；自建引擎整段交给模型侧分段
-        pieces = split_for_art(text) if engine.name == "indextts_art" else [text]
-        for piece in pieces:
-            # 行内停顿由 backend 统一切分并插静音（与前端画布所见即所得一致，
-            # 不依赖 tts-server 的行内停顿实现）
-            for sub_text, gap_ms in split_by_pauses(piece):
-                audio = await engine.synthesize_segment(
-                    SegmentRequest(text=sub_text, voice=voice, emotion_label=emotion_label, speed=speed)
-                )
-                chunks.append(audio)
-                gaps.append(gap_ms)
-        gap_ms = int(line.get("silence_after_ms") or 0)
-        if gap_ms > 0:
-            gaps[-1] = min(gaps[-1] + gap_ms, MAX_GAP_MS) if gaps else min(gap_ms, MAX_GAP_MS)
-        task["progress"] = round((idx + 1) / total, 4)
-        task["current_line"] = idx + 1
-        task["message"] = f"已合成 {idx + 1}/{total} 段"
+    entries = _flatten_segments(lines, engine.name)
+    if not entries:
+        raise ValueError("所有文本段均为空")
+    total = len(entries)
+    conc = _concurrency(engine.name)
+    logger.info("[mono] task=%s engine=%s entries=%d concurrency=%d", task_id, engine.name, total, conc)
+
+    # 行 → 段数映射（用于 current_line：行内全部段完成才计入）
+    line_counts: dict[int, int] = {}
+    for e in entries:
+        line_counts[e["line_idx"]] = line_counts.get(e["line_idx"], 0) + 1
+
+    sem = asyncio.Semaphore(conc)
+    state = {"submitted": 0, "done": 0}
+
+    def _update_progress() -> None:
+        done = state["done"]
+        task["progress"] = round(done / total, 4)
+        # 已完成行数近似值：全局完成数 ≥ 某行及之前所有段数时，视为推进到该行
+        current_line = 0
+        cum = 0
+        for line_idx in sorted(line_counts):
+            cum += line_counts[line_idx]
+            if done >= cum:
+                current_line = line_idx + 1
+            else:
+                break
+        task["current_line"] = current_line
+        if done >= total:
+            task["message"] = "拼接音频中"
+        elif done > 0:
+            task["message"] = f"已合成 {done}/{total} 段"
+        elif state["submitted"] > 0:
+            task["message"] = f"已提交 {state['submitted']}/{total} 段，等待平台合成"
         qs.persist_task(task_id)
 
-    if not chunks:
-        raise ValueError("所有文本段均为空")
+    async def _worker(entry: dict) -> bytes:
+        async with sem:
+            if task.get("cancel_requested"):
+                raise _TaskCancelled()
+            state["submitted"] += 1
+            _update_progress()
+            audio = await engine.synthesize_segment(
+                SegmentRequest(text=entry["text"], voice=voice, emotion_label=entry["emotion"], speed=speed)
+            )
+        state["done"] += 1
+        _update_progress()
+        return audio
+
+    async def _run_batch(batch: list[dict]) -> list:
+        return await asyncio.gather(*[_worker(e) for e in batch], return_exceptions=True)
+
+    def _failed(results: list) -> list[int]:
+        return [i for i, r in enumerate(results) if isinstance(r, BaseException)]
+
+    results = await _run_batch(entries)
+
+    if task.get("cancel_requested") and any(isinstance(r, _TaskCancelled) for r in results):
+        task["status"] = qs.QueueTaskStatus.CANCELLED
+        task["message"] = "已取消"
+        qs.persist_task(task_id)
+        return
+
+    # 失败段重试一次（只重试失败段；失败段本就未计入 done，重试成功后自动补上）
+    retry_idx = _failed(results)
+    if retry_idx:
+        for i in retry_idx:
+            if isinstance(results[i], _TaskCancelled):
+                continue
+            logger.warning("[mono] task=%s 段 %d/%d 首次合成失败，重试: %s", task_id, i + 1, total, results[i])
+        task["message"] = f"重试 {len(retry_idx)} 个失败段"
+        qs.persist_task(task_id)
+        retry_results = await _run_batch([entries[i] for i in retry_idx])
+        for slot, i in enumerate(retry_idx):
+            results[i] = retry_results[slot]
+
+    if task.get("cancel_requested") and any(isinstance(r, _TaskCancelled) for r in results):
+        task["status"] = qs.QueueTaskStatus.CANCELLED
+        task["message"] = "已取消"
+        qs.persist_task(task_id)
+        return
+
+    errors = [r for r in results if isinstance(r, BaseException)]
+    if errors:
+        first = errors[0]
+        logger.error("[mono] task=%s %d/%d 段重试后仍失败", task_id, len(errors), total)
+        raise first  # 保留原始异常类型，queue_worker 据此归类 INTERRUPTED/FAILED
+
+    chunks: list[bytes] = [r for r in results]
+    gaps: list[int] = [e["gap_ms"] for e in entries]
 
     task["message"] = "拼接音频中"
     qs.persist_task(task_id)
@@ -287,4 +402,4 @@ async def run_mono_task(task: dict) -> None:
     task["duration_sec"] = round(duration, 2)
     task["message"] = "合成完成"
     task["engine"] = engine.name
-    logger.info("[mono] completed task=%s engine=%s segments=%d duration=%.1fs", task_id, engine.name, len(chunks), duration)
+    logger.info("[mono] completed task=%s engine=%s segments=%d concurrency=%d duration=%.1fs", task_id, engine.name, len(chunks), conc, duration)

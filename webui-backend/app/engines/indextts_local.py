@@ -21,7 +21,8 @@ class IndexttsLocalEngine:
 
     async def health(self) -> bool:
         try:
-            resp = await self.client.get(f"{self.tts_url}/api/health", timeout=5.0)
+            # 2s 超时：tts-server 离线时 resolve() 不至于在探活上白等 5s
+            resp = await self.client.get(f"{self.tts_url}/api/health", timeout=2.0)
             if resp.status_code != 200:
                 return False
             return bool(resp.json().get("model_loaded", True))

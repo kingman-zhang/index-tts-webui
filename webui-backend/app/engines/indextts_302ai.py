@@ -106,6 +106,8 @@ class Indextts302aiEngine:
         self.extra_params = dict(extra_params or {})
         self._cache: dict = {}
         self._cache_loaded = False
+        # 并发合成下防止多段同时首传同一参考音频（重复扣上传费）
+        self._voice_lock = asyncio.Lock()
         self._health_ok: bool | None = None
         self._health_ts = 0.0
         self._speed_warned = False
@@ -194,6 +196,12 @@ class Indextts302aiEngine:
         return Path(raw).name
 
     async def _resolve_voice_url(self, req: SegmentRequest) -> str:
+        # 并发合成下加锁：同一音色只允许一个协程做"查缓存→上传→写缓存"，
+        # 其余等锁后直接命中缓存，避免重复上传计费
+        async with self._voice_lock:
+            return await self._resolve_voice_url_locked(req)
+
+    async def _resolve_voice_url_locked(self, req: SegmentRequest) -> str:
         voice = req.voice
         # 1) 显式映射（display_name / 两个路径字段都试）
         for k in (voice.display_name, voice.local_path, voice.tts_path):

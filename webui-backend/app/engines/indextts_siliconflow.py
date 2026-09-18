@@ -39,6 +39,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -110,6 +111,8 @@ class IndexttsSiliconflowEngine:
         self.extra_params = dict(extra_params or {})
         self._cache: dict = {}
         self._cache_loaded = False
+        # 并发合成下防止多段同时克隆上传同一参考音频
+        self._voice_lock = asyncio.Lock()
         self._health_ok: bool | None = None
         self._health_ts = 0.0
 
@@ -228,6 +231,11 @@ class IndexttsSiliconflowEngine:
         return None
 
     async def _resolve_voice_uri(self, req: SegmentRequest) -> str:
+        # 并发合成下加锁：同一音色只允许一个协程做"查缓存→克隆→写缓存"
+        async with self._voice_lock:
+            return await self._resolve_voice_uri_locked(req)
+
+    async def _resolve_voice_uri_locked(self, req: SegmentRequest) -> str:
         voice = req.voice
         # 1) 显式映射（display_name / 两个路径字段都试）
         for k in (voice.display_name, voice.local_path, voice.tts_path):

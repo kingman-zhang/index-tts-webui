@@ -69,10 +69,25 @@ class IndexttsArtEngine:
         self.result_url = result_url
         self.poll_interval = poll_interval
         self.timeout = timeout
+        # 参考音频 data URI 缓存（键=path，值=((size, mtime_ns), uri)）：
+        # 同一音色每段 base64 编码一次即可，文件变化自动失效
+        self._audio_cache: dict[str, tuple[tuple[int, int], str]] = {}
 
     async def health(self) -> bool:
         """有 Token 即视为可调度（平台侧调度，无实例概念）；真正可用性在合成时验证。"""
         return bool(self.token)
+
+    def _audio_data_uri(self, path: str) -> str:
+        """带缓存的 data URI 编码（避免每段重复 base64 整个参考音频）。"""
+        p = Path(path)
+        st = p.stat()
+        key = (st.st_size, st.st_mtime_ns)
+        hit = self._audio_cache.get(path)
+        if hit and hit[0] == key:
+            return hit[1]
+        uri = audio_data_uri(path)
+        self._audio_cache[path] = (key, uri)
+        return uri
 
     def _build_body(self, req: SegmentRequest) -> dict:
         import copy
@@ -80,7 +95,7 @@ class IndexttsArtEngine:
         body = copy.deepcopy(self.body_template)
         if not req.voice.local_path:
             raise ValueError(f"autodl.art 引擎需要本地参考音频文件: {req.voice.display_name!r}")
-        body = self._replace(body, "{{AUDIO}}", audio_data_uri(req.voice.local_path))
+        body = self._replace(body, "{{AUDIO}}", self._audio_data_uri(req.voice.local_path))
         # 停顿标记：autodl.art 工作流不支持，降级为逗号（自然短停顿）
         import re as _re
 
@@ -117,9 +132,9 @@ class IndexttsArtEngine:
         if not task_id:
             raise RuntimeError(f"autodl.art 未返回 task_id: {resp.text[:300]}")
 
+        # 提交后立即首查一次（平台侧有时秒回），未完成再按 poll_interval 轮询
         deadline = asyncio.get_event_loop().time() + self.timeout
-        while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(self.poll_interval)
+        while True:
             r = await self.client.get(self.result_url.format(task_id=task_id), headers=headers, timeout=60.0)
             if r.status_code != 200:
                 raise RuntimeError(f"autodl.art 状态查询失败 HTTP {r.status_code}")
@@ -129,7 +144,9 @@ class IndexttsArtEngine:
                 return await self._download(data)
             if status == "FAILED":
                 raise RuntimeError(f"autodl.art 任务失败: {json.dumps(data, ensure_ascii=False)[:500]}")
-        raise TimeoutError(f"autodl.art 任务超时 task_id={task_id}")
+            if asyncio.get_event_loop().time() >= deadline:
+                raise TimeoutError(f"autodl.art 任务超时 task_id={task_id}")
+            await asyncio.sleep(self.poll_interval)
 
     async def _download(self, data: dict) -> bytes:
         candidates = data.get("results", [])
