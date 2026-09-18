@@ -113,8 +113,16 @@ def build_registry() -> EngineRegistry:
             Indextts302aiEngine(cache_path=DATA_DIR / "ai302_voices.json")
         )
     if os.environ.get("SILICONFLOW_API_KEY"):
+        # 默认国内站（CosyVoice2）；要接国际站 IndexTTS-2 时：
+        #   SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1
+        #   SILICONFLOW_MODEL=IndexTeam/IndexTTS-2
+        #   （换国际站 Key，国内/国际 Key 不互通）
         registry.register(
-            IndexttsSiliconflowEngine(cache_path=DATA_DIR / "siliconflow_voices.json")
+            IndexttsSiliconflowEngine(
+                base_url=os.environ.get("SILICONFLOW_BASE_URL")
+                or "https://api.siliconflow.cn/v1",
+                cache_path=DATA_DIR / "siliconflow_voices.json",
+            )
         )
     registry.register(IndexttsArtEngine())  # token 从 AUTODL_API_TOKEN 读取
     return registry
