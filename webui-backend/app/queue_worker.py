@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from .config import TTS_URL, http_client, logger
 from .stores import load_glossary
 from . import queue_state as qs
+from .membership import service as member_svc
 
 
 def validate_queue_lines(lines: list) -> None:
@@ -25,6 +26,27 @@ def validate_queue_lines(lines: list) -> None:
         preview = ", ".join(str(i) for i in blank_lines[:10])
         suffix = " 等" if len(blank_lines) > 10 else ""
         raise HTTPException(400, f"第 {preview}{suffix} 行台词为空，请补充内容后再提交")
+
+
+def refund_task_points(task: dict) -> None:
+    """会员预扣积分任务在非成功终态时退还积分（幂等，异常不外抛）。
+
+    供 process_queue / resume_polling 的 finally 与取消入口复用。
+    """
+    if not (member_svc.ENFORCE and task.get("member_id") and task.get("points_charged")):
+        return
+    if task.get("status") == qs.QueueTaskStatus.SUCCESS:
+        return
+    try:
+        member_svc.refund_task_charge(
+            task["member_id"], task.get("id") or "",
+            int(task.get("points_charged") or 0),
+            task.get("points_charge_log") or "",
+        )
+        task["points_charged"] = 0
+        task["points_charge_log"] = ""
+    except Exception as e:  # 退款失败不阻断队列收尾
+        logger.warning("[member] refund failed task=%s error=%s", task.get("id"), e)
 
 
 async def resume_polling(webui_task_id: str):
@@ -89,6 +111,7 @@ async def resume_polling(webui_task_id: str):
         task["error"] = str(e)
         qs.persist_task(webui_task_id)
     finally:
+        refund_task_points(task)
         task["finished_at"] = datetime.now().isoformat()
         qs.persist_task(webui_task_id)
         qs.current_task_id = None
@@ -230,6 +253,7 @@ async def process_queue():
         task["error"] = str(e)
         qs.persist_task(qs.current_task_id)
     finally:
+        refund_task_points(task)
         task["finished_at"] = datetime.now().isoformat()
         qs.persist_task(qs.current_task_id)
         qs.current_task_id = None

@@ -7,22 +7,34 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from .. import queue_state as qs
 from ..config import logger
 from ..models import QueueTaskModel, QueueTaskNameModel
-from ..queue_worker import process_queue, validate_queue_lines
+from ..queue_worker import process_queue, refund_task_points, validate_queue_lines
+from ..membership import get_optional_user
+from ..membership.service import MemberError
+from ..membership import service as member_svc
 
 router = APIRouter()
 
 
 @router.post("/api/queue/submit")
-async def submit_to_queue(task: QueueTaskModel):
-    """提交任务到队列。"""
+async def submit_to_queue(
+    task: QueueTaskModel,
+    user: Optional[dict] = Depends(get_optional_user),
+):
+    """提交任务到队列。
+
+    会员扣费：MEMBER_ENFORCE=1 时登录用户按字数预扣积分，余额不足返回 402；
+    未开启时行为与旧版完全一致（不含任何会员逻辑）。
+    """
+    validate_queue_lines(task.lines)
     task_id = f"q_{uuid.uuid4().hex[:10]}"
-    qs.queue_tasks[task_id] = {
+    entry = {
         "id": task_id,
         "project_name": task.project_name,
         "kind": task.kind,
@@ -39,7 +51,19 @@ async def submit_to_queue(task: QueueTaskModel):
         "created_at": datetime.now().isoformat(),
         "cancel_requested": False,
     }
-    validate_queue_lines(task.lines)
+    if member_svc.ENFORCE:
+        if not user:
+            raise HTTPException(401, "请先登录后再提交合成任务")
+        try:
+            charge = member_svc.charge_for_task(user, task.lines, task_id)
+        except MemberError as e:
+            raise HTTPException(e.code, e.message)
+        if charge["log_id"]:
+            entry["member_id"] = user["user_id"]
+            entry["points_charged"] = member_svc.estimate_task_cost(task.lines)
+            entry["points_charge_log"] = charge["log_id"]
+            entry["message"] = f"排队中（已预扣 {entry['points_charged']} 积分）"
+    qs.queue_tasks[task_id] = entry
     qs.queue_order.append(task_id)
     qs.persist_task(task_id)
     qs.persist_queue_order()
@@ -88,14 +112,30 @@ async def list_queue():
 
 
 @router.put("/api/queue/{task_id}")
-async def update_queue_task(task_id: str, payload: QueueTaskModel):
-    """编辑尚未执行的排队任务。运行中及终态任务不可修改。"""
+async def update_queue_task(
+    task_id: str,
+    payload: QueueTaskModel,
+    user: Optional[dict] = Depends(get_optional_user),
+):
+    """编辑尚未执行的排队任务。运行中及终态任务不可修改。
+
+    已预扣积分的任务改稿后按新字数多退少补（仅 MEMBER_ENFORCE=1）。
+    """
     task = qs.queue_tasks.get(task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
     if task.get("status") != qs.QueueTaskStatus.QUEUED:
         raise HTTPException(409, "只有尚未执行的排队任务可以编辑")
     validate_queue_lines(payload.lines)
+    if member_svc.ENFORCE and task.get("member_id"):
+        try:
+            rb = member_svc.rebalance_task_charge(
+                {"user_id": task["member_id"]}, payload.lines, task_id,
+                int(task.get("points_charged") or 0), task.get("points_charge_log") or "",
+            )
+        except MemberError as e:
+            raise HTTPException(e.code, e.message)
+        task["points_charged"] = rb["charged"]
     task.update({
         "project_name": payload.project_name,
         "lines": payload.lines,
@@ -165,6 +205,15 @@ async def retry_queue_task(task_id: str):
     })
     if task_id not in qs.queue_order:
         qs.queue_order.append(task_id)
+    # 会员扣费：重试重新预扣（此前失败/中断时已退款）
+    if member_svc.ENFORCE and task.get("member_id"):
+        cost = member_svc.estimate_task_cost(task.get("lines", []))
+        try:
+            charge = member_svc.charge_for_task({"user_id": task["member_id"]}, task.get("lines", []), task_id)
+        except MemberError as e:
+            raise HTTPException(e.code, e.message)
+        task["points_charged"] = cost if charge["log_id"] else 0
+        task["points_charge_log"] = charge["log_id"]
     qs.persist_task(task_id)
     qs.persist_queue_order()
     import asyncio
@@ -233,6 +282,7 @@ async def cancel_queue_task(task_id: str):
             qs.queue_order.remove(task_id)
         task["status"] = qs.QueueTaskStatus.CANCELLED
         task["message"] = "已取消"
+        refund_task_points(task)  # 退还预扣积分（无则空操作）
         qs.persist_task(task_id)
         qs.persist_queue_order()
         return {"cancelled": task_id}

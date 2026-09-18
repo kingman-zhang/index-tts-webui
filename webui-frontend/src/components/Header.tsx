@@ -4,6 +4,7 @@ import {
   ChevronsUpDown, FileText, Trash2,
 } from "lucide-react";
 import { Input, Button, Badge } from "./ui";
+import { UserMenu } from "./UserMenu";
 import type { MonoProjectSnapshot } from "@/lib/projectStore";
 import { cn } from "@/lib/utils";
 
@@ -216,6 +217,11 @@ export function Header({
             </Button>
           </>
         )}
+
+        {/* 用户菜单（登录/积分/个人中心），两个工作页共用 */}
+        <div className="ml-1">
+          <UserMenu />
+        </div>
       </div>
     </header>
   );
