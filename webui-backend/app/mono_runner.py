@@ -296,14 +296,6 @@ async def run_mono_task(task: dict) -> None:
     # 任务内固定单一引擎，避免中途故障切换导致音频参数不一致
     engine = await build_registry().resolve()
     logger.info("[mono] task=%s engine=%s lines=%d speed=%.2f", task_id, engine.name, len(lines), speed)
-    # art 平台当前不支持情绪控制（滑杆被静默忽略，见 indextts_art.py docstring），
-    # 任务带情绪标签时提前警告，避免"合成了但没情绪"的静默降级
-    if engine.name == "indextts_art" and any(_emotion_label(l) for l in lines):
-        logger.warning(
-            "[mono] task=%s autodl.art 平台当前不支持情绪控制（滑杆被忽略），"
-            "情绪标签将降级为跟随参考音频；需要情绪表达请切换 TTS_ENGINE_PREFERRED=indextts_302ai",
-            task_id,
-        )
     voice = VoiceRef(tts_path=voice_path, local_path=_resolve_local_voice(voice_path), display_name=Path(voice_path).name)
 
     entries = _flatten_segments(lines, engine.name)

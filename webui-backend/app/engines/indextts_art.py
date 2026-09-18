@@ -11,19 +11,16 @@
   + prompt_text（参考音频转写；合成文本经在线调用页面对应字段传入，
   以 tools/autodl_body.json 模板为准——字段名随工作流版本可能变化）。
 
-情绪控制结论（2026-09-18 探测锤实，勿再重复排查）：
-  **本工作流当前实际不支持任何情绪控制，唯一可用模式 = 跟随参考音频。**
-  - 表单 schema（GET /api/v1/comfyui/workflows/indextts2-v1，存档
-    tools/autodl_indextts2-v1_def.json）声明 emo_control_method 有三档：
-    与音色参考音频相同 / 使用情感参考音频 / 使用情感向量控制，滑杆 0-1.4；
-  - 但提交端对后两档一律拒绝（"参数值非法"），与滑杆类型（int/float/str）、
-    emo_random、是否带 emo_ref_audio 等组合无关（10+ 变体全试）；
-  - 默认档下滑杆被接受但**静默忽略**——这是 q_718181b5f6 全程无情绪变化的
-    根因（此前探针只验了 ASR 文本，没验情绪表达，漏检）。
-  - 因此 _build_body 保留滑杆赋值（平台修好后即生效），但调用方
-    （mono_runner）会在 art 首选 + 任务含情绪标签时打警告。
-  另：emo_ref_audio（情感参考音频 URL）字段存在且 required=false，
-  "使用情感参考音频"模式可作为平台修复后的备选路径。
+情绪控制结论（2026-09-18 深夜实测修正，覆盖当日早间"平台不支持情绪"的误判）：
+  **"使用情感向量控制"档是可用的**，前提：
+  - emo_surprised 必须传字符串 "0"（schema type=enum，写 int 报
+    "enum 参数值必须是字符串"；官方 input_example 自己写 int 0 也是错的）；
+  - 早间误判根因：探测请求体里 {{AUDIO}}/{{TEXT}} 占位符未替换，
+    prompt_simple 是 audio 类型字段，占位符非法导致所有模式一律
+    "参数值非法"，与情绪档位无关（教训：探测必须用生产级合法请求体）。
+  策略：有情绪标签（非 neutral）→ emo_control_method="使用情感向量控制"
+  + 置对应滑杆；无标签/neutral → 保持默认档"与音色参考音频相同"。
+  另：emo_ref_audio（情感参考音频）字段存在，"使用情感参考音频"档可作备选。
 """
 
 from __future__ import annotations
@@ -115,15 +112,21 @@ class IndexttsArtEngine:
 
         art_text = _re.sub(r"\[pause:[0-9]*\.?[0-9]+\]", "，", req.text).replace("<#>", "，")
         body = self._replace(body, "{{TEXT}}", art_text)
-        # 统一 8 标签 → 平台 8 滑杆（未选标签时保持模板原值=跟随参考音频）。
-        # 赋值必须保持各字段在模板中的原类型：emo_surprised 等枚举字段平台要求
-        # 字符串（"0"/"1"），写成 int 会被拒（"enum 参数值必须是字符串"）
-        if req.emotion_label and _LABEL_TO_FIELD.get(req.emotion_label):
-            field_name = _LABEL_TO_FIELD[req.emotion_label]
+        # 统一 8 标签 → 平台 8 滑杆：
+        # - 有标签（非 neutral）→ 切"使用情感向量控制"档 + 置滑杆（该档下平台
+        #   真正读滑杆；默认档下滑杆被静默忽略——2026-09-18 实测）
+        # - emo_surprised 平台锁死单选项枚举 "0"，必须字符串（int 报
+        #   "enum 参数值必须是字符串"）→ surprised 无法表达，降级跟随音色
+        # - 无标签/neutral → 保持模板默认档"与音色参考音频相同"，滑杆不碰
+        field_name = _LABEL_TO_FIELD.get(req.emotion_label or "") if req.emotion_label else None
+        if field_name:
+            body["emo_control_method"] = "使用情感向量控制"
             for label, f in _LABEL_TO_FIELD.items():
                 if f and f in body:
                     selected = f == field_name
-                    body[f] = ("1" if selected else "0") if isinstance(body[f], str) else (1 if selected else 0)
+                    # 数值滑杆保持数值类型（schema type=number）；emo_surprised
+                    # 不在循环内赋值（锁死 "0"，见 _LABEL_TO_FIELD 映射 None）
+                    body[f] = 1.0 if selected else 0.0
         return body
 
     def _replace(self, value, placeholder: str, content: str):
