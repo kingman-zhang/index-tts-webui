@@ -29,6 +29,7 @@ from .config import DATA_DIR, TTS_URL, http_client, logger
 from .engines import (
     EMO_VECTOR_ORDER,
     EngineRegistry,
+    Indextts302aiEngine,
     IndexttsArtEngine,
     IndexttsLocalEngine,
     IndexttsSiliconflowEngine,
@@ -96,15 +97,21 @@ def split_by_pauses(text: str) -> list[tuple[str, int]]:
 
 
 def build_registry() -> EngineRegistry:
-    """配音模式引擎注册表：自建 → SiliconFlow → autodl.art（有 Key/Token 即注册）。
+    """配音模式引擎注册表：自建 → 302.ai → SiliconFlow → autodl.art（有 Key/Token 即注册）。
 
-    SiliconFlow 按字节计费（$7.15/M UTF-8 bytes，与调用次数无关），
-    作为 GPU 不在线时的第一备援；autodl.art 按次计费，降级为第二备援。
+    302.ai 是托管原生 IndexTTS-2（8 维情绪向量、按 token 计费 ≈¥2.6/万汉字），
+    真机音质接近自建（2026-09-18 ASR 校验 95%+），排第一备援；
+    SiliconFlow 国内站是 CosyVoice2（提示词情绪 hack，音质有差距），降第二；
+    autodl.art 按次计费，降级为最后备援。
     """
     import os
 
     registry = EngineRegistry()
     registry.register(IndexttsLocalEngine(TTS_URL, http_client))
+    if os.environ.get("INDEXTTS302_API_KEY"):
+        registry.register(
+            Indextts302aiEngine(cache_path=DATA_DIR / "ai302_voices.json")
+        )
     if os.environ.get("SILICONFLOW_API_KEY"):
         registry.register(
             IndexttsSiliconflowEngine(cache_path=DATA_DIR / "siliconflow_voices.json")
