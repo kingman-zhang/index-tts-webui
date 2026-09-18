@@ -10,6 +10,20 @@
   请求体字段：8 个情绪滑杆 + emo_control_method + prompt_simple(base64 data URI)
   + prompt_text（参考音频转写；合成文本经在线调用页面对应字段传入，
   以 tools/autodl_body.json 模板为准——字段名随工作流版本可能变化）。
+
+情绪控制结论（2026-09-18 探测锤实，勿再重复排查）：
+  **本工作流当前实际不支持任何情绪控制，唯一可用模式 = 跟随参考音频。**
+  - 表单 schema（GET /api/v1/comfyui/workflows/indextts2-v1，存档
+    tools/autodl_indextts2-v1_def.json）声明 emo_control_method 有三档：
+    与音色参考音频相同 / 使用情感参考音频 / 使用情感向量控制，滑杆 0-1.4；
+  - 但提交端对后两档一律拒绝（"参数值非法"），与滑杆类型（int/float/str）、
+    emo_random、是否带 emo_ref_audio 等组合无关（10+ 变体全试）；
+  - 默认档下滑杆被接受但**静默忽略**——这是 q_718181b5f6 全程无情绪变化的
+    根因（此前探针只验了 ASR 文本，没验情绪表达，漏检）。
+  - 因此 _build_body 保留滑杆赋值（平台修好后即生效），但调用方
+    （mono_runner）会在 art 首选 + 任务含情绪标签时打警告。
+  另：emo_ref_audio（情感参考音频 URL）字段存在且 required=false，
+  "使用情感参考音频"模式可作为平台修复后的备选路径。
 """
 
 from __future__ import annotations
