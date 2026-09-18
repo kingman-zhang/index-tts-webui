@@ -5,7 +5,8 @@
       → {"data": {"task_id": ...}}
   GET  https://autodl.art/api/v1/comfyui/comfyui_workflow/result/{task_id}
       → {"data": {"status": "SUCCESS|FAILED|...", "results": [{"url": ...}|url, ...]}}
-  计费：按次提交，单次 ≤2048 字符（分片控制见 chunker.py）。
+  计费：0.001 元/s（2026-09-18 平台调价，原为按次计费）；单次提交 ≤2048 字符
+      （分片控制见 chunker.py，分片次数多会增加计费时长边界的冗余）。
   请求体字段：8 个情绪滑杆 + emo_control_method + prompt_simple(base64 data URI)
   + prompt_text（参考音频转写；合成文本经在线调用页面对应字段传入，
   以 tools/autodl_body.json 模板为准——字段名随工作流版本可能变化）。

@@ -97,13 +97,15 @@ def split_by_pauses(text: str) -> list[tuple[str, int]]:
 
 
 def build_registry() -> EngineRegistry:
-    """配音模式引擎注册表：自建 → 302.ai → SiliconFlow → autodl.art（有 Key/Token 即注册）。
+    """配音模式引擎注册表，默认顺序：自建 → 302.ai → SiliconFlow → autodl.art。
 
-    302.ai 是托管原生 IndexTTS-2（8 维情绪向量、按 token 计费 ≈¥2.6/万汉字），
-    真机音质接近自建（2026-09-18 ASR 校验 95%+），排第一备援；
-    SiliconFlow 国内站是 CosyVoice2（提示词情绪 hack，音质有差距），降第二；
-    autodl.art 按次计费，降级为最后备援。
+    有 Key/Token 才注册对应引擎。TTS_ENGINE_PREFERRED 可调整优先级：
+    逗号分隔的引擎名（indextts_local / indextts_302ai / indextts_siliconflow /
+    indextts_art），列出的引擎按给定顺序排到最前，未列出的保持原相对顺序排在
+    其后；resolve() 依序探活——排最前的不可用时自动落到后续引擎。
+    例：TTS_ENGINE_PREFERRED=indextts_art
     """
+    import logging
     import os
 
     registry = EngineRegistry()
@@ -125,6 +127,20 @@ def build_registry() -> EngineRegistry:
             )
         )
     registry.register(IndexttsArtEngine())  # token 从 AUTODL_API_TOKEN 读取
+
+    preferred = os.environ.get("TTS_ENGINE_PREFERRED", "").strip()
+    if preferred:
+        log = logging.getLogger(__name__)
+        by_name = {e.name: e for e in registry.engines}
+        head: list = []
+        for n in (s.strip() for s in preferred.split(",")):
+            if not n:
+                continue
+            if n in by_name:
+                head.append(by_name.pop(n))
+            else:
+                log.warning("TTS_ENGINE_PREFERRED 含未注册引擎 %r（缺 Key 或名字写错），已忽略", n)
+        registry.engines = head + list(by_name.values())
     return registry
 
 
