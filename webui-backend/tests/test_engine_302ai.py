@@ -284,6 +284,33 @@ def main():
     except ValueError:
         check(True, "超长文本抛 ValueError（chunker 提示）")
 
+    # 14) 文件名兜底：参考音频不可读（旧部署机器路径），但缓存里有同名参考音频
+    #     的已上传 URL → 直接复用，不触发上传
+    api = Fake302()
+    cache_file2 = tmp / "ai302_voices_fallback.json"
+    cache_file2.write_text(json.dumps({
+        "/Users/someone/old-machine/voices/男-播客1.mp3:501554:1785050368501322027":
+            "https://file.302.ai/gpt/imgs/cached/ref.mp3",
+    }, ensure_ascii=False), encoding="utf-8")
+    eng11 = Indextts302aiEngine(
+        api_key="sk-test", client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
+        cache_path=cache_file2,
+    )
+    seg_stale = SegmentRequest(
+        text="旧路径任务",
+        voice=VoiceRef(
+            local_path="/root/autodl-tmp/index-tts/voices/男-播客1.mp3",
+            tts_path="/root/autodl-tmp/index-tts/voices/男-播客1.mp3",
+            display_name="男-播客1.mp3",
+        ),
+        emotion_label=None, speed=1.0,
+    )
+    audio = run(eng11.synthesize_segment(seg_stale))
+    check(audio == b"audio-from-original-host", "文件名兜底命中缓存 URL 并完成合成")
+    check(api.upload_calls == 0, "文件名兜底复用 URL，不重复上传")
+    check((api.last_submit_payload or {}).get("speaker_audio_url") == "https://file.302.ai/gpt/imgs/cached/ref.mp3",
+          "payload 使用缓存中的 URL")
+
     print(f"\n===== {PASS}/{PASS + FAIL} passed =====")
     sys.exit(1 if FAIL else 0)
 

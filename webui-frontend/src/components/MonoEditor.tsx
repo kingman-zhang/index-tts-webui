@@ -522,6 +522,11 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
       if ((sp.textContent?.length ?? 0) === 0 && !sp.querySelector("[data-marker]")) sp.remove();
     });
     const newText = serializeCanvas(el);
+    // Chrome 全选删除后画布会残留 <br>/空行 div，:empty 不成立导致占位符消失；
+    // 序列化结果为空时把 DOM 归位为真空
+    if (newText === "" && el.innerHTML !== "") {
+      el.innerHTML = "";
+    }
     const prev = textRef.current;
     if (newText === prev) return;
     // 入 undo 栈（记录当前光标，撤回时恢复）
@@ -721,19 +726,17 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
 
     // ── 无选区：任意位置都可插芯片（插在已有作用域内时，原作用域被截断到芯片前，
     //    重渲染后自动形成"一行多情绪段"）─────────────────────
+    // 手动 Range 插入而非 execCommand("insertHTML")：后者在行首/粘贴后的裸文本
+    // 结构下会把相邻行合并、拆坏块级结构（与 insertPause 同原因，实测 bug）
     const marker = `【${meta.label}】`;
-    const sameBefore = el.querySelectorAll(`[data-marker="${marker}"]`).length;
-    document.execCommand("insertHTML", false, emotionChipHtml(meta));
+    const off = caretOffsetIn(el);
+    const chip = htmlToElement(emotionChipHtml(meta));
+    r.deleteContents();
+    r.insertNode(chip);
     // 序列化 → 重渲染整画布：lineToHtml 会把芯片后到行尾的文字包进作用域
     el.innerHTML = markerTextToHtml(serializeCanvas(el));
-    const target = el.querySelectorAll(`[data-marker="${marker}"]`)[sameBefore];
-    if (target) {
-      const at = document.createRange();
-      at.setStartAfter(target);
-      at.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(at);
-    }
+    // 光标落回芯片正后方（off 是插入前的标记文本偏移，加上 marker 自身长度）
+    if (off !== null) setCaretAtMarkerOffset(el, off + marker.length);
     saveSelection();
     emitChange();
   };

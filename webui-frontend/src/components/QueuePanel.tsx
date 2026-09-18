@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle } from "lucide-react";
+import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
 import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
@@ -58,6 +58,9 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  // 报错详情弹窗（失败自动弹出；队列内详情图标可再次打开）
+  const [errorModal, setErrorModal] = useState<{ name: string; error: string } | null>(null);
+  const prevStatusRef = useRef<Map<string, string>>(new Map());
 
   // 拖拽状态
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -71,6 +74,23 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
       setTasks(r.tasks);
       setCurrent(r.current);
       setQueued(r.queued);
+      // 任务从进行中转为失败时自动弹出报错详情（首次加载不弹，避免历史失败打扰）
+      const prev = prevStatusRef.current;
+      if (prev.size > 0) {
+        for (const t of r.tasks) {
+          const before = prev.get(t.id);
+          if (
+            before &&
+            before !== t.status &&
+            (t.status === "failed" || t.status === "interrupted") &&
+            t.error
+          ) {
+            setErrorModal({ name: t.project_name, error: t.error });
+            break; // 一次只弹一个，其余通过队列详情图标查看
+          }
+        }
+      }
+      prevStatusRef.current = new Map(r.tasks.map(t => [t.id, t.status]));
     } catch {}
   };
 
@@ -87,6 +107,9 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     queued: tasks.filter(t => t.status === "queued").length,
     paused: tasks.filter(t => t.status === "paused").length,
   };
+
+  // 任务类型徽标只在队列混排（播客+配音并存）时显示，单一类型时无信息量
+  const showKindBadge = new Set(tasks.map(t => t.kind ?? "podcast")).size > 1;
 
   const filteredTasks = activeFilter === "failed"
     ? tasks.filter(t => t.status === "failed" || t.status === "interrupted")
@@ -364,10 +387,21 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                             {task.project_name}
                           </span>
                         )}
-                        {task.kind === "mono" && <Badge color="green" className="shrink-0">配音</Badge>}
+                        {showKindBadge && (task.kind === "mono"
+                          ? <Badge color="green" className="shrink-0">配音</Badge>
+                          : <Badge color="gray" className="shrink-0">播客</Badge>)}
                         <Badge color={cfg.color as any} className="shrink-0">{cfg.label}</Badge>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {(task.status === "failed" || task.status === "interrupted") && task.error && (
+                          <button
+                            onClick={() => setErrorModal({ name: task.project_name, error: task.error! })}
+                            className="p-1 text-red-500 hover:bg-red-100 rounded"
+                            title="查看报错详情"
+                          >
+                            <AlertCircle className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button onClick={() => viewContent(task)} className="px-1.5 py-0.5 text-[0.6875rem] text-gray-500 hover:bg-gray-200 rounded" title="查看任务内容">
                           查看内容
                         </button>
@@ -447,6 +481,45 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
           </>
         )}
       </CardContent>
+
+      {/* 报错详情弹窗：失败自动弹出，也可通过队列项的详情图标再次打开 */}
+      {errorModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setErrorModal(null)} />
+          <div className="relative w-full max-w-lg rounded-2xl bg-white shadow-xl p-5">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                <h3 className="text-sm font-semibold text-gray-800 truncate">
+                  {errorModal.name} · 任务失败
+                </h3>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => setErrorModal(null)}
+                className="p-1 rounded text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="max-h-[50vh] overflow-y-auto scrollbar-thin rounded-lg bg-red-50 border border-red-100 px-3 py-2.5">
+              <p className="text-xs text-red-600 leading-5 whitespace-pre-wrap break-words">
+                {errorModal.error}
+              </p>
+            </div>
+            <div className="mt-3 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setErrorModal(null)}
+                className="h-8 px-4 rounded-lg bg-red-500 text-white text-xs hover:bg-red-400 transition-colors"
+              >
+                我知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

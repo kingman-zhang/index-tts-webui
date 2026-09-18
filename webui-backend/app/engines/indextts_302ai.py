@@ -31,7 +31,8 @@
 引擎行为约定（与 base.py 协议对齐）：
   - 音色解析顺序：voice_map 显式映射（display_name 或路径 → 公网 URL）→
     本地缓存（cache_path JSON，键=路径+大小+mtime）→ 参考音频在 backend
-    侧可读时自动上传并缓存。不可读且无映射报 ValueError。
+    侧可读时自动上传并缓存 → 文件不可读时按文件名在 voice_map/缓存中
+    复用同名参考音频的已上传 URL。都不命中才报 ValueError。
   - 情绪：8 标签 → one-hot 向量；neutral/None 不传 emotion_vector（跟随音色）。
   - 停顿：[pause:x] 已由 backend split_by_pauses 切分，本引擎只收纯文本。
   - 轮询：2s 间隔，单段超时 300s。
@@ -164,6 +165,12 @@ class Indextts302aiEngine:
             raise RuntimeError(f"302.ai 上传未返回 URL: {resp.text[:300]}")
         return data
 
+    @staticmethod
+    def _key_basename(key: str) -> str:
+        """voice_map 键或缓存键（{path}:{size}:{mtime_ns}）→ 文件名部分。"""
+        raw = key.rsplit(":", 2)[0] if key.count(":") >= 2 else key
+        return Path(raw).name
+
     async def _resolve_voice_url(self, req: SegmentRequest) -> str:
         voice = req.voice
         # 1) 显式映射（display_name / 两个路径字段都试）
@@ -173,20 +180,29 @@ class Indextts302aiEngine:
         # 2) 本地缓存
         self._load_cache()
         path = self._source_path(voice)
-        if path is None:
-            raise ValueError(
-                f"302.ai 备援需要参考音频在 backend 侧可读（speaker_audio_url 要求公网 URL），"
-                f"或在 voice_map 中预映射 URL（音色: {voice.display_name!r}，"
-                f"local_path={voice.local_path!r}）"
-            )
-        key = self._cache_key(path)
-        if key in self._cache:
-            return self._cache[key]
-        # 3) 自动上传并缓存
-        url = await self._upload_voice(path)
-        self._cache[key] = url
-        self._save_cache()
-        return url
+        if path is not None:
+            key = self._cache_key(path)
+            if key in self._cache:
+                return self._cache[key]
+            # 3) 自动上传并缓存
+            url = await self._upload_voice(path)
+            self._cache[key] = url
+            self._save_cache()
+            return url
+        # 4) 兜底：文件在 backend 侧不可读（典型：任务带着旧部署机器的路径，
+        #    如 /root/autodl-tmp/...），按文件名在 voice_map / 缓存中找同名
+        #    参考音频，复用已上传的 URL（不重复花上传费）
+        base = Path(voice.local_path or voice.tts_path or voice.display_name or "").name
+        if base:
+            for source, mapping in (("voice_map", self.voice_map), ("缓存", self._cache)):
+                for k, v in mapping.items():
+                    if str(v).startswith("http") and self._key_basename(k) == base:
+                        return v
+        raise ValueError(
+            f"302.ai 备援需要参考音频在 backend 侧可读（speaker_audio_url 要求公网 URL），"
+            f"或在 voice_map 中预映射 URL（音色: {voice.display_name!r}，"
+            f"local_path={voice.local_path!r}，tts_path={voice.tts_path!r}）"
+        )
 
     # ---------- 合成 ----------
 
