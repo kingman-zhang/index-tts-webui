@@ -9,6 +9,31 @@ from pathlib import Path
 
 import httpx
 
+# ─── .env 加载（零依赖；在解析启动参数前执行，使 .env 成为默认值）───
+# 规则：KEY=VALUE 每行一条，# 开头为注释；不支持行内注释；
+# 已存在的真实环境变量优先于 .env（os.environ.setdefault 语义），
+# 因此临时覆盖仍然方便：TTS_CONCURRENCY=4 python server.py
+def _load_dotenv() -> int:
+    path = Path(__file__).resolve().parents[1] / ".env"
+    if not path.exists():
+        return 0
+    loaded = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if not key:
+            continue
+        if key not in os.environ:
+            os.environ[key] = value
+            loaded += 1
+    return loaded
+
+_ENV_LOADED_COUNT = _load_dotenv()
+
 # ─── 启动参数 ───────────────────────────────────────────────
 
 parser = argparse.ArgumentParser(description="Podcast WebUI Backend")
@@ -25,6 +50,9 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [webui-backend] %(message)s",
 )
 logger = logging.getLogger("webui-backend")
+
+if _ENV_LOADED_COUNT:
+    logger.info(".env 已加载 %d 项配置（真实环境变量优先）", _ENV_LOADED_COUNT)
 
 TTS_URL = args.tts_url.rstrip("/")
 DATA_DIR = Path(args.data_dir)
