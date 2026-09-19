@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import secrets
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -21,6 +22,7 @@ from typing import Optional
 
 from . import store
 from .security import hash_password, new_token, verify_password
+from . import mailer
 
 # ─── 配置 ───────────────────────────────────────────────────
 
@@ -32,7 +34,14 @@ ENFORCE = os.environ.get("MEMBER_ENFORCE", "0") == "1"
 ADMIN_TOKEN = os.environ.get("MEMBER_ADMIN_TOKEN", "") or None
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fa5]{2,24}$")
+EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 MAX_POINT_LOGS_PER_USER = 500  # 每用户流水上限（防无限增长），超限丢最旧的
+
+# 邮箱验证码策略
+EMAIL_CODE_TTL = 10 * 60          # 有效期 10 分钟
+EMAIL_CODE_RESEND_INTERVAL = 60   # 同邮箱重发间隔
+EMAIL_CODE_DAILY_LIMIT = 10       # 同邮箱每日上限
+EMAIL_CODE_MAX_ATTEMPTS = 5       # 验证错误次数上限，超过作废
 
 
 class MemberError(Exception):
@@ -53,6 +62,7 @@ def public_user(user: dict) -> dict:
         "username": user["username"],
         "nickname": user.get("nickname") or user["username"],
         "bio": user.get("bio") or "",
+        "email": user.get("email") or "",
         "points": user.get("points", 0),
         "disabled": user.get("disabled", False),
         "created_at": user.get("created_at"),
@@ -137,11 +147,16 @@ def register(username: str, password: str, nickname: str = "") -> dict:
     return {"token": token, "user": public_user(user)}
 
 
-def login(username: str, password: str) -> dict:
+def login(identifier: str, password: str) -> dict:
+    """登录。identifier 可以是用户名或邮箱（邮箱注册的用户用邮箱登录）。"""
+    ident = (identifier or "").strip()
     users = store.load_users()
-    user = next((u for u in users.values() if u["username"] == (username or "").strip()), None)
+    user = next(
+        (u for u in users.values() if u["username"] == ident or (u.get("email") or "") == ident.lower()),
+        None,
+    )
     if not user or not verify_password(password or "", user["salt"], user["password_hash"]):
-        raise MemberError("用户名或密码错误", 401)
+        raise MemberError("用户名/邮箱或密码错误", 401)
     if user.get("disabled"):
         raise MemberError("账号已被禁用，请联系管理员", 403)
     user["last_login_at"] = datetime.now().isoformat()
@@ -152,6 +167,107 @@ def login(username: str, password: str) -> dict:
 
 def logout(token: str) -> None:
     revoke_session(token)
+
+
+# ─── 邮箱验证码 / 邮箱注册 ─────────────────────────────────
+
+def request_email_code(email: str) -> dict:
+    """发送注册验证码。限频：同邮箱 60s 一条、每日 10 条。"""
+    email = (email or "").strip().lower()
+    if not EMAIL_RE.match(email) or len(email) > 254:
+        raise MemberError("邮箱格式不正确")
+    if not mailer.configured():
+        raise MemberError("邮箱服务未配置（服务端需设置 SMTP_* 环境变量）", 503)
+    users = store.load_users()
+    if any((u.get("email") or "") == email for u in users.values()):
+        raise MemberError("该邮箱已注册，可直接登录", 409)
+    now = time.time()
+    today = datetime.now().strftime("%Y-%m-%d")
+    codes = store.load_email_codes()
+    entry = codes.get(email)
+    if entry:
+        if now - entry.get("sent_ts", 0) < EMAIL_CODE_RESEND_INTERVAL:
+            wait = int(EMAIL_CODE_RESEND_INTERVAL - (now - entry.get("sent_ts", 0)))
+            raise MemberError(f"发送太频繁，请 {wait} 秒后再试", 429)
+        if entry.get("day") == today and entry.get("day_count", 0) >= EMAIL_CODE_DAILY_LIMIT:
+            raise MemberError("该邮箱今日验证码发送次数已达上限", 429)
+    code = f"{secrets.randbelow(1000000):06d}"
+    # 顺带清理过期条目，防文件膨胀
+    codes = {k: v for k, v in codes.items() if v.get("expires_ts", 0) > now - 86400}
+    codes[email] = {
+        "code": code,
+        "expires_ts": now + EMAIL_CODE_TTL,
+        "sent_ts": now,
+        "attempts": 0,
+        "day": today,
+        "day_count": (entry.get("day_count", 0) + 1) if entry and entry.get("day") == today else 1,
+    }
+    store.save_email_codes(codes)
+    try:
+        mailer.send_verification_code(email, code, EMAIL_CODE_TTL // 60)
+    except Exception as e:  # 发送失败即作废本次验证码，避免"收不到码还报成功"
+        codes = store.load_email_codes()
+        codes.pop(email, None)
+        store.save_email_codes(codes)
+        raise MemberError(f"验证码发送失败，请稍后重试（{type(e).__name__}）", 502)
+    return {"ok": True, "ttl_minutes": EMAIL_CODE_TTL // 60}
+
+
+def register_email(email: str, code: str, password: str, nickname: str = "") -> dict:
+    """邮箱注册：验证码通过后建号。用户名从邮箱前缀自动派生并保证唯一。"""
+    email = (email or "").strip().lower()
+    code = (code or "").strip()
+    if not EMAIL_RE.match(email):
+        raise MemberError("邮箱格式不正确")
+    if len(password or "") < 6:
+        raise MemberError("密码至少 6 位")
+    codes = store.load_email_codes()
+    entry = codes.get(email)
+    if not entry:
+        raise MemberError("请先获取验证码")
+    if entry.get("expires_ts", 0) < time.time():
+        raise MemberError("验证码已过期，请重新获取")
+    if entry.get("attempts", 0) >= EMAIL_CODE_MAX_ATTEMPTS:
+        raise MemberError("验证码错误次数过多，请重新获取")
+    if code != entry["code"]:
+        entry["attempts"] = entry.get("attempts", 0) + 1
+        store.save_email_codes(codes)
+        remain = EMAIL_CODE_MAX_ATTEMPTS - entry["attempts"]
+        raise MemberError(f"验证码错误（剩余 {max(0, remain)} 次机会）")
+    users = store.load_users()
+    if any((u.get("email") or "") == email for u in users.values()):
+        raise MemberError("该邮箱已注册，可直接登录", 409)
+    # 用户名派生：邮箱前缀过滤成合法字符，冲突则加随机后缀
+    base = re.sub(r"[^a-zA-Z0-9_\-\u4e00-\u9fa5]", "", email.split("@")[0])[:20] or "user"
+    username = base
+    while any(u["username"] == username for u in users.values()):
+        username = f"{base}_{uuid.uuid4().hex[:4]}"
+    # 验证通过：作废验证码（一次性）
+    codes.pop(email, None)
+    store.save_email_codes(codes)
+
+    user_id = f"u_{uuid.uuid4().hex[:12]}"
+    salt, pwd_hash = hash_password(password)
+    user = {
+        "user_id": user_id,
+        "username": username,
+        "nickname": (nickname or "").strip() or username,
+        "bio": "",
+        "email": email,
+        "salt": salt,
+        "password_hash": pwd_hash,
+        "points": 0,
+        "disabled": False,
+        "created_at": datetime.now().isoformat(),
+        "last_login_at": None,
+    }
+    users[user_id] = user
+    store.save_users(users)
+    if REG_BONUS > 0:
+        _apply_delta(user, REG_BONUS, "earn", "注册赠送")
+        user = store.load_users()[user_id]
+    token = create_session(user_id)
+    return {"token": token, "user": public_user(user)}
 
 
 # ─── 资料编辑 ───────────────────────────────────────────────

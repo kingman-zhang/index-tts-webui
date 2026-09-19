@@ -7,7 +7,8 @@
 | 功能 | 端点 | 说明 |
 |---|---|---|
 | 注册 | `POST /api/auth/register` | `{username, password, nickname?}` → `{token, user}`；注册赠送积分 |
-| 登录 | `POST /api/auth/login` | 同上；账号禁用返回 403 |
+| 邮箱注册 | `POST /api/auth/email-code` + `POST /api/auth/register-email` | 见「邮箱注册」节；需配置 SMTP_* |
+| 登录 | `POST /api/auth/login` | `{username 或 email, password}` → `{token, user}`；账号禁用返回 403 |
 | 登出 | `POST /api/auth/logout` | 吊销当前 token |
 | 当前用户 | `GET /api/auth/me` | `Authorization: Bearer <token>` |
 | 编辑资料 | `PATCH /api/users/me` | `{nickname?, bio?}` |
@@ -31,6 +32,25 @@
 | `MEMBER_ADMIN_TOKEN` | 空 | 管理接口令牌；未设置则管理接口整体禁用 |
 
 **关键设计：`MEMBER_ENFORCE=0`（默认）时，合成链路零行为变化**——老用户无感；带 token 提交也不会扣钱。开启收费只需在 .env 加一行 `MEMBER_ENFORCE=1`。
+
+## 二·五、邮箱注册（2026-09-19 新增）
+
+流程：用户填邮箱 → `POST /api/auth/email-code` 收 6 位验证码 → `POST /api/auth/register-email` `{email, code, password, nickname?}` 建号并自动登录。
+
+- 用户名从邮箱前缀自动派生（非法字符清洗、冲突加随机后缀），登录时邮箱和派生用户名均可作为账号。
+- 防刷：验证码 10 分钟有效；同邮箱 60 秒 1 条、每日 10 条；验证错 5 次作废；发送失败自动作废不误报成功；注册赠送积分在验证通过后才发。
+
+**SMTP 配置（QQ 邮箱为例）**：QQ 邮箱网页版 → 设置 → 账号 → 开启 SMTP 服务 → 生成授权码，然后 .env 加：
+
+```ini
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_USER=你的QQ号@qq.com
+SMTP_PASS=刚生成的授权码
+SMTP_FROM_NAME=播客工坊
+```
+
+未配置时 `/api/auth/email-code` 返回 503，用户名注册不受影响。163 邮箱同理（smtp.163.com）。`SMTP_TLS` 可选 `ssl`（465 默认）/`starttls`（587 默认）/`none`（本地调试明文）。用户量起来后可平滑切阿里云邮件推送 DirectMail（只需替换 `app/membership/mailer.py` 的 `send_email`）。
 
 ## 三、管理接口（请求头 `X-Admin-Token: <MEMBER_ADMIN_TOKEN>`）
 

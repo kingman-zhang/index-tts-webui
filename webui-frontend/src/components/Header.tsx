@@ -3,8 +3,9 @@ import {
   Save, Check, Loader2, Radio, CheckCircle2, XCircle, Pencil, FolderOpen,
   ChevronsUpDown, FileText, Trash2,
 } from "lucide-react";
-import { Input, Button, Badge } from "./ui";
+import { Input, Button } from "./ui";
 import { UserMenu } from "./UserMenu";
+import { navigate } from "@/lib/auth";
 import type { MonoProjectSnapshot } from "@/lib/projectStore";
 import { cn } from "@/lib/utils";
 
@@ -16,6 +17,10 @@ interface HeaderProps {
   subtitle?: string;
   /** 是否显示「项目」「保存」按钮（双人播客后端项目用） */
   showProjectActions?: boolean;
+  /** 是否显示中间的项目名输入框（个人中心隐藏） */
+  showNameInput?: boolean;
+  /** 是否显示 TTS 状态（个人中心不检测，隐藏） */
+  showTts?: boolean;
   onSave?: () => void;
   onLoadProject?: () => void;
   ttsOnline: boolean | null;
@@ -31,6 +36,39 @@ interface HeaderProps {
   onDeleteProject?: (id: string) => void;
 }
 
+/** 顶部全局导航 tab：三个页面互通（Header 随页面重挂载，直接读 pathname 即可）。 */
+const NAV_TABS = [
+  { path: "/podcast", label: "双人播客", match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") },
+  { path: "/dubbing", label: "单人配音", match: (p: string) => p.startsWith("/dubbing") },
+  { path: "/account", label: "个人中心", match: (p: string) => p.startsWith("/account") },
+];
+
+function NavTabs() {
+  const path = window.location.pathname;
+  return (
+    <nav className="flex items-center gap-0.5 ml-2">
+      {NAV_TABS.map(t => {
+        const active = t.match(path);
+        return (
+          <button
+            key={t.path}
+            type="button"
+            onClick={() => { if (!active) navigate(t.path); }}
+            className={cn(
+              "h-8 px-3 rounded-lg text-xs font-medium transition-colors",
+              active
+                ? "bg-indigo-50 text-indigo-700"
+                : "text-gray-500 hover:text-gray-800 hover:bg-gray-100"
+            )}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 function fmtTime(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -41,7 +79,7 @@ function fmtTime(iso: string): string {
 export function Header({
   name, onRename,
   title = "双人播客工作室", subtitle = "Podcast Studio · powered by IndexTTS2",
-  showProjectActions = true, onSave, onLoadProject,
+  showProjectActions = true, showNameInput = true, showTts = true, onSave, onLoadProject,
   ttsOnline, ttsInfo, saving = false,
   onSaveProject, projectSaved = false,
   projects, onSwitchProject, onDeleteProject,
@@ -61,8 +99,10 @@ export function Header({
           <h1 className="text-sm font-semibold text-gray-800 leading-none">{title}</h1>
           <p className="text-[0.6875rem] text-gray-400 mt-0.5">{subtitle}</p>
         </div>
+        <NavTabs />
       </div>
 
+      {showNameInput && (
       <div className="flex-1 max-w-sm mx-6 flex items-center gap-1.5">
         <div className="relative flex-1">
           <Input
@@ -187,25 +227,24 @@ export function Header({
           </div>
         )}
       </div>
+      )}
 
       <div className="flex items-center gap-2">
-        {/* TTS 状态 */}
-        <div className="flex items-center gap-1.5 mr-2">
-          {ttsOnline === null ? (
-            <Loader2 className="w-3.5 h-3.5 text-gray-400 animate-spin" />
-          ) : ttsOnline ? (
-            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-          ) : (
-            <XCircle className="w-3.5 h-3.5 text-red-400" />
-          )}
-          <span className="text-xs text-gray-500">
-            {ttsOnline === null ? "检测中" : ttsOnline ? (ttsInfo?.model_loaded ? "TTS 就绪" : "模型加载中") : "TTS 离线"}
-          </span>
-        </div>
-
-        <Badge color={ttsOnline ? "green" : "red"}>
-          {ttsOnline ? "在线" : "离线"}
-        </Badge>
+        {/* TTS 状态（图标+文字，个人中心隐藏） */}
+        {showTts && (
+          <div className="flex items-center gap-1.5 mr-2">
+            {ttsOnline === null ? (
+              <Loader2 className="w-3.5 h-3.5 text-gray-400 animate-spin" />
+            ) : ttsOnline ? (
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+            ) : (
+              <XCircle className="w-3.5 h-3.5 text-red-400" />
+            )}
+            <span className="text-xs text-gray-500">
+              {ttsOnline === null ? "检测中" : ttsOnline ? (ttsInfo?.model_loaded ? "TTS 就绪" : "模型加载中") : "TTS 离线"}
+            </span>
+          </div>
+        )}
 
         {showProjectActions && (
           <>

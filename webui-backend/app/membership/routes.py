@@ -66,8 +66,19 @@ class RegisterBody(BaseModel):
 
 
 class LoginBody(BaseModel):
-    username: str
+    username: str  # 用户名或邮箱
     password: str
+
+
+class EmailCodeBody(BaseModel):
+    email: str
+
+
+class RegisterEmailBody(BaseModel):
+    email: str
+    code: str
+    password: str
+    nickname: str = ""
 
 
 class ProfileBody(BaseModel):
@@ -117,6 +128,23 @@ def auth_register(body: RegisterBody):
 def auth_login(body: LoginBody):
     try:
         return service.login(body.username, body.password)
+    except MemberError as e:
+        _err(e)
+
+@router.post("/api/auth/email-code")
+def auth_email_code(body: EmailCodeBody):
+    """发送邮箱注册验证码（需服务端配置 SMTP_*；未配置返回 503）。"""
+    try:
+        return service.request_email_code(body.email)
+    except MemberError as e:
+        _err(e)
+
+
+@router.post("/api/auth/register-email")
+def auth_register_email(body: RegisterEmailBody):
+    """邮箱 + 验证码 + 密码注册，成功即登录。"""
+    try:
+        return service.register_email(body.email, body.code, body.password, body.nickname)
     except MemberError as e:
         _err(e)
 

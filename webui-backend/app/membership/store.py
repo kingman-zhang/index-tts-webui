@@ -116,3 +116,18 @@ def load_checkins() -> dict:
 def save_checkins(data: dict) -> None:
     with _lock:
         _write(CHECKINS_FILE, data)
+
+
+# ─── 邮箱验证码 ─────────────────────────────────────────────
+
+EMAIL_CODES_FILE = MEMBERS_DIR / "email_codes.json"
+
+
+def load_email_codes() -> dict:
+    with _lock:
+        return _read(EMAIL_CODES_FILE, {})
+
+
+def save_email_codes(data: dict) -> None:
+    with _lock:
+        _write(EMAIL_CODES_FILE, data)

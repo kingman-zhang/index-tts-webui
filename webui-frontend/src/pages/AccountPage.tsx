@@ -1,13 +1,15 @@
 /** 个人中心页（/account）：登录/注册、资料编辑、积分（签到/兑换/流水）。 */
 import { useCallback, useEffect, useState } from "react";
 import {
-  ArrowLeft, Coins, Gift, KeyRound, Loader2, LogIn, Radio, Save,
+  Coins, Gift, KeyRound, Loader2, LogIn, Save,
   Ticket, UserRound, Zap, History, CheckCircle2,
 } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Textarea, Badge } from "@/components/ui";
+import { Header } from "@/components/Header";
 import { ToastNode, useToast } from "@/hooks/useAppInit";
 import { clearSession, initAuth, navigate, refreshUser, setSession, updateUser, useAuth } from "@/lib/auth";
 import { memberApi, type PointLog } from "@/api/members";
+import type { MemberUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 let authInited = false;
@@ -43,26 +45,18 @@ export default function AccountPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* 顶栏 */}
-      <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => navigate("/")}
-            title="返回工作台"
-            className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center"
-          >
-            <Radio className="w-4 h-4 text-white" />
-          </button>
-          <div>
-            <h1 className="text-sm font-semibold text-gray-800 leading-none">个人中心</h1>
-            <p className="text-[0.6875rem] text-gray-400 mt-0.5">Account · 会员与积分</p>
-          </div>
-        </div>
-        <Button size="sm" variant="ghost" icon={ArrowLeft} onClick={() => navigate("/")}>
-          返回工作台
-        </Button>
-      </header>
+      {/* 顶栏（与工作页共用，含全局导航 tab） */}
+      <Header
+        name=""
+        onRename={() => {}}
+        title="个人中心"
+        subtitle="Account · 会员与积分"
+        showNameInput={false}
+        showTts={false}
+        showProjectActions={false}
+        ttsOnline={null}
+        ttsInfo={null}
+      />
 
       <main className="max-w-4xl mx-auto px-4 py-8">
         {!ready ? (
@@ -83,19 +77,56 @@ export default function AccountPage() {
 
 function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
+  // 注册方式：用户名 / 邮箱验证码
+  const [regWay, setRegWay] = useState<"username" | "email">("email");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [nickname, setNickname] = useState("");
+  const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [countdown, setCountdown] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [hint, setHint] = useState("");
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const t = setTimeout(() => setCountdown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [countdown]);
+
+  const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+  const sendCode = async () => {
+    setErr("");
+    setHint("");
+    if (!EMAIL_RE.test(email)) { setErr("请输入正确的邮箱地址"); return; }
+    setCodeBusy(true);
+    try {
+      await memberApi.requestEmailCode(email);
+      setCountdown(60);
+      setHint("验证码已发送，请查收邮箱（注意垃圾箱）");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "验证码发送失败");
+    } finally {
+      setCodeBusy(false);
+    }
+  };
 
   const submit = async () => {
     setErr("");
+    setHint("");
     setBusy(true);
     try {
-      const body = mode === "login"
-        ? await memberApi.login(username, password)
-        : await memberApi.register(username, password, nickname);
+      let body: { token: string; user: MemberUser };
+      if (mode === "login") {
+        body = await memberApi.login(username, password);
+      } else if (regWay === "username") {
+        body = await memberApi.register(username, password, nickname);
+      } else {
+        body = await memberApi.registerEmail(email, code, password, nickname);
+      }
       setSession(body.token, body.user);
       onDone(mode === "login" ? `欢迎回来，${body.user.nickname}` : `注册成功，赠送 ${body.user.points} 积分`);
     } catch (e) {
@@ -104,6 +135,12 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
       setBusy(false);
     }
   };
+
+  const canSubmit = mode === "login"
+    ? !!username && !!password
+    : regWay === "username"
+      ? !!username && !!password
+      : EMAIL_RE.test(email) && !!code && !!password;
 
   return (
     <div className="max-w-sm mx-auto">
@@ -124,18 +161,65 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
               </button>
             ))}
           </div>
+          {mode === "register" && (
+            <div className="flex gap-1 p-1 bg-gray-50 border border-gray-100 rounded-lg mt-2">
+              {(["email", "username"] as const).map(w => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => { setRegWay(w); setErr(""); }}
+                  className={cn(
+                    "flex-1 h-7 rounded-md text-xs transition-colors",
+                    regWay === w ? "bg-indigo-50 text-indigo-700 font-medium" : "text-gray-400 hover:text-gray-600"
+                  )}
+                >
+                  {w === "email" ? "邮箱注册" : "用户名注册"}
+                </button>
+              ))}
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
-          <div>
-            <Label>用户名</Label>
-            <Input value={username} onChange={e => setUsername(e.target.value)}
-              placeholder="2-24 位中英文/数字" onKeyDown={e => e.key === "Enter" && submit()} />
-          </div>
+          {mode === "login" && (
+            <div>
+              <Label>用户名或邮箱</Label>
+              <Input value={username} onChange={e => setUsername(e.target.value)}
+                placeholder="用户名或注册邮箱" onKeyDown={e => e.key === "Enter" && submit()} />
+            </div>
+          )}
+          {mode === "register" && regWay === "username" && (
+            <div>
+              <Label>用户名</Label>
+              <Input value={username} onChange={e => setUsername(e.target.value)}
+                placeholder="2-24 位中英文/数字" onKeyDown={e => e.key === "Enter" && submit()} />
+            </div>
+          )}
+          {mode === "register" && regWay === "email" && (
+            <>
+              <div>
+                <Label>邮箱</Label>
+                <Input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="you@example.com" onKeyDown={e => e.key === "Enter" && submit()} />
+              </div>
+              <div>
+                <Label>验证码</Label>
+                <div className="flex gap-2">
+                  <Input value={code} onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder="6 位数字" className="flex-1" onKeyDown={e => e.key === "Enter" && submit()} />
+                  <Button variant="outline" size="sm" className="shrink-0 whitespace-nowrap"
+                    disabled={codeBusy || countdown > 0 || !EMAIL_RE.test(email)}
+                    onClick={sendCode}>
+                    {codeBusy ? "发送中" : countdown > 0 ? `${countdown}s 后重发` : "获取验证码"}
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
           {mode === "register" && (
             <div>
               <Label>昵称（可选）</Label>
               <Input value={nickname} onChange={e => setNickname(e.target.value)}
-                placeholder="不填则与用户名相同" />
+                placeholder={regWay === "email" ? "不填则使用邮箱前缀" : "不填则与用户名相同"} />
             </div>
           )}
           <div>
@@ -145,7 +229,8 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
               onKeyDown={e => e.key === "Enter" && submit()} />
           </div>
           {err && <p className="text-xs text-red-500">{err}</p>}
-          <Button className="w-full" icon={busy ? Loader2 : LogIn} disabled={busy || !username || !password} onClick={submit}>
+          {!err && hint && <p className="text-xs text-green-600">{hint}</p>}
+          <Button className="w-full" icon={busy ? Loader2 : LogIn} disabled={busy || !canSubmit} onClick={submit}>
             {busy ? "请稍候" : mode === "login" ? "登录" : "注册（赠送积分）"}
           </Button>
           {mode === "register" && (

@@ -40,6 +40,16 @@ export const memberApi = {
       jsonInit("POST", { username, password, nickname }));
   },
 
+  async requestEmailCode(email: string) {
+    return fetchJSON<{ ok: boolean; ttl_minutes: number }>("/api/auth/email-code",
+      jsonInit("POST", { email }));
+  },
+
+  async registerEmail(email: string, code: string, password: string, nickname: string) {
+    return fetchJSON<{ token: string; user: MemberUser }>("/api/auth/register-email",
+      jsonInit("POST", { email, code, password, nickname }));
+  },
+
   async login(username: string, password: string) {
     return fetchJSON<{ token: string; user: MemberUser }>("/api/auth/login",
       jsonInit("POST", { username, password }));
