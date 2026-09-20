@@ -49,8 +49,6 @@ export default function AccountPage() {
       <Header
         name=""
         onRename={() => {}}
-        title="个人中心"
-        subtitle="Account · 会员与积分"
         showNameInput={false}
         showTts={false}
         showProjectActions={false}

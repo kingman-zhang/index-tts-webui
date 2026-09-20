@@ -5,16 +5,13 @@ import {
 } from "lucide-react";
 import { Input, Button } from "./ui";
 import { UserMenu } from "./UserMenu";
-import { navigate } from "@/lib/auth";
+import { navigate, useAuth } from "@/lib/auth";
 import type { MonoProjectSnapshot } from "@/lib/projectStore";
 import { cn } from "@/lib/utils";
 
 interface HeaderProps {
   name: string;
   onRename: (name: string) => void;
-  /** 页面标题/副标题（双人播客 / 单人配音各自传入） */
-  title?: string;
-  subtitle?: string;
   /** 是否显示「项目」「保存」按钮（双人播客后端项目用） */
   showProjectActions?: boolean;
   /** 是否显示中间的项目名输入框（个人中心隐藏） */
@@ -36,18 +33,22 @@ interface HeaderProps {
   onDeleteProject?: (id: string) => void;
 }
 
-/** 顶部全局导航 tab：三个页面互通（Header 随页面重挂载，直接读 pathname 即可）。 */
+/**
+ * 顶部全局导航：胶囊分段控件，当前页白底高亮。
+ * 「个人中心」仅在已登录时出现（未登录时右侧只显示「登录」按钮，互斥）。
+ */
 const NAV_TABS = [
-  { path: "/podcast", label: "双人播客", match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") },
-  { path: "/dubbing", label: "单人配音", match: (p: string) => p.startsWith("/dubbing") },
-  { path: "/account", label: "个人中心", match: (p: string) => p.startsWith("/account") },
+  { path: "/podcast", label: "双人播客", memberOnly: false, match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") },
+  { path: "/dubbing", label: "单人配音", memberOnly: false, match: (p: string) => p.startsWith("/dubbing") },
+  { path: "/account", label: "个人中心", memberOnly: true, match: (p: string) => p.startsWith("/account") },
 ];
 
 function NavTabs() {
   const path = window.location.pathname;
+  const { token } = useAuth();
   return (
-    <nav className="flex items-center gap-0.5 ml-2">
-      {NAV_TABS.map(t => {
+    <nav className="flex items-center gap-0.5 ml-3 p-1 bg-gray-100 rounded-xl">
+      {NAV_TABS.filter(t => !t.memberOnly || !!token).map(t => {
         const active = t.match(path);
         return (
           <button
@@ -55,10 +56,10 @@ function NavTabs() {
             type="button"
             onClick={() => { if (!active) navigate(t.path); }}
             className={cn(
-              "h-8 px-3 rounded-lg text-xs font-medium transition-colors",
+              "h-7 px-3.5 rounded-lg text-[0.8125rem] font-medium transition-all",
               active
-                ? "bg-indigo-50 text-indigo-700"
-                : "text-gray-500 hover:text-gray-800 hover:bg-gray-100"
+                ? "bg-white text-indigo-700 shadow-sm"
+                : "text-gray-500 hover:text-gray-800"
             )}
           >
             {t.label}
@@ -78,7 +79,6 @@ function fmtTime(iso: string): string {
 
 export function Header({
   name, onRename,
-  title = "双人播客工作室", subtitle = "Podcast Studio · powered by IndexTTS2",
   showProjectActions = true, showNameInput = true, showTts = true, onSave, onLoadProject,
   ttsOnline, ttsInfo, saving = false,
   onSaveProject, projectSaved = false,
@@ -91,13 +91,9 @@ export function Header({
 
   return (
     <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0">
-      <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+      <div className="flex items-center">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
           <Radio className="w-4.5 h-4.5 text-white" />
-        </div>
-        <div>
-          <h1 className="text-sm font-semibold text-gray-800 leading-none">{title}</h1>
-          <p className="text-[0.6875rem] text-gray-400 mt-0.5">{subtitle}</p>
         </div>
         <NavTabs />
       </div>

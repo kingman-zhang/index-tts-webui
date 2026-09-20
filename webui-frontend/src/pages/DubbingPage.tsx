@@ -165,8 +165,6 @@ export default function DubbingPage() {
       <Header
         name={name}
         onRename={setName}
-        title="单人配音工作台"
-        subtitle="Dubbing Studio · powered by IndexTTS2"
         showProjectActions={false}
         ttsOnline={ttsOnline}
         ttsInfo={ttsInfo}
