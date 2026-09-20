@@ -1,4 +1,8 @@
-"""Pydantic 请求模型（自 server.py 拆出，定义原样保留）。"""
+"""Pydantic 请求模型（自 server.py 拆出；静音/生成参数默认值可在 .env 配置）。
+
+默认值来源 app/config.py：PODCAST_SILENCE_* 与 PODCAST_GEN_PARAMS，
+前端提交时不带 silence/params 时由这里的默认值兜底。
+"""
 
 from __future__ import annotations
 
@@ -6,8 +10,14 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from .config import PODCAST_DEFAULT_SILENCE, PODCAST_GEN_PARAMS
+
 
 # ─── 项目存储 ───────────────────────────────────────────────
+
+def _default_params_dict() -> dict:
+    return {**PODCAST_GEN_PARAMS, "speaker_speeds": {}, "infer_concurrency": 1}
+
 
 class ProjectModel(BaseModel):
     id: Optional[str] = None
@@ -17,15 +27,8 @@ class ProjectModel(BaseModel):
         "B": {"name": "主持人B", "voice_path": None, "voice_name": None},
     })
     lines: list = Field(default_factory=list)
-    silence: dict = Field(default_factory=lambda: {
-        "within_segment": 200, "between_lines": 300, "speaker_switch": 500,
-    })
-    params: dict = Field(default_factory=lambda: {
-        "speed": 1.0, "speaker_speeds": {}, "max_text_tokens_per_segment": 120,
-        "do_sample": True, "top_p": 0.75, "top_k": 20, "temperature": 0.6,
-        "length_penalty": 0.0, "num_beams": 2, "repetition_penalty": 5.0,
-        "max_mel_tokens": 1500, "infer_concurrency": 1,
-    })
+    silence: dict = Field(default_factory=lambda: dict(PODCAST_DEFAULT_SILENCE))
+    params: dict = Field(default_factory=_default_params_dict)
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -49,23 +52,23 @@ class PodcastLineModel(BaseModel):
 
 
 class SilenceModel(BaseModel):
-    within_segment: int = 200
-    between_lines: int = 300
-    speaker_switch: int = 500
+    within_segment: int = Field(default=PODCAST_DEFAULT_SILENCE["within_segment"])
+    between_lines: int = Field(default=PODCAST_DEFAULT_SILENCE["between_lines"])
+    speaker_switch: int = Field(default=PODCAST_DEFAULT_SILENCE["speaker_switch"])
 
 
 class GenerationParamsModel(BaseModel):
-    speed: float = 1.0
+    speed: float = Field(default=PODCAST_GEN_PARAMS["speed"])
     speaker_speeds: dict[str, float] = Field(default_factory=dict)
-    max_text_tokens_per_segment: int = 120
-    do_sample: bool = True
-    top_p: float = 0.75
-    top_k: int = 20
-    temperature: float = 0.6
-    length_penalty: float = 0.0
-    num_beams: int = 2
-    repetition_penalty: float = 5.0
-    max_mel_tokens: int = 1500
+    max_text_tokens_per_segment: int = Field(default=PODCAST_GEN_PARAMS["max_text_tokens_per_segment"])
+    do_sample: bool = Field(default=PODCAST_GEN_PARAMS["do_sample"])
+    top_p: float = Field(default=PODCAST_GEN_PARAMS["top_p"])
+    top_k: int = Field(default=PODCAST_GEN_PARAMS["top_k"])
+    temperature: float = Field(default=PODCAST_GEN_PARAMS["temperature"])
+    length_penalty: float = Field(default=PODCAST_GEN_PARAMS["length_penalty"])
+    num_beams: int = Field(default=PODCAST_GEN_PARAMS["num_beams"])
+    repetition_penalty: float = Field(default=PODCAST_GEN_PARAMS["repetition_penalty"])
+    max_mel_tokens: int = Field(default=PODCAST_GEN_PARAMS["max_mel_tokens"])
     infer_concurrency: int = 1  # GPU 模型串行推理，固定为 1
 
 
@@ -116,13 +119,8 @@ class QueueTaskModel(BaseModel):
     kind: str = "podcast"  # podcast=双人播客（tts-server 播客引擎）；mono=单音色配音（引擎适配层）
     lines: list
     voices: dict
-    silence: dict = Field(default_factory=lambda: {"within_segment": 200, "between_lines": 300, "speaker_switch": 500})
-    params: dict = Field(default_factory=lambda: {
-        "speed": 1.0, "speaker_speeds": {}, "max_text_tokens_per_segment": 120, "do_sample": True, "top_p": 0.75,
-        "top_k": 20, "temperature": 0.6, "length_penalty": 0.0,
-        "num_beams": 2, "repetition_penalty": 5.0, "max_mel_tokens": 1500,
-        "infer_concurrency": 1,
-    })
+    silence: dict = Field(default_factory=lambda: dict(PODCAST_DEFAULT_SILENCE))
+    params: dict = Field(default_factory=_default_params_dict)
     glossary_enabled: bool = True
 
 

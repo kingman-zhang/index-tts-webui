@@ -5,7 +5,13 @@ from __future__ import annotations
 import httpx
 from fastapi import APIRouter, HTTPException
 
-from ..config import TTS_STATUS_POLL, TTS_URL, http_client
+from ..config import (
+    PODCAST_DEFAULT_SILENCE,
+    PODCAST_GEN_PARAMS,
+    TTS_STATUS_POLL,
+    TTS_URL,
+    http_client,
+)
 from ..membership import service as member_svc
 
 router = APIRouter()
@@ -37,6 +43,11 @@ async def get_config():
         # 积分定价（前端预估扣费用；均为静态配置，零探测成本）
         "member_enforce": member_svc.ENFORCE,
         "member_points_per_1000_chars": member_svc.POINTS_PER_1000_CHARS,
+        # 双人播客默认静音/生成参数（.env: PODCAST_SILENCE_* / PODCAST_GEN_PARAMS）
+        "podcast_defaults": {
+            "silence": dict(PODCAST_DEFAULT_SILENCE),
+            "params": dict(PODCAST_GEN_PARAMS),
+        },
     }
 
 

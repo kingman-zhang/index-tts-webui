@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from pathlib import Path
@@ -81,6 +82,51 @@ VOICE_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_DIR = DATA_DIR / "queue"
 QUEUE_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_ORDER_FILE = QUEUE_DIR / "_queue_order.json"
+
+# ─── 双人播客默认静音与生成参数（管理员在 .env 调整即可，无需动代码）───
+# 静音三项（毫秒）：段内分句间 / 同行连续发言间隔 / 说话人切换间隔。
+# 前端不再提供配置 UI，提交时不带 silence/params，由这里的值兜底。
+PODCAST_SILENCE_WITHIN_MS = max(0, int(os.environ.get("PODCAST_SILENCE_WITHIN_MS", "200")))
+PODCAST_SILENCE_BETWEEN_MS = max(0, int(os.environ.get("PODCAST_SILENCE_BETWEEN_MS", "250")))
+PODCAST_SILENCE_SWITCH_MS = max(0, int(os.environ.get("PODCAST_SILENCE_SWITCH_MS", "250")))
+
+PODCAST_DEFAULT_SILENCE = {
+    "within_segment": PODCAST_SILENCE_WITHIN_MS,
+    "between_lines": PODCAST_SILENCE_BETWEEN_MS,
+    "speaker_switch": PODCAST_SILENCE_SWITCH_MS,
+}
+
+# 生成参数默认值：PODCAST_GEN_PARAMS 为 JSON 对象，可覆盖任意子集，例如：
+#   PODCAST_GEN_PARAMS={"temperature":0.5,"top_p":0.8,"repetition_penalty":4.0}
+# 未写的键用内置默认；写错键/解析失败会告警并忽略，不影响启动。
+_PODCAST_GEN_DEFAULTS: dict = {
+    "speed": 1.0,
+    "max_text_tokens_per_segment": 120,
+    "do_sample": True,
+    "top_p": 0.75,
+    "top_k": 20,
+    "temperature": 0.6,
+    "length_penalty": 0.0,
+    "num_beams": 2,
+    "repetition_penalty": 5.0,
+    "max_mel_tokens": 1500,
+}
+PODCAST_GEN_PARAMS: dict = dict(_PODCAST_GEN_DEFAULTS)
+_raw_gen_params = os.environ.get("PODCAST_GEN_PARAMS", "").strip()
+if _raw_gen_params:
+    try:
+        _overrides = json.loads(_raw_gen_params)
+        if isinstance(_overrides, dict):
+            PODCAST_GEN_PARAMS.update(
+                {k: v for k, v in _overrides.items() if k in _PODCAST_GEN_DEFAULTS}
+            )
+            _ignored = set(_overrides) - set(_PODCAST_GEN_DEFAULTS)
+            if _ignored:
+                logger.warning("PODCAST_GEN_PARAMS 含未知键已忽略: %s", sorted(_ignored))
+        else:
+            logger.warning("PODCAST_GEN_PARAMS 必须是 JSON 对象，已忽略")
+    except json.JSONDecodeError as e:
+        logger.warning("PODCAST_GEN_PARAMS 解析失败（%s），使用内置默认", e)
 
 # ─── 共享 HTTP 客户端 ───────────────────────────────────────
 

@@ -132,7 +132,9 @@ export function defaultParams(): GenerationParams {
 }
 
 export function defaultSilence(): SilenceConfig {
-  return { within_segment: 200, between_lines: 300, speaker_switch: 500 };
+  // 与后端 .env（PODCAST_SILENCE_*）默认保持一致；仅作前端兜底，
+  // 实际生效值以后端提交时的默认（env 可调）为准。
+  return { within_segment: 200, between_lines: 250, speaker_switch: 250 };
 }
 
 /** 默认项目名：未命名_YYYYMMDD（本地日期） */

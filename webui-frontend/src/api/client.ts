@@ -234,8 +234,8 @@ export const api = {
     kind?: string; // podcast=双人播客（默认）；mono=单音色配音
     lines: any[];
     voices: Record<string, string>;
-    silence: any;
-    params: any;
+    silence?: any;   // 省略时由后端 .env 默认值（PODCAST_SILENCE_*）兜底
+    params?: any;    // 省略时由后端 .env 默认值（PODCAST_GEN_PARAMS）兜底
     glossary_enabled: boolean;
   }): Promise<{ task_id: string; status: string; queue_position: number }> {
     return fetchJSON(`${BASE}/queue/submit`, {

@@ -3,7 +3,6 @@ import { FolderOpen, Trash2, X, FileText } from "lucide-react";
 import { Header } from "../components/Header";
 import { SpeakerPanel } from "../components/SpeakerPanel";
 import { ScriptEditor } from "../components/ScriptEditor";
-import { ParamsPanel } from "../components/ParamsPanel";
 import { OutputPanel } from "../components/OutputPanel";
 import { GlossaryPanel } from "../components/GlossaryPanel";
 import { QueuePanel } from "../components/QueuePanel";
@@ -11,12 +10,12 @@ import { Card, EmptyState, Badge } from "../components/ui";
 import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
-  defaultProject, defaultEmotion, defaultParams, defaultSilence,
+  defaultProject, defaultEmotion,
   type PodcastProject, type PodcastLine, type TaskInfo,
 } from "../types";
 import { useAuth, refreshUser } from "@/lib/auth";
 
-/** 双人播客页（/podcast）：角色配置 + 对话脚本 + 参数生成 */
+/** 双人播客页（/podcast）：角色配置 + 对话脚本 + 输出。静音/生成参数由后端 .env 默认值控制，不再暴露 UI。 */
 export default function PodcastPage() {
   const [project, setProject] = useState<PodcastProject>(defaultProject());
   const [saving, setSaving] = useState(false);
@@ -25,7 +24,7 @@ export default function PodcastPage() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [durationSec, setDurationSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [glossaryCollapsed, setGlossaryCollapsed] = useState(true);
+  const [glossaryCollapsed, setGlossaryCollapsed] = useState(false);
   const [queueCollapsed, setQueueCollapsed] = useState(false);
   const [queueRefreshKey, setQueueRefreshKey] = useState(0);
   const [showProjects, setShowProjects] = useState(false);
@@ -149,35 +148,21 @@ export default function PodcastPage() {
           ...nextVoices[key],
           voice_path: path,
           voice_name: fileName,
-          name: key === "A" ? nextVoices[key].name : nextVoices[key].name,
         };
       }
-      const rawParams = config.params || {};
-      const importedParams = { ...defaultParams(), ...rawParams };
-      const speakerSpeeds = (rawParams as { speaker_speeds?: Record<string, number> }).speaker_speeds || {};
+      // 静音/生成参数已由后端 .env 默认值统一管理，导入时只取角色语速
+      const speakerSpeeds = (config.params as { speaker_speeds?: Record<string, number> })?.speaker_speeds || {};
       for (const key of ["A", "B"] as const) {
         const speed = speakerSpeeds[key];
         if (Number.isFinite(Number(speed))) nextVoices[key] = { ...nextVoices[key], speed: Number(speed) };
       }
-      const importedSilence = { ...defaultSilence(), ...(config.silence || {}) };
-      const importedLines = config.lines || [];
-      const nextVoicesWithEmotions = { ...nextVoices };
-      for (const key of ["A", "B"] as const) {
-        const firstLine = importedLines.find(line => line.speaker === key);
-        if (firstLine) nextVoicesWithEmotions[key] = {
-          ...nextVoicesWithEmotions[key],
-          emotion: { ...defaultEmotion(), ...firstLine.emotion, vector: [...firstLine.emotion.vector] },
-        };
-      }
       return {
         ...prev,
         name: config.projectName || prev.name,
-        voices: nextVoicesWithEmotions,
-        silence: importedSilence,
-        params: importedParams,
+        voices: nextVoices,
       };
     });
-    showToast("已导入脚本及音色、情感、静音和生成参数");
+    showToast("已导入脚本及音色、角色语速（静音/生成参数使用系统默认）");
   }, [showToast]);
 
   // ─── 生成播客（提交到任务队列） ────────────────────────────
@@ -226,33 +211,15 @@ export default function PodcastPage() {
 
       const speakerSpeeds: Record<string, number> = {};
       for (const s of activeSpeakers) {
-        speakerSpeeds[s] = project.voices[s]?.speed ?? project.params.speed ?? 1.0;
+        speakerSpeeds[s] = project.voices[s]?.speed ?? 1.0;
       }
 
-      // 调试用：输出最终提交的 JSONL 到控制台
-      const debugJSONL = lines.map(l => JSON.stringify({
-        text: l.text,
-        role: l.speaker,
-        ...(l.emotion ? { emotion: l.emotion } : {}),
-        ...(l.silence_after_ms !== undefined ? { silence_after_ms: l.silence_after_ms } : {}),
-      })).join("\n");
-      console.log("%c[播客提交] 最终 JSONL：", "color: #6366f1; font-weight: bold;");
-      console.log(debugJSONL);
-      console.log("%c[播客提交] voices：", "color: #6366f1; font-weight: bold;", voices);
-      console.log("%c[播客提交] params：", "color: #6366f1; font-weight: bold;", {
-        ...project.params,
-        speaker_speeds: speakerSpeeds,
-      });
-
+      // 静音/生成参数不在前端配置：省略后由后端 .env 默认值（PODCAST_SILENCE_* / PODCAST_GEN_PARAMS）兜底
       const result = await api.submitToQueue({
         project_name: project.name,
         lines,
         voices,
-        silence: project.silence,
-        params: {
-          ...project.params,
-          speaker_speeds: speakerSpeeds,
-        },
+        params: { speaker_speeds: speakerSpeeds },
         glossary_enabled: true,
       });
       showToast(`已加入队列（位置 ${result.queue_position}）`);
@@ -324,17 +291,11 @@ export default function PodcastPage() {
           </Card>
         </main>
 
-        {/* 右侧：参数 + 输出 */}
+        {/* 右侧：输出 + 队列（静音/生成参数已收编为后端 .env 默认值） */}
         <aside className="w-80 shrink-0 overflow-y-auto scrollbar-thin space-y-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">参数与生成</h2>
+            <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">生成</h2>
           </div>
-          <ParamsPanel
-            silence={project.silence}
-            params={project.params}
-            onSilenceChange={silence => updateProject({ silence })}
-            onParamsChange={params => updateProject({ params })}
-          />
           <OutputPanel
             onGenerate={handleGenerate}
             canGenerate={canGenerate}

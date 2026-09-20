@@ -1,7 +1,11 @@
-import { useRef, useState, useEffect } from "react";
-import { Upload, Play, User, Mic2, Circle, Settings2, Mic, Square, Save, FolderOpen, ChevronDown, Pencil, Trash2 } from "lucide-react";
-import { Card, CardHeader, CardTitle, CardContent, Button, Badge, Label } from "./ui";
-import { EmotionEditor } from "./EmotionEditor";
+/**
+ * 双人播客左栏角色卡：与单人配音 MonoVoiceCard 同风格——
+ * 头像悬停试听 + 选择音色/上传本地音色两键 + 对数刻度语速滑条。
+ * 角色默认情感不再在此配置（新行默认"跟随音色"，行级可在脚本芯片单独调整）。
+ */
+import { useEffect, useRef, useState } from "react";
+import { Upload, Play, Square, AudioLines, Mic, FolderOpen, Save, Pencil, Trash2 } from "lucide-react";
+import { Card, CardContent, Button, Badge, Label } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 import { api } from "@/api/client";
 import type { SpeakerConfig, VoiceFile } from "@/types";
@@ -23,8 +27,22 @@ interface SpeakerPanelProps {
 }
 
 const COLORS = {
-  A: { ring: "border-indigo-300 bg-indigo-50", dot: "bg-indigo-500", text: "text-indigo-700", badge: "indigo" as const },
-  B: { ring: "border-teal-300 bg-teal-50", dot: "bg-teal-500", text: "text-teal-700", badge: "blue" as const },
+  A: {
+    ring: "border-indigo-200 bg-white",
+    dot: "bg-indigo-500",
+    text: "text-indigo-700",
+    badge: "indigo" as const,
+    avatar: "bg-indigo-50 border-indigo-100 text-indigo-700",
+    overlay: "bg-indigo-900/45",
+  },
+  B: {
+    ring: "border-teal-200 bg-white",
+    dot: "bg-teal-500",
+    text: "text-teal-700",
+    badge: "blue" as const,
+    avatar: "bg-teal-50 border-teal-100 text-teal-700",
+    overlay: "bg-teal-900/45",
+  },
 };
 
 function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRenameVoice, onDeleteVoice, presetVoices }: {
@@ -41,7 +59,6 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   const [uploading, setUploading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [playingName, setPlayingName] = useState<string | null>(null);
-  const [emoCollapsed, setEmoCollapsed] = useState(true);
   const [recording, setRecording] = useState(false);
   const [recordSecs, setRecordSecs] = useState(0);
   const [showVoicePicker, setShowVoicePicker] = useState(false);
@@ -51,6 +68,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   const [showPresetList, setShowPresetList] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [uploadDialog, setUploadDialog] = useState<{ file: File; mode: "upload" | "record" } | null>(null);
+  const [speedText, setSpeedText] = useState((config.speed ?? 1.0).toFixed(2));
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
@@ -60,6 +78,22 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   useEffect(() => {
     api.listVoicePresets().then(r => setSavedPresets(r.presets)).catch(() => {});
   }, []);
+
+  // 语速输入框跟随外部状态（如项目加载）
+  useEffect(() => { setSpeedText((config.speed ?? 1.0).toFixed(2)); }, [config.speed]);
+
+  // 对数刻度：0.5–2 关于 1.0 对称（log2 空间），1.0x 恰在滑条正中
+  const speed = config.speed ?? 1.0;
+  const sliderPos = Math.log2(speed / 0.5) / 2;
+  const fillPct = Math.round(sliderPos * 1000) / 10;
+
+  const commitSpeed = () => {
+    const v = Number.parseFloat(speedText);
+    if (Number.isNaN(v)) { setSpeedText(speed.toFixed(2)); return; }
+    const clamped = Math.min(2, Math.max(0.5, Math.round(v * 100) / 100));
+    onChange({ speed: clamped });
+    setSpeedText(clamped.toFixed(2));
+  };
 
   const preview = (name?: string) => {
     const target = name || config.voice_name;
@@ -134,10 +168,9 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
     try {
       await api.saveVoicePreset({
         name: presetName.trim(),
-        role_speed: config.speed ?? 1.0,
+        role_speed: speed,
         voice_path: config.voice_path,
         voice_name: config.voice_name,
-        emotion: config.emotion,
       });
       const r = await api.listVoicePresets(); setSavedPresets(r.presets);
       setShowSavePreset(false); setPresetName("");
@@ -145,7 +178,11 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   };
 
   const loadPreset = async (id: string) => {
-    try { const p = await api.getVoicePreset(id); onChange({ voice_path: p.voice_path, voice_name: p.voice_name, speed: p.role_speed ?? p.speed ?? 1.0, emotion: p.emotion }); setShowPresetList(false); }
+    try {
+      const p = await api.getVoicePreset(id);
+      onChange({ voice_path: p.voice_path, voice_name: p.voice_name, speed: p.role_speed ?? p.speed ?? 1.0 });
+      setShowPresetList(false);
+    }
     catch (e) { alert("加载失败: " + e); }
   };
 
@@ -164,38 +201,26 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
     const r = await api.listVoicePresets(); setSavedPresets(r.presets);
   };
 
-  const currentVoice = voiceFiles.find(v => v.name === config.voice_name || v.path === config.voice_path);
-  const isPresetVoice = Boolean(currentVoice?.source === "preset") || presetVoices.female.concat(presetVoices.male, presetVoices.emotion).some(v => v.name === config.voice_name || v.path === config.voice_path);
-
-  const emoBadgeText = ["跟随音色", "参考音频", "情感向量", "文本描述"][config.emotion.mode];
-
   return (
-    <Card className={cn("border-2", c.ring)}>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className={cn("w-7 h-7 rounded-full flex items-center justify-center", c.dot)}>
-            <User className="w-4 h-4 text-white" />
-          </div>
-          <CardTitle className={c.text}>主持人 {speakerKey}</CardTitle>
-        </div>
-        <div className="flex items-center gap-1.5">
-          {savedPresets.length > 0 && (
-            <button onClick={() => setShowPresetList(!showPresetList)} className="flex items-center gap-1 px-2 py-1 rounded text-xs text-indigo-600 hover:bg-indigo-50" title="打开角色预设列表">
-              <FolderOpen className="w-3.5 h-3.5" />
-              角色预设
-            </button>
-          )}
-          {config.voice_path && (
-            <button onClick={() => setShowSavePreset(!showSavePreset)} className="p-1.5 rounded text-gray-400 hover:text-green-600 hover:bg-green-50" title="保存角色预设">
-              <Save className="w-3.5 h-3.5" />
-            </button>
-          )}
-          <Badge color={c.badge}><Circle className="w-2 h-2 mr-1 fill-current" /> {speakerKey}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
+    <Card className={cn("rounded-2xl border-2 shadow-sm", c.ring)}>
+      <CardContent className="p-5 space-y-4">
+        {/* 角色名称 + 预设小按钮 */}
         <div>
-          <Label>角色名称</Label>
+          <div className="flex items-center justify-between mb-1.5">
+            <Label>角色名称</Label>
+            <div className="flex items-center gap-1">
+              {savedPresets.length > 0 && (
+                <button onClick={() => setShowPresetList(!showPresetList)} className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" title="打开角色预设列表">
+                  <FolderOpen className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {config.voice_path && (
+                <button onClick={() => setShowSavePreset(!showSavePreset)} className="p-1.5 rounded text-gray-400 hover:text-green-600 hover:bg-green-50" title="保存角色预设">
+                  <Save className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
           <input type="text" value={config.name} onChange={e => onChange({ name: e.target.value })}
             className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             placeholder={`主持人${speakerKey}的名字`} />
@@ -222,7 +247,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
 
         {showSavePreset && (
           <div className="rounded-lg border border-green-200 bg-green-50 p-2 space-y-2">
-            <Label className="text-[0.75rem] text-green-700">保存当前角色配置（含音色+默认情感）</Label>
+            <Label className="text-[0.75rem] text-green-700">保存当前角色配置（音色+语速）</Label>
             <div className="flex gap-2">
               <input type="text" value={presetName} onChange={e => setPresetName(e.target.value)}
                 className="h-8 flex-1 rounded border border-green-300 bg-white px-2 text-xs" placeholder="如 温柔女声" autoFocus />
@@ -231,48 +256,60 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
           </div>
         )}
 
-        <div>
-          <Label>角色语速</Label>
-          <div className="flex items-center gap-2">
-            <input type="range" min={0.5} max={2} step={0.05} value={config.speed}
-              onChange={e => onChange({ speed: Number(e.target.value) })}
-              className="flex-1 accent-indigo-600" />
-            <span className="w-12 text-right text-xs font-medium text-gray-600">{config.speed.toFixed(2)}x</span>
-          </div>
-          <p className="mt-1 text-[0.6875rem] text-gray-400">只影响“{config.name || `角色${speakerKey}`}”的发言，1.0x 为正常速度。</p>
-        </div>
-
-        <div>
-          <Label>音色参考音频</Label>
-          <button onClick={() => setShowVoicePicker(true)}
-            className="w-full h-9 flex items-center justify-between px-3 rounded-lg border border-gray-300 bg-white text-sm hover:border-indigo-400 transition-colors">
-            <span className={cn("truncate", config.voice_name ? "text-gray-700" : "text-gray-400")}>
-              {config.voice_name || "- 选择音色 -"}
-            </span>
-            <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />
+        {/* 音色主体：头像悬停即试听/停止 */}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => preview()}
+            disabled={!config.voice_name}
+            title={playing ? "停止试听" : "试听"}
+            className="group relative w-11 h-11 rounded-full shrink-0 disabled:cursor-not-allowed"
+          >
+            <div className={cn("w-11 h-11 rounded-full border flex items-center justify-center", c.avatar)}>
+              {config.voice_name ? (
+                <span className="text-base font-semibold">
+                  {config.name?.trim()?.slice(0, 1) || speakerKey}
+                </span>
+              ) : (
+                <AudioLines className="w-5 h-5 opacity-50" />
+              )}
+            </div>
+            {config.voice_name && (
+              <div className={cn("absolute inset-0 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity", c.overlay)}>
+                {playing ? (
+                  <Square className="w-4 h-4 text-white fill-white" />
+                ) : (
+                  <Play className="w-4 h-4 text-white fill-white translate-x-[1px]" />
+                )}
+              </div>
+            )}
           </button>
+          <div className="min-w-0 flex-1">
+            <p className={cn("text-sm font-medium truncate", config.voice_name ? "text-gray-800" : "text-gray-400")}>
+              {config.voice_name ? config.voice_name.replace(/\.[^.]+$/, "") : "未选择音色"}
+            </p>
+            <p className="text-[0.75rem] text-gray-400 mt-0.5">
+              {config.voice_name ? "悬停头像可试听" : "从预设库选择，或上传参考音频"}
+            </p>
+          </div>
+          <Badge color={c.badge}>{speakerKey}</Badge>
         </div>
 
-        {config.voice_name && (
-          <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-50 border border-gray-100">
-            <Mic2 className="w-3.5 h-3.5 text-gray-400 shrink-0" />
-            <span className="text-xs text-gray-600 truncate flex-1">{config.voice_name}</span>
-            <span className="text-[0.6875rem] text-gray-400">{isPresetVoice ? "预设音色" : "我的音色"}</span>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" icon={Upload} onClick={() => fileRef.current?.click()} disabled={uploading} className="flex-1">
-            {uploading ? "保存中" : "上传"}
+        {/* 操作两键 + 录制 */}
+        <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+          <Button variant="outline" size="sm" icon={AudioLines} onClick={() => setShowVoicePicker(true)}>
+            选择音色
+          </Button>
+          <Button variant="outline" size="sm" icon={Upload} onClick={() => fileRef.current?.click()} disabled={uploading}>
+            {uploading ? "上传中" : "上传本地音色"}
           </Button>
           {!recording ? (
-            <Button variant="outline" size="sm" icon={Mic} onClick={startRecording} className="flex-1">录制</Button>
+            <Button variant="outline" size="sm" icon={Mic} onClick={startRecording} title="录制一段参考音频" />
           ) : (
-            <Button variant="outline" size="sm" icon={Square} onClick={stopRecording} className="flex-1 text-red-600 border-red-300">{recordSecs}s 停止</Button>
+            <Button variant="outline" size="sm" icon={Square} onClick={stopRecording} title="停止录制" className="text-red-600 border-red-300">
+              {recordSecs}s
+            </Button>
           )}
-          <Button variant="outline" size="sm" icon={Play} onClick={() => preview()} disabled={!config.voice_name} className="flex-1">
-            {playing ? "停止" : "试听"}
-          </Button>
           <input ref={fileRef} type="file" accept="audio/*" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }} />
         </div>
@@ -283,19 +320,31 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
           </div>
         )}
 
-        <div className="rounded-lg bg-white/60 border border-gray-100">
-          <button onClick={() => setEmoCollapsed(!emoCollapsed)} className="w-full flex items-center justify-between px-3 py-2">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-gray-600">
-              <Settings2 className="w-3.5 h-3.5 text-indigo-500" /> 默认情感 <Badge color="indigo">{emoBadgeText}</Badge>
-            </span>
-            <span className="text-[0.75rem] text-gray-400">新发言行将继承此设置</span>
-          </button>
-          {!emoCollapsed && (
-            <div className="px-2 pb-2">
-              <EmotionEditor emotion={config.emotion} onChange={emo => onChange({ emotion: emo })}
-                voiceFiles={voiceFiles} collapsed={false} onToggle={() => setEmoCollapsed(true)} />
-            </div>
-          )}
+        {/* 语速：对数刻度滑条（1.0x 居中）+ 数值输入 */}
+        <div>
+          <span className="text-xs font-medium text-gray-600">语速</span>
+          <div className="flex items-center gap-2.5 mt-1.5">
+            <input
+              type="range" min={0} max={1} step={0.005} value={sliderPos}
+              onChange={e => {
+                const v = 0.5 * Math.pow(2, Number(e.target.value) * 2);
+                onChange({ speed: Math.round(v * 20) / 20 }); // 吸附到 0.05 步进
+              }}
+              className="flex-1 min-w-0 speed-range"
+              style={{
+                background: `linear-gradient(to right, #10b981 0%, #34d399 ${fillPct}%, #e5e7eb ${fillPct}%, #e5e7eb 100%)`,
+              }}
+            />
+            <input
+              value={speedText}
+              onChange={e => setSpeedText(e.target.value)}
+              onBlur={commitSpeed}
+              onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+              inputMode="decimal"
+              className="w-[4.5rem] h-8 text-center text-xs font-medium tabular-nums rounded-lg border border-gray-200 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 transition-colors shrink-0"
+            />
+          </div>
+          <p className="mt-1 text-[0.6875rem] text-gray-400">只影响该角色的发言，1.0x 为正常速度。</p>
         </div>
       </CardContent>
 
