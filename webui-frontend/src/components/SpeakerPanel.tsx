@@ -4,7 +4,7 @@
  * 角色默认情感不再在此配置（新行默认"跟随音色"，行级可在脚本芯片单独调整）。
  */
 import { useEffect, useRef, useState } from "react";
-import { Upload, Play, Square, AudioLines, FolderOpen, Save, Pencil, Trash2 } from "lucide-react";
+import { Upload, Play, Square, AudioLines, FolderOpen, Pencil, Trash2 } from "lucide-react";
 import { Card, CardContent, Button, Badge, Label } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 import { api } from "@/api/client";
@@ -60,8 +60,6 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   const [playing, setPlaying] = useState(false);
   const [playingName, setPlayingName] = useState<string | null>(null);
   const [showVoicePicker, setShowVoicePicker] = useState(false);
-  const [showSavePreset, setShowSavePreset] = useState(false);
-  const [presetName, setPresetName] = useState("");
   const [savedPresets, setSavedPresets] = useState<any[]>([]);
   const [showPresetList, setShowPresetList] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -131,20 +129,6 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
     else onChange({ voice_path: path, voice_name: name });
   };
 
-  const savePreset = async () => {
-    if (!presetName.trim() || !config.voice_path) return;
-    try {
-      await api.saveVoicePreset({
-        name: presetName.trim(),
-        role_speed: speed,
-        voice_path: config.voice_path,
-        voice_name: config.voice_name,
-      });
-      const r = await api.listVoicePresets(); setSavedPresets(r.presets);
-      setShowSavePreset(false); setPresetName("");
-    } catch (e) { alert("保存失败: " + e); }
-  };
-
   const loadPreset = async (id: string) => {
     try {
       const p = await api.getVoicePreset(id);
@@ -183,11 +167,6 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
                 <FolderOpen className="w-3.5 h-3.5" />
               </button>
             )}
-            {config.voice_path && (
-              <button onClick={() => setShowSavePreset(!showSavePreset)} className="p-1.5 rounded text-gray-400 hover:text-green-600 hover:bg-green-50" title="保存角色预设">
-                <Save className="w-3.5 h-3.5" />
-              </button>
-            )}
           </div>
           <Badge color={c.badge} className="shrink-0">{speakerKey}</Badge>
         </div>
@@ -208,17 +187,6 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
                 </div>
               </div>
             ))}
-          </div>
-        )}
-
-        {showSavePreset && (
-          <div className="rounded-lg border border-green-200 bg-green-50 p-2 space-y-2">
-            <Label className="text-[0.75rem] text-green-700">保存当前角色配置（音色+语速）</Label>
-            <div className="flex gap-2">
-              <input type="text" value={presetName} onChange={e => setPresetName(e.target.value)}
-                className="h-8 flex-1 rounded border border-green-300 bg-white px-2 text-xs" placeholder="如 温柔女声" autoFocus />
-              <Button size="sm" onClick={savePreset} disabled={!presetName.trim()}>保存</Button>
-            </div>
           </div>
         )}
 
