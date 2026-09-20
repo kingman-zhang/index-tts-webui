@@ -154,7 +154,7 @@ export default function PodcastPage() {
   // ─── 生成播客（提交到任务队列） ────────────────────────────
   // 根据脚本中实际出现的角色判断哪些角色需要音色，而非硬编码 A 和 B 都必须有。
   const activeSpeakers = Array.from(new Set(
-    project.lines.filter(l => l.text.trim().length > 0).map(l => l.speaker)
+    project.lines.filter(l => l.text.trim().length > 0 && l.speaker !== null).map(l => l.speaker)
   )) as ("A" | "B")[];
   // 积分预估（与后端 estimate_task_cost 同口径：行文本 trim 后按 1000 字向上取整）
   const totalChars = project.lines.reduce((n, l) => n + l.text.trim().length, 0);
@@ -178,6 +178,18 @@ export default function PodcastPage() {
       const indexes = blankLines.slice(0, 10).map(({ index }) => index).join(", ");
       const suffix = blankLines.length > 10 ? " 等" : "";
       const message = `第 ${indexes}${suffix} 行台词为空，请补充内容后再提交`;
+      setError(message);
+      showToast(message);
+      return;
+    }
+    // 每一行必须有主持人标识（导入的无前缀行 / 新建空行需要先标注）
+    const unmarkedLines = project.lines
+      .map((line, index) => ({ line, index: index + 1 }))
+      .filter(({ line }) => line.speaker === null);
+    if (unmarkedLines.length > 0) {
+      const indexes = unmarkedLines.slice(0, 10).map(({ index }) => index).join(", ");
+      const suffix = unmarkedLines.length > 10 ? " 等" : "";
+      const message = `第 ${indexes}${suffix} 行未指定主持人，请点击行首标识块或用行内「+ A 发言 / + B 发言」标注`;
       setError(message);
       showToast(message);
       return;

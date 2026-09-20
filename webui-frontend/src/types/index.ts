@@ -39,7 +39,8 @@ export interface SpeakerConfig {
 
 export interface PodcastLine {
   id: string;
-  speaker: "A" | "B";
+  /** 主持人：A / B；null = 未标注（导入无前缀行或新建空行），提交前必须标注 */
+  speaker: "A" | "B" | null;
   text: string;
   emotion: EmotionConfig;
   /** 可选：JSONL 行级尾部静音，未设置时使用全局静音规则。 */
@@ -158,7 +159,7 @@ export function defaultProject(): PodcastProject {
   };
 }
 
-export function makeLine(speaker: "A" | "B", text = "", emotion?: EmotionConfig): PodcastLine {
+export function makeLine(speaker: "A" | "B" | null, text = "", emotion?: EmotionConfig): PodcastLine {
   return {
     id: Math.random().toString(36).slice(2, 10),
     speaker,

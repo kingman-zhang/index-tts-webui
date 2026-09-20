@@ -4,7 +4,6 @@ import {
 } from "lucide-react";
 import { Button, Card, EmptyState, Textarea, Badge } from "./ui";
 import { EmotionEditor } from "./EmotionEditor";
-import { api } from "@/api/client";
 import { makeLine, type PodcastLine, type VoiceFile, type SpeakerConfig, type EmotionConfig } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -82,8 +81,8 @@ function parseImportText(text: string, speakers: { A: SpeakerConfig; B: SpeakerC
           continue;
         }
 
-        // 判断说话人：优先 role 字段，其次 speaker，最后 voice（兼容旧格式）
-        let speaker: "A" | "B" = lines.length % 2 === 0 ? "A" : "B";
+        // 判断说话人：优先 role 字段，其次 speaker，最后 voice（兼容旧格式）；识别不出 = 未标注
+        let speaker: "A" | "B" | null = null;
         const speakerHint = obj.role || obj.speaker || obj.voice;
         if (speakerHint) {
           const hint = String(speakerHint);
@@ -105,7 +104,7 @@ function parseImportText(text: string, speakers: { A: SpeakerConfig; B: SpeakerC
         }
 
         // 情感：兼容 WebUI 嵌套 emotion，以及旧 JSONL 的 emotion_text/emotion_weight
-        const baseEmo = speakers[speaker].emotion;
+        const baseEmo = speakers[speaker ?? "A"].emotion;
         const hasEmotionField = !!(obj.emotion || obj.emotion_text || obj.emotion_weight);
         const sourceEmotion = obj.emotion || (obj.emotion_text
           ? { mode: 3, text: obj.emotion_text, weight: obj.emotion_weight }
@@ -136,11 +135,11 @@ function parseImportText(text: string, speakers: { A: SpeakerConfig; B: SpeakerC
       }
     }
   } else {
-    // 纯文本："A:" / "B:" / 角色名前缀指定说话人，无前缀/未识别前缀交替分配
+    // 纯文本："A:" / "B:" / 角色名前缀指定说话人；无前缀/未识别前缀 = 未标注行（提交前需手动标注）
     for (const raw of rawLines) {
       const line = raw.trim();
       if (!line) continue;
-      let speaker: "A" | "B";
+      let speaker: "A" | "B" | null = null;
       let content = line;
       const m = line.match(SPEAKER_PREFIX_RE);
       if (m) {
@@ -150,12 +149,9 @@ function parseImportText(text: string, speakers: { A: SpeakerConfig; B: SpeakerC
         const nameB = (speakers.B.name || "B").trim();
         if (prefix === nameA || prefix.toUpperCase() === "A") speaker = "A";
         else if (prefix === nameB || prefix.toUpperCase() === "B") speaker = "B";
-        else speaker = lines.length % 2 === 0 ? "A" : "B";
-      } else {
-        speaker = lines.length % 2 === 0 ? "A" : "B";
       }
       if (!content) continue;
-      const baseEmo = speakers[speaker].emotion;
+      const baseEmo = speakers[speaker ?? "A"].emotion;
       lines.push({
         id: genId(),
         speaker,
@@ -189,8 +185,6 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
     [importText, speakers],
   );
 
-  const add = (speaker: "A" | "B") =>
-    onChange([...lines, makeLine(speaker, "", speakers[speaker].emotion)]);
   const remove = (id: string) => onChange(lines.filter(l => l.id !== id));
   const duplicate = (id: string) => {
     const idx = lines.findIndex(l => l.id === id);
@@ -247,17 +241,12 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
     setShowImport(false);
   };
 
-  /** doc/docx/pdf 走后端文档抽取（复用配音页能力），其余格式直接读文本 */
+  /** doc/docx/pdf 已下线，仅支持 .txt 直接读取 */
   const handleFileImport = async (file: File) => {
     setImportError(null);
     setFileLoading(true);
     try {
-      if (/\.(docx?|pdf)$/i.test(file.name)) {
-        const r = await api.extractDocument(file);
-        setImportText(r.text);
-      } else {
-        setImportText(await file.text());
-      }
+      setImportText(await file.text());
     } catch (e: any) {
       setImportError(`读取文件失败：${e.message}`);
     } finally {
@@ -265,9 +254,11 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
     }
   };
 
-  const speakerColor = (spk: "A" | "B") => spk === "A"
+  const speakerColor = (spk: "A" | "B" | null) => spk === "A"
     ? { bg: "bg-indigo-500", text: "text-indigo-600", border: "border-indigo-200", light: "bg-indigo-50" }
-    : { bg: "bg-teal-500", text: "text-teal-600", border: "border-teal-200", light: "bg-teal-50" };
+    : spk === "B"
+    ? { bg: "bg-teal-500", text: "text-teal-600", border: "border-teal-200", light: "bg-teal-50" }
+    : { bg: "bg-gray-300", text: "text-gray-500", border: "border-gray-200", light: "bg-gray-50" };
 
   return (
     <div className="flex flex-col h-full">
@@ -294,11 +285,8 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
               一键清空
             </Button>
           )}
-          <Button size="sm" icon={Plus} onClick={() => add("A")} className="bg-indigo-600">
-            A 发言
-          </Button>
-          <Button size="sm" icon={Plus} onClick={() => add("B")} className="bg-teal-600 hover:bg-teal-700">
-            B 发言
+          <Button size="sm" icon={Plus} onClick={() => onChange([...lines, makeLine(null, "", speakers.A.emotion)])} className="bg-indigo-600">
+            新行
           </Button>
         </div>
       </div>
@@ -331,23 +319,22 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
                 <div className="flex items-center gap-2 mb-2">
                   <GripVertical className="w-4 h-4 text-gray-300 cursor-grab active:cursor-grabbing" />
 
-                  {/* 说话人切换 */}
-                  <div className="flex rounded-lg overflow-hidden border border-gray-200">
-                    <button
-                      onClick={() => updateLine(line.id, { speaker: "A" })}
-                      className={cn("px-2.5 h-7 text-xs font-medium transition-colors",
-                        line.speaker === "A" ? "bg-indigo-500 text-white" : "bg-white text-gray-400 hover:bg-gray-50")}
-                    >
-                      {speakers.A.name || "A"}
-                    </button>
-                    <button
-                      onClick={() => updateLine(line.id, { speaker: "B" })}
-                      className={cn("px-2.5 h-7 text-xs font-medium transition-colors",
-                        line.speaker === "B" ? "bg-teal-500 text-white" : "bg-white text-gray-400 hover:bg-gray-50")}
-                    >
-                      {speakers.B.name || "B"}
-                    </button>
-                  </div>
+                  {/* 主持人标识块：标注本行归属；点击切换 A/B（不可删除） */}
+                  <button
+                    onClick={() => updateLine(line.id, { speaker: line.speaker === "A" ? "B" : "A" })}
+                    title="点击切换主持人"
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 h-7 rounded-lg border text-xs font-medium transition-colors shrink-0",
+                      line.speaker === "A" && "bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100",
+                      line.speaker === "B" && "bg-teal-50 border-teal-200 text-teal-700 hover:bg-teal-100",
+                      line.speaker === null && "bg-gray-50 border-dashed border-gray-300 text-gray-400 hover:bg-gray-100",
+                    )}
+                  >
+                    <span className={cn("w-2 h-2 rounded-full", sc.bg)} />
+                    {line.speaker === "A" && (speakers.A.name || "主持人A")}
+                    {line.speaker === "B" && (speakers.B.name || "主持人B")}
+                    {line.speaker === null && "未指定主持人"}
+                  </button>
 
                   <span className="text-xs text-gray-300">#{i + 1}</span>
                   <span className={cn("text-xs", sc.text)}>{line.text.length} 字</span>
@@ -378,14 +365,35 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
                   className="min-h-[44px] text-sm"
                 />
 
-                <div className="mt-2">
-                  <EmotionEditor
-                    emotion={line.emotion}
-                    onChange={emo => updateLine(line.id, { emotion: emo })}
-                    voiceFiles={voiceFiles}
-                    collapsed={!collapsedEmos.has(line.id)}
-                    onToggle={() => toggleEmo(line.id)}
-                  />
+                {/* 行内标注：+ A 发言 / + B 发言（已有标识时不可重复插入）+ 情感块 */}
+                <div className="mt-2 flex items-stretch gap-1.5">
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button
+                      onClick={() => updateLine(line.id, { speaker: "A" })}
+                      disabled={line.speaker !== null}
+                      className="px-2 h-[26px] rounded-md border border-indigo-200 bg-indigo-50 text-indigo-600 text-[0.7rem] font-medium hover:bg-indigo-100 disabled:opacity-30 disabled:cursor-not-allowed whitespace-nowrap"
+                      title={line.speaker !== null ? "本行已有主持人标识" : "标注为主持人A"}
+                    >
+                      + A 发言
+                    </button>
+                    <button
+                      onClick={() => updateLine(line.id, { speaker: "B" })}
+                      disabled={line.speaker !== null}
+                      className="px-2 h-[26px] rounded-md border border-teal-200 bg-teal-50 text-teal-600 text-[0.7rem] font-medium hover:bg-teal-100 disabled:opacity-30 disabled:cursor-not-allowed whitespace-nowrap"
+                      title={line.speaker !== null ? "本行已有主持人标识" : "标注为主持人B"}
+                    >
+                      + B 发言
+                    </button>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <EmotionEditor
+                      emotion={line.emotion}
+                      onChange={emo => updateLine(line.id, { emotion: emo })}
+                      voiceFiles={voiceFiles}
+                      collapsed={!collapsedEmos.has(line.id)}
+                      onToggle={() => toggleEmo(line.id)}
+                    />
+                  </div>
                 </div>
               </div>
             );
@@ -414,16 +422,9 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
               }}
             >
               {/* 格式说明 */}
-              <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3 space-y-1.5">
-                <p className="text-xs font-medium text-indigo-700">支持三种格式（自动识别）：</p>
+              <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3">
                 <p className="text-[0.75rem] text-indigo-600">
-                  <strong>1. JSON / JSONL</strong>：每行一个 JSON 对象，或包含 <code className="px-1 bg-white/60 rounded">lines</code> 数组的 WebUI 队列文件。必填 <code className="px-1 bg-white/60 rounded">text</code>，用 <code className="px-1 bg-white/60 rounded">role</code>/<code className="px-1 bg-white/60 rounded">speaker</code> 指定说话人，可选 <code className="px-1 bg-white/60 rounded">emotion</code>、<code className="px-1 bg-white/60 rounded">silence_after_ms</code>。
-                </p>
-                <p className="text-[0.75rem] text-indigo-600">
-                  <strong>2. 纯文本</strong>：每行一段对话，用 <code className="px-1 bg-white/60 rounded">A:</code> / <code className="px-1 bg-white/60 rounded">B:</code> 或当前角色名（{speakers.A.name || "A"} / {speakers.B.name || "B"}）开头指定说话人，无前缀自动交替分配。
-                </p>
-                <p className="text-[0.75rem] text-indigo-600">
-                  <strong>3. 文档</strong>：doc / docx / pdf 自动抽取文字（md / txt 直接读取）。
+                  <strong>纯文本</strong>：每行一段对话，用 <code className="px-1 bg-white/60 rounded">A:</code> / <code className="px-1 bg-white/60 rounded">B:</code>（A 代表 {speakers.A.name || "主持人A"}，B 代表 {speakers.B.name || "主持人B"}）开头指定说话人；无前缀的行导入后未标注，可在行内点击「+ A 发言」/「+ B 发言」指定。
                 </p>
               </div>
 
@@ -435,20 +436,20 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportCo
                 <input
                   ref={fileRef}
                   type="file"
-                  accept=".jsonl,.txt,.json,.md,.doc,.docx,.pdf"
+                  accept=".txt"
                   className="hidden"
                   onChange={e => { const f = e.target.files?.[0]; if (f) handleFileImport(f); e.target.value = ""; }}
                 />
                 <Button variant="outline" size="sm" icon={UploadCloud} onClick={() => fileRef.current?.click()} disabled={fileLoading}>
                   {fileLoading ? "读取中..." : "选择文件"}
                 </Button>
-                <span className="text-[0.75rem] text-gray-400">或把文件拖到这里（.json / .jsonl / .txt / .md / .doc / .docx / .pdf）</span>
+                <span className="text-[0.75rem] text-gray-400">或把 .txt 文件拖到这里</span>
               </div>
 
               <Textarea
                 value={importText}
                 onChange={e => { setImportText(e.target.value); setImportError(null); }}
-                placeholder={'{"text":"大家好，欢迎收听今天的节目。","role":"A"}\n{"text":"今天我们来聊聊人工智能。","role":"B","emotion_text":"relaxed, cheerful","emotion_weight":0.7,"silence_after_ms":350}\n\n- 或纯文本格式 -\nA: 大家好，欢迎收听今天的节目。\nB: 今天我们来聊聊人工智能。'}
+                placeholder={'A:哈喽,大家好，欢迎收听我们的播客。\nB:大家好，我是晓风。\nA:今天咱们聊一个很现实的话题。'}
                 className="min-h-[160px] font-mono text-xs"
                 autoFocus
               />
