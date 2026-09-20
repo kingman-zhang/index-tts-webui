@@ -51,9 +51,10 @@ async def submit_to_queue(
         "created_at": datetime.now().isoformat(),
         "cancel_requested": False,
     }
-    if member_svc.ENFORCE:
+    if member_svc.ENFORCE or member_svc.REQUIRE_LOGIN:
         if not user:
             raise HTTPException(401, "请先登录后再提交合成任务")
+    if member_svc.ENFORCE:
         try:
             charge = member_svc.charge_for_task(user, task.lines, task_id)
         except MemberError as e:

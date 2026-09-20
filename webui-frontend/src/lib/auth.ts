@@ -45,8 +45,11 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
   return resp;
 }
 
-/** 恢复登录态（页面加载时调用一次；token 过期则静默清除）。 */
+/** 恢复登录态（页面加载时调用一次；token 过期则静默清除。内部防重入）。 */
+let bootInited = false;
 export async function initAuth(): Promise<void> {
+  if (bootInited) return;
+  bootInited = true;
   if (!state.token) {
     setAuth({ ready: true });
     return;

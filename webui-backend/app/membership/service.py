@@ -6,6 +6,7 @@
   MEMBER_POINTS_PER_1000_CHARS  合成扣费：每 1000 字符扣积分，默认 10；0 表示关闭按量扣费
   MEMBER_TOKEN_TTL_DAYS         会话有效期（天），默认 30
   MEMBER_ENFORCE                1 = 未登录/积分不足时拒绝提交合成任务；默认 0（仅登录用户记账，不强制）
+  MEMBER_REQUIRE_LOGIN          1 = 合成提交必须登录（不扣费）；与 MEMBER_ENFORCE 相互独立
   MEMBER_ADMIN_TOKEN            管理接口令牌；未设置则管理接口整体禁用
 """
 
@@ -31,6 +32,7 @@ CHECKIN_BONUS = int(os.environ.get("MEMBER_CHECKIN_BONUS", "5"))
 POINTS_PER_1000_CHARS = int(os.environ.get("MEMBER_POINTS_PER_1000_CHARS", "10"))
 TOKEN_TTL_DAYS = int(os.environ.get("MEMBER_TOKEN_TTL_DAYS", "30"))
 ENFORCE = os.environ.get("MEMBER_ENFORCE", "0") == "1"
+REQUIRE_LOGIN = os.environ.get("MEMBER_REQUIRE_LOGIN", "0") == "1"
 ADMIN_TOKEN = os.environ.get("MEMBER_ADMIN_TOKEN", "") or None
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fa5]{2,24}$")
