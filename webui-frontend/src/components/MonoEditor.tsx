@@ -49,6 +49,8 @@ interface MonoEditorProps {
   speakers?: { A: string; B: string };
   /** 导入文档解析后的纯文本 → 画布文本转换（播客模式用于识别 A:/B: 前缀） */
   importTransform?: (raw: string) => string;
+  /** 画布区标题（如"对话脚本"；不传则不显示） */
+  title?: string;
 }
 
 type EmotionMeta = { label: string; chip: string; dot: string; scope: string };
@@ -93,15 +95,15 @@ function emotionChipHtml(meta: EmotionMeta): string {
   );
 }
 
-/** 主持人标识块：A=靛蓝 / B=玫红，徽标字母 + 显示名 */
+/** 主持人标识块：A=靛蓝 / B=青绿（与左栏角色卡配色一致），徽标字母 + 显示名 */
 function speakerChipHtml(key: "A" | "B", label: string): string {
   const badge =
     key === "A"
       ? "bg-indigo-500 text-white"
-      : "bg-rose-500 text-white";
+      : "bg-teal-500 text-white";
   return (
     `<span contenteditable="false" data-marker="【${key}】" ` +
-    `class="mono-chip mono-chip-speaker ${key === "A" ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-rose-200 bg-rose-50 text-rose-700"}">` +
+    `class="mono-chip mono-chip-speaker ${key === "A" ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-teal-200 bg-teal-50 text-teal-700"}">` +
     `<i class="not-italic w-4 h-4 rounded-full ${badge} text-[0.6rem] flex items-center justify-center font-bold">${key}</i>` +
     escapeHtml(label) +
     `</span>`
@@ -479,7 +481,7 @@ interface HistoryEntry {
   caret: number | null;
 }
 
-export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo, speakers, importTransform }: MonoEditorProps) {
+export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo, speakers, importTransform, title }: MonoEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -496,6 +498,8 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   const [importOpen, setImportOpen] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  /** 播客模式导入弹窗的文本框内容（.txt 文件内容 / 手动粘贴） */
+  const [importText, setImportText] = useState("");
 
   const parsed = textToMonoLines(text);
   const podcastSegs = speakers ? textToPodcastSegments(text) : null;
@@ -514,7 +518,45 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
       }
     : undefined;
 
-  // ─── 导入文档（弹窗上传/拖拽；doc/docx/pdf/txt/md → 纯文本填充画布） ──────
+  // ─── 导入文档 ─────────────────────────────────────────────
+  // 播客模式：弹窗 = 提示语 + .txt 文件/拖拽 + 粘贴文本框，经 importTransform
+  // （A:/B: 前缀 → 主持人标识块）后整体填入画布。
+  // 单人模式：弹窗 = 文档上传（doc/docx/pdf/txt/md），走后端解析。
+
+  /** 播客模式：把文本框内容导入画布（替换现有，非空时确认） */
+  const applyImportText = (raw: string) => {
+    if (!raw.trim()) {
+      setImportError("没有可导入的内容：请在下方粘贴对话文本，或选择 .txt 文件");
+      return;
+    }
+    if (textRef.current.trim() && !window.confirm("导入将替换当前文稿内容，是否继续？")) return;
+    // 入 undo 栈，导入后可 Cmd+Z 撤回
+    undoStack.current.push({ text: textRef.current, caret: null });
+    if (undoStack.current.length > 100) undoStack.current.shift();
+    redoStack.current = [];
+    onChange(importTransform ? importTransform(raw) : raw);
+    setImportOpen(false);
+    setImportText("");
+    setImportError(null);
+  };
+
+  /** 播客模式：读取 .txt 文件内容填入文本框（预览后再点「导入」生效） */
+  const handleImportTxtFile = async (file: File) => {
+    if (file.size > IMPORT_MAX_BYTES) {
+      setImportError("文件超过 20MB 上限");
+      return;
+    }
+    setImportError(null);
+    setImporting(true);
+    try {
+      setImportText(await file.text());
+    } catch (e: any) {
+      setImportError(`读取失败：${e.message}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const handleImportFile = async (file: File) => {
     if (file.size > IMPORT_MAX_BYTES) {
       setImportError("文件超过 20MB 上限");
@@ -998,6 +1040,9 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
 
   return (
     <div className="h-full flex flex-col min-h-0 gap-4">
+      {title && (
+        <h2 className="shrink-0 text-xs font-semibold text-gray-400 uppercase tracking-wider">{title}</h2>
+      )}
       <div className="flex-1 min-h-0 rounded-2xl border border-gray-200 bg-white shadow-sm flex flex-col overflow-hidden">
         {/* 所见即所得画布 */}
         <div className="flex-1 min-h-0 px-7 py-6 overflow-y-auto scrollbar-thin">
@@ -1049,7 +1094,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
                 onClick={() => insertSpeaker(k)}
                 className={TOOL_BTN}
               >
-                <span className={cn("w-2 h-2 rounded-full shrink-0", k === "A" ? "bg-indigo-500" : "bg-rose-500")} />
+                <span className={cn("w-2 h-2 rounded-full shrink-0", k === "A" ? "bg-indigo-500" : "bg-teal-500")} />
                 {k} 发言
               </button>
             ))}
@@ -1100,6 +1145,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
             onMouseDown={e => e.preventDefault()}
             onClick={() => {
               setImportError(null);
+              setImportText("");
               setImportOpen(true);
             }}
             disabled={importing}
@@ -1290,8 +1336,101 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
         </>
       )}
 
-      {/* 导入文档弹窗：点击/拖拽上传（暂不做 URL 导入） */}
-      {importOpen && (
+      {/* 导入弹窗。播客模式：提示语 + .txt 选择/拖拽 + 粘贴文本框（旧版批量导入形态）；
+          单人模式：文档上传。 */}
+      {importOpen && importTransform && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => { if (!importing) setImportOpen(false); }}>
+          <div
+            className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl max-h-[90vh] overflow-y-auto scrollbar-thin"
+            onClick={e => e.stopPropagation()}
+            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={e => {
+              e.preventDefault(); setDragOver(false);
+              if (importing) return;
+              const f = e.dataTransfer.files?.[0];
+              if (f) handleImportTxtFile(f);
+            }}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 sticky top-0 bg-white rounded-t-2xl">
+              <h3 className="text-sm font-semibold text-gray-800">导入对话脚本</h3>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => { if (!importing) setImportOpen(false); }}
+                className="p-1 rounded text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-3">
+              {/* 格式说明 */}
+              <div className="rounded-lg bg-blue-50 border border-blue-100 p-3">
+                <p className="text-[0.75rem] text-blue-600">
+                  纯文本：每行一段对话，用 <code className="px-1 bg-white/70 rounded">A:</code> /{" "}
+                  <code className="px-1 bg-white/70 rounded">B:</code>（A 代表 {speakerNames?.A ?? "主持人A"}，B 代表{" "}
+                  {speakerNames?.B ?? "主持人B"}）开头指定说话人，无前缀自动交替分配。
+                </p>
+              </div>
+
+              {/* 文件选择（仅 .txt，支持拖拽） */}
+              <div className={cn(
+                "flex items-center gap-2 rounded-lg border border-dashed px-3 py-2.5 transition-colors",
+                dragOver ? "border-emerald-400 bg-emerald-50" : "border-gray-200",
+              )}>
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={importing}
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-gray-200 bg-white text-xs text-gray-600 transition-colors hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-40"
+                >
+                  {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CloudUpload className="w-3.5 h-3.5" />}
+                  {importing ? "读取中..." : "选择 txt 文件"}
+                </button>
+                <span className="text-[0.75rem] text-gray-400">或把 .txt 文件拖到这里，内容会填入下方文本框</span>
+              </div>
+
+              {/* 粘贴文本框（placeholder 即格式示例） */}
+              <textarea
+                value={importText}
+                onChange={e => { setImportText(e.target.value); setImportError(null); }}
+                placeholder={
+                  "也可以直接把脚本粘贴到这里，例如：\nA:哈喽，大家好，欢迎收听我们的播客。\nB:大家好，我是主持人B。\nA:今天咱们聊一个很现实的话题。"
+                }
+                className="w-full min-h-[160px] rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                autoFocus
+              />
+
+              {importError && (
+                <p className="flex items-center gap-1.5 text-xs text-red-600">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  {importError}
+                </p>
+              )}
+
+              {/* 操作 */}
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(false)}
+                  className="h-9 px-4 rounded-full border border-gray-200 bg-white text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyImportText(importText)}
+                  disabled={importing || !importText.trim()}
+                  className="h-9 px-5 rounded-full bg-emerald-600 text-white text-sm font-medium shadow-sm transition-colors hover:bg-emerald-500 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  导入到画布{importText.trim() ? `（${importText.split("\n").filter(l => l.trim()).length} 行）` : ""}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {importOpen && !importTransform && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
             className="absolute inset-0 bg-black/40"

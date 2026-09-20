@@ -172,28 +172,26 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   return (
     <Card className={cn("rounded-2xl border-2 shadow-sm", c.ring)}>
       <CardContent className="p-5 space-y-4">
-        {/* 角色名称 + 预设小按钮 */}
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <Label>角色名称</Label>
-            <div className="flex items-center gap-1">
-              {savedPresets.length > 0 && (
-                <button onClick={() => setShowPresetList(!showPresetList)} className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" title="打开角色预设列表">
-                  <FolderOpen className="w-3.5 h-3.5" />
-                </button>
-              )}
-              {config.voice_path && (
-                <button onClick={() => setShowSavePreset(!showSavePreset)} className="p-1.5 rounded text-gray-400 hover:text-green-600 hover:bg-green-50" title="保存角色预设">
-                  <Save className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
+        {/* 角色名称（一行排布）+ A/B 徽标（卡片右上角）+ 预设小按钮 */}
+        <div className="flex items-center gap-2">
           <input type="text" value={config.name} onChange={e => onChange({ name: e.target.value })}
-            className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            className="h-9 min-w-0 flex-1 rounded-lg border border-gray-300 bg-white px-3 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             placeholder={`主持人${speakerKey}的名字`} />
-          <p className="mt-1 text-[0.6875rem] text-gray-400">用于脚本中的说话人标识，并会随当前项目保存。</p>
+          <div className="flex items-center gap-0.5 shrink-0">
+            {savedPresets.length > 0 && (
+              <button onClick={() => setShowPresetList(!showPresetList)} className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" title="打开角色预设列表">
+                <FolderOpen className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {config.voice_path && (
+              <button onClick={() => setShowSavePreset(!showSavePreset)} className="p-1.5 rounded text-gray-400 hover:text-green-600 hover:bg-green-50" title="保存角色预设">
+                <Save className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          <Badge color={c.badge} className="shrink-0">{speakerKey}</Badge>
         </div>
+        <p className="-mt-2 text-[0.6875rem] text-gray-400">用于脚本中的说话人标识，并会随当前项目保存。</p>
 
         {showPresetList && savedPresets.length > 0 && (
           <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-2 space-y-1">
@@ -260,7 +258,6 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
               {config.voice_name ? "悬停头像可试听" : "从预设库选择，或上传参考音频"}
             </p>
           </div>
-          <Badge color={c.badge}>{speakerKey}</Badge>
         </div>
 
         {/* 操作两键 */}

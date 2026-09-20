@@ -293,6 +293,7 @@ export default function PodcastPage() {
             pointsInfo={pointsInfo}
             speakers={{ A: voices.A.name, B: voices.B.name }}
             importTransform={dialogTextToScript}
+            title="对话脚本"
           />
         </main>
 
