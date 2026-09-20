@@ -1,10 +1,12 @@
 /** WebUI 后端 API 客户端。 */
 import type { PodcastProject, TaskInfo, VoiceFile, EmotionConfig, GenerationParams } from "@/types";
+import { authFetch } from "@/lib/auth";
 
 const BASE = "/api";
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
-  const resp = await fetch(url, options);
+  // 统一走 authFetch：登录后所有请求带 Authorization，401 自动清登录态
+  const resp = await authFetch(url, options);
   if (!resp.ok) {
     let detail = resp.statusText;
     try {
