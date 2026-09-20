@@ -23,7 +23,8 @@ export const api = {
   async getConfig() {
     return fetchJSON<{
       tts_url: string;
-      tts_online: boolean;
+      tts_status_poll: boolean;
+      tts_online: boolean | null;
       tts_info: { model_loaded: boolean; device: string; fp16: boolean } | null;
     }>(`${BASE}/config`);
   },

@@ -22,9 +22,6 @@ interface HeaderProps {
   onLoadProject?: () => void;
   ttsOnline: boolean | null;
   ttsInfo: { model_loaded: boolean } | null;
-  /** TTS 状态探测热开关：开启后才探测并显示状态，关闭即停 */
-  ttsWatch?: boolean;
-  onToggleTtsWatch?: () => void;
   saving?: boolean;
   /** 配音模式：项目名右侧的保存图标（点击保存当前项目配置） */
   onSaveProject?: () => void;
@@ -81,7 +78,7 @@ function fmtTime(iso: string): string {
 export function Header({
   name, onRename,
   showProjectActions = true, showNameInput = true, showTts = true, onSave, onLoadProject,
-  ttsOnline, ttsInfo, ttsWatch = false, onToggleTtsWatch, saving = false,
+  ttsOnline, ttsInfo, saving = false,
   onSaveProject, projectSaved = false,
   projects, onSwitchProject, onDeleteProject,
 }: HeaderProps) {
@@ -227,37 +224,14 @@ export function Header({
       )}
 
       <div className="flex items-center gap-2">
-        {/* TTS 状态热开关：默认静默不探测；点击开启后探测并显示状态（30s 轮询），再点关闭 */}
-        {showTts && (
-          ttsWatch ? (
-            <button
-              type="button"
-              title="点击停止 TTS 状态探测"
-              onClick={onToggleTtsWatch}
-              className="flex items-center gap-1.5 mr-2 cursor-pointer"
-            >
-              {ttsOnline === null ? (
-                <Loader2 className="w-3.5 h-3.5 text-gray-400 animate-spin" />
-              ) : ttsOnline ? (
-                <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-              ) : (
-                <XCircle className="w-3.5 h-3.5 text-red-400" />
-              )}
-              <span className="text-xs text-gray-500">
-                {ttsOnline === null ? "检测中" : ttsOnline ? (ttsInfo?.model_loaded ? "TTS 就绪" : "模型加载中") : "TTS 离线"}
-              </span>
-            </button>
-          ) : (
-            <button
-              type="button"
-              title="点击开始探测 TTS 服务状态"
-              onClick={onToggleTtsWatch}
-              className="flex items-center gap-1.5 mr-2 cursor-pointer opacity-60 hover:opacity-100 transition-opacity"
-            >
-              <span className="w-2 h-2 rounded-full bg-gray-300" />
-              <span className="text-xs text-gray-400">TTS</span>
-            </button>
-          )
+        {/* TTS 状态：探测开关在后端 .env（TTS_STATUS_POLL），仅在线时显示，其余静默 */}
+        {showTts && ttsOnline === true && (
+          <div className="flex items-center gap-1.5 mr-2">
+            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+            <span className="text-xs text-gray-500">
+              {ttsInfo?.model_loaded ? "TTS 就绪" : "模型加载中"}
+            </span>
+          </div>
         )}
 
         {showProjectActions && (

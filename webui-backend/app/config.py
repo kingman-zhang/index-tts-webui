@@ -55,6 +55,9 @@ if _ENV_LOADED_COUNT:
     logger.info(".env 已加载 %d 项配置（真实环境变量优先）", _ENV_LOADED_COUNT)
 
 TTS_URL = args.tts_url.rstrip("/")
+
+# TTS 状态栏探测开关：1 = /api/config 才去探 tts-server；0/缺省 = 不探测（前端状态栏静默）
+TTS_STATUS_POLL = os.environ.get("TTS_STATUS_POLL", "0") == "1"
 DATA_DIR = Path(args.data_dir)
 PROJECTS_DIR = DATA_DIR / "projects"
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)

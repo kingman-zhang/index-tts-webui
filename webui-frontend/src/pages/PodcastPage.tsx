@@ -30,7 +30,7 @@ export default function PodcastPage() {
   const [showProjects, setShowProjects] = useState(false);
   const [projectList, setProjectList] = useState<any[]>([]);
 
-  const { voiceFiles, ttsOnline, ttsInfo, ttsWatch, setTtsWatch, reloadVoices } = useAppInit();
+  const { voiceFiles, ttsOnline, ttsInfo, reloadVoices } = useAppInit();
   const { toast, showToast } = useToast();
 
   // ─── 项目操作 ─────────────────────────────────────────────
@@ -269,8 +269,6 @@ export default function PodcastPage() {
         onLoadProject={handleOpenProjects}
         ttsOnline={ttsOnline}
         ttsInfo={ttsInfo}
-        ttsWatch={ttsWatch}
-        onToggleTtsWatch={() => setTtsWatch(v => !v)}
         saving={saving}
       />
 
