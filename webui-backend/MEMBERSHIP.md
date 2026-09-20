@@ -6,8 +6,7 @@
 
 | 功能 | 端点 | 说明 |
 |---|---|---|
-| 注册 | `POST /api/auth/register` | `{username, password, nickname?}` → `{token, user}`；注册赠送积分 |
-| 邮箱注册 | `POST /api/auth/email-code` + `POST /api/auth/register-email` | 见「邮箱注册」节；需配置 SMTP_* |
+| 注册 | `POST /api/auth/email-code` + `POST /api/auth/register-email` | **唯一注册方式（邮箱验证码）**，见「邮箱注册」节；需配置 SMTP_*；注册赠送积分 |
 | 登录 | `POST /api/auth/login` | `{username 或 email, password}` → `{token, user}`；账号禁用返回 403 |
 | 登出 | `POST /api/auth/logout` | 吊销当前 token |
 | 当前用户 | `GET /api/auth/me` | `Authorization: Bearer <token>` |
@@ -33,7 +32,9 @@
 
 **关键设计：`MEMBER_ENFORCE=0`（默认）时，合成链路零行为变化**——老用户无感；带 token 提交也不会扣钱。开启收费只需在 .env 加一行 `MEMBER_ENFORCE=1`。
 
-## 二·五、邮箱注册（2026-09-19 新增）
+## 二·五、邮箱注册（2026-09-19 新增；2026-09-20 起为唯一注册方式）
+
+> 原 `POST /api/auth/register`（用户名+密码直注册）已移除；`service.register()` 保留仅供管理 CLI / 测试使用。
 
 流程：用户填邮箱 → `POST /api/auth/email-code` 收 6 位验证码 → `POST /api/auth/register-email` `{email, code, password, nickname?}` 建号并自动登录。
 

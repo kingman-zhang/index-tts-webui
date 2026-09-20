@@ -59,12 +59,6 @@ def _err(e: MemberError):
 
 # ─── 请求体 ─────────────────────────────────────────────────
 
-class RegisterBody(BaseModel):
-    username: str
-    password: str
-    nickname: str = ""
-
-
 class LoginBody(BaseModel):
     username: str  # 用户名或邮箱
     password: str
@@ -115,14 +109,6 @@ class DisableBody(BaseModel):
 
 
 # ─── auth ───────────────────────────────────────────────────
-
-@router.post("/api/auth/register")
-def auth_register(body: RegisterBody):
-    try:
-        return service.register(body.username, body.password, body.nickname)
-    except MemberError as e:
-        _err(e)
-
 
 @router.post("/api/auth/login")
 def auth_login(body: LoginBody):

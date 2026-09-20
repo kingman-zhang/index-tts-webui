@@ -103,6 +103,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 from app.membership import service, store  # noqa: E402
+from app.membership.service import MemberError  # noqa: E402
 
 client = TestClient(app)
 
@@ -200,8 +201,12 @@ def main():
     check("密码错 401", r.status_code == 401, r.text)
 
     print("── 用户名冲突派生 ──")
-    r = client.post("/api/auth/register", json={"username": "zhangsan", "password": "pass123"})
-    check("预置同名用户", r.status_code == 200)
+    try:
+        service.register("zhangsan", "pass123")
+        ok = True
+    except MemberError:
+        ok = False
+    check("预置同名用户", ok)
     r = client.post("/api/auth/email-code", json={"email": "zhangsan@qq.com"})
     check("发码成功", r.status_code == 200, r.text)
     code2 = get_code("zhangsan@qq.com")

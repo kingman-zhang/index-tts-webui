@@ -75,8 +75,6 @@ export default function AccountPage() {
 
 function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  // 注册方式：用户名 / 邮箱验证码
-  const [regWay, setRegWay] = useState<"username" | "email">("email");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [nickname, setNickname] = useState("");
@@ -120,8 +118,6 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
       let body: { token: string; user: MemberUser };
       if (mode === "login") {
         body = await memberApi.login(username, password);
-      } else if (regWay === "username") {
-        body = await memberApi.register(username, password, nickname);
       } else {
         body = await memberApi.registerEmail(email, code, password, nickname);
       }
@@ -136,9 +132,7 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
 
   const canSubmit = mode === "login"
     ? !!username && !!password
-    : regWay === "username"
-      ? !!username && !!password
-      : EMAIL_RE.test(email) && !!code && !!password;
+    : EMAIL_RE.test(email) && !!code && !!password;
 
   return (
     <div className="max-w-sm mx-auto">
@@ -159,23 +153,6 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
               </button>
             ))}
           </div>
-          {mode === "register" && (
-            <div className="flex gap-1 p-1 bg-gray-50 border border-gray-100 rounded-lg mt-2">
-              {(["email", "username"] as const).map(w => (
-                <button
-                  key={w}
-                  type="button"
-                  onClick={() => { setRegWay(w); setErr(""); }}
-                  className={cn(
-                    "flex-1 h-7 rounded-md text-xs transition-colors",
-                    regWay === w ? "bg-indigo-50 text-indigo-700 font-medium" : "text-gray-400 hover:text-gray-600"
-                  )}
-                >
-                  {w === "email" ? "邮箱注册" : "用户名注册"}
-                </button>
-              ))}
-            </div>
-          )}
         </CardHeader>
         <CardContent className="space-y-3">
           {mode === "login" && (
@@ -185,14 +162,7 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
                 placeholder="用户名或注册邮箱" onKeyDown={e => e.key === "Enter" && submit()} />
             </div>
           )}
-          {mode === "register" && regWay === "username" && (
-            <div>
-              <Label>用户名</Label>
-              <Input value={username} onChange={e => setUsername(e.target.value)}
-                placeholder="2-24 位中英文/数字" onKeyDown={e => e.key === "Enter" && submit()} />
-            </div>
-          )}
-          {mode === "register" && regWay === "email" && (
+          {mode === "register" && (
             <>
               <div>
                 <Label>邮箱</Label>
@@ -217,7 +187,7 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
             <div>
               <Label>昵称（可选）</Label>
               <Input value={nickname} onChange={e => setNickname(e.target.value)}
-                placeholder={regWay === "email" ? "不填则使用邮箱前缀" : "不填则与用户名相同"} />
+                placeholder="不填则使用邮箱前缀" />
             </div>
           )}
           <div>

@@ -25,6 +25,8 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
+from app.membership import service  # noqa: E402
+from app.membership.service import MemberError  # noqa: E402
 
 client = TestClient(app)
 ADMIN = {"X-Admin-Token": "test-admin-token"}
@@ -43,23 +45,30 @@ def check(name: str, cond: bool, extra: str = ""):
         print(f"  ✗ {name}  {extra}")
 
 
+def svc_register(username, password, nickname=""):
+    """直接调 service 层注册（HTTP 用户名注册端点已移除，注册仅邮箱验证码）。"""
+    try:
+        return service.register(username, password, nickname), None
+    except MemberError as e:
+        return None, e
+
+
 def main():
-    print("── 注册 ──")
-    r = client.post("/api/auth/register", json={"username": "张三", "password": "pass123", "nickname": "三哥"})
-    check("注册成功", r.status_code == 200, r.text)
-    body = r.json()
-    token = body.get("token", "")
-    user = body.get("user", {})
+    print("── 注册（service 层） ──")
+    body, e = svc_register("张三", "pass123", "三哥")
+    check("注册成功", body is not None, str(e))
+    token = (body or {}).get("token", "")
+    user = (body or {}).get("user", {})
     check("注册赠送 100 分", user.get("points") == 100, str(user))
     check("昵称生效", user.get("nickname") == "三哥", str(user))
     check("token 非空", bool(token))
 
-    r = client.post("/api/auth/register", json={"username": "张三", "password": "pass123"})
-    check("重复用户名被拒", r.status_code == 400, r.text)
-    r = client.post("/api/auth/register", json={"username": "a", "password": "pass123"})
-    check("过短用户名被拒", r.status_code == 400)
-    r = client.post("/api/auth/register", json={"username": "李四", "password": "123"})
-    check("过短密码被拒", r.status_code == 400)
+    _, e = svc_register("张三", "pass123")
+    check("重复用户名被拒", e is not None and e.code == 400, str(e))
+    _, e = svc_register("a", "pass123")
+    check("过短用户名被拒", e is not None and e.code == 400, str(e))
+    _, e = svc_register("李四", "123")
+    check("过短密码被拒", e is not None and e.code == 400, str(e))
 
     print("── 登录 ──")
     r = client.post("/api/auth/login", json={"username": "张三", "password": "wrong!"})
@@ -130,7 +139,7 @@ def main():
     r = client.post("/api/admin/members/codes", json={"count": 1, "points": 0}, headers=ADMIN)
     check("面值 0 被拒", r.status_code == 400)
 
-    client.post("/api/auth/register", json={"username": "王五", "password": "pass123"})
+    svc_register("王五", "pass123")  # service 层预置
     w5 = client.post("/api/auth/login", json={"username": "王五", "password": "pass123"}).json()["token"]
 
     r = client.post("/api/points/redeem", json={"code": code.lower()}, headers={"Authorization": f"Bearer {w5}"})

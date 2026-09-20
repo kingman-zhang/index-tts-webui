@@ -35,11 +35,6 @@ const jsonInit = (method: string, body: unknown): RequestInit => ({
 });
 
 export const memberApi = {
-  async register(username: string, password: string, nickname: string) {
-    return fetchJSON<{ token: string; user: MemberUser }>("/api/auth/register",
-      jsonInit("POST", { username, password, nickname }));
-  },
-
   async requestEmailCode(email: string) {
     return fetchJSON<{ ok: boolean; ttl_minutes: number }>("/api/auth/email-code",
       jsonInit("POST", { email }));

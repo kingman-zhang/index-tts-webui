@@ -32,6 +32,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 from app import queue_state as qs  # noqa: E402
+from app.membership import service  # noqa: E402
 
 client = TestClient(app)
 auth_cache: dict = {}
@@ -76,7 +77,7 @@ def balance(token: str) -> int:
 
 
 def main():
-    body = client.post("/api/auth/register", json={"username": "付费用户", "password": "pass123"}).json()
+    body = service.register("付费用户", "pass123")
     token = body["token"]
     auth = {"Authorization": f"Bearer {token}"}
     check("注册送 100", body["user"]["points"] == 100, str(body["user"]))
