@@ -1,9 +1,10 @@
-import { useState, useRef, type DragEvent } from "react";
+import { useState, useRef, useMemo, type DragEvent } from "react";
 import {
   Plus, Trash2, Copy, ArrowUp, ArrowDown, FileText, X, GripVertical, ListChecks, UploadCloud, Eraser
 } from "lucide-react";
 import { Button, Card, EmptyState, Textarea, Badge } from "./ui";
 import { EmotionEditor } from "./EmotionEditor";
+import { api } from "@/api/client";
 import { makeLine, type PodcastLine, type VoiceFile, type SpeakerConfig, type EmotionConfig } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -12,7 +13,6 @@ interface ScriptEditorProps {
   speakers: { A: SpeakerConfig; B: SpeakerConfig };
   voiceFiles: VoiceFile[];
   onChange: (lines: PodcastLine[]) => void;
-  onImport: (text: string) => Promise<PodcastLine[]>;
   onImportConfig?: (config: {
     voices?: Record<string, string>;
     silence?: Partial<{ within_segment: number; between_lines: number; speaker_switch: number }>;
@@ -22,106 +22,172 @@ interface ScriptEditorProps {
   }) => void;
 }
 
-/** 解析 JSONL 格式（indextts2 batch 兼容格式 + 扩展）。
- * 支持两种形式：
- *   1. 原生格式：{"text":"...","voice":"/path/voice.wav","silence_after_ms":400}
- *   2. 扩展格式：{"text":"...","role":"A","emotion":{"mode":2,"vector":[...]}}
- * role 字段（推荐）："A" / "B" / 主持人名
- * 兼容旧格式：voice / speaker 字段也表示角色
- */
-function parseJSONL(text: string, speakers: { A: SpeakerConfig; B: SpeakerConfig }): PodcastLine[] {
-  const result: PodcastLine[] = [];
-  const trimmedText = text.trim();
-  let rawLines: string[];
-  // 同时支持 JSONL，以及 WebUI 队列/项目导出的单个 JSON 文档：
-  // { "lines": [{ "speaker": "A", "text": "..." }, ...] }
-  try {
-    const document = JSON.parse(trimmedText);
-    const records = Array.isArray(document)
-      ? document
-      : (document && Array.isArray(document.lines) ? document.lines : [document]);
-    rawLines = records.map((record: unknown) => JSON.stringify(record));
-  } catch {
-    rawLines = trimmedText.split("\n");
-  }
-  for (const raw of rawLines) {
-    const trimmed = raw.trim();
-    if (!trimmed || !trimmed.startsWith("{")) continue;
-    try {
-      const obj = JSON.parse(trimmed);
-      if (!obj.text) continue;
+/** 可导入格式自动识别：JSON 文档 / JSONL / 纯文本。 */
+export type ImportFormat = "json" | "jsonl" | "text";
 
-      // 判断说话人：优先 role 字段，其次 speaker，最后 voice（兼容旧格式）
-      let speaker: "A" | "B" = result.length % 2 === 0 ? "A" : "B";
-      const speakerHint = obj.role || obj.speaker || obj.voice;
-      if (speakerHint) {
-        const hint = String(speakerHint);
-        const hintLower = hint.toLowerCase();
-        const fileName = hint.split("/").pop()?.split("\\").pop() || "";
-        if (hint === "A" || hint === "a" || hintLower === "a" || hint.includes(speakers.A.name)) {
-          speaker = "A";
-        } else if (hint === "B" || hint === "b" || hintLower === "b" || hint.includes(speakers.B.name)) {
-          speaker = "B";
-        } else if (speakers.A.voice_path && hint === speakers.A.voice_path) {
-          speaker = "A";
-        } else if (speakers.B.voice_path && hint === speakers.B.voice_path) {
-          speaker = "B";
-        } else if (speakers.A.voice_name && fileName === speakers.A.voice_name) {
-          speaker = "A";
-        } else if (speakers.B.voice_name && fileName === speakers.B.voice_name) {
-          speaker = "B";
-        }
-      }
-
-      // 情感：兼容 WebUI 嵌套 emotion，以及旧 JSONL 的 emotion_text/emotion_weight
-      // 只有 JSONL 中显式写了情感字段时才标记 emotion_from_code，
-      // 否则使用角色默认值并在序列化时省略（除非用户在可视化中改过）。
-      const baseEmo = speakers[speaker].emotion;
-      const hasEmotionField = !!(obj.emotion || obj.emotion_text || obj.emotion_weight);
-      const sourceEmotion = obj.emotion || (obj.emotion_text
-        ? { mode: 3, text: obj.emotion_text, weight: obj.emotion_weight }
-        : null);
-      const emo = sourceEmotion
-        ? {
-            mode: (Number(sourceEmotion.mode ?? baseEmo.mode) as 0 | 1 | 2 | 3),
-            audio_path: sourceEmotion.audio_path ?? baseEmo.audio_path,
-            vector: Array.isArray(sourceEmotion.vector) ? sourceEmotion.vector.map(Number) : [...baseEmo.vector],
-            weight: Number(sourceEmotion.weight ?? baseEmo.weight),
-            text: sourceEmotion.text ?? baseEmo.text,
-            random: Boolean(sourceEmotion.random ?? baseEmo.random),
-          }
-        : { ...baseEmo, vector: [...baseEmo.vector] };
-
-      // 行级静音：只有 JSONL 中显式写了才标记 silence_from_code
-      const hasSilenceField = Number.isFinite(Number(obj.silence_after_ms));
-
-      result.push({
-        id: Math.random().toString(36).slice(2, 10),
-        speaker,
-        text: String(obj.text),
-        emotion: emo,
-        emotion_from_code: hasEmotionField,
-        silence_after_ms: hasSilenceField
-          ? Math.max(0, Number(obj.silence_after_ms))
-          : undefined,
-        silence_from_code: hasSilenceField,
-      });
-    } catch {
-      // 跳过无法解析的行
-    }
-  }
-  return result;
+interface ImportResult {
+  format: ImportFormat;
+  lines: PodcastLine[];
+  /** 无法解析的行（仅 JSON/JSONL 模式），将被跳过 */
+  badLines: { no: number; snippet: string }[];
+  /** JSON 文档模式下的顶层配置（voices/silence/params/project_name） */
+  docConfig: any | null;
 }
 
-export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, onImportConfig }: ScriptEditorProps) {
+const genId = () => Math.random().toString(36).slice(2, 10);
+
+/** 行前缀匹配：^([^:：]{1,12})[:：] —— 限 12 字符防止 "https://..." 误切 */
+const SPEAKER_PREFIX_RE = /^([^:：]{1,12})[:：]\s*(.*)$/;
+
+/** 解析导入文本（JSON 文档 / JSONL / 纯文本三格式自动识别）。
+ *  JSON 模式：支持每行一个 JSON 对象，也支持包含 lines 数组的 WebUI 队列文件。
+ *  纯文本模式：每行一段对话，"A:" / "B:" / 角色名前缀指定说话人，无前缀交替分配。
+ */
+function parseImportText(text: string, speakers: { A: SpeakerConfig; B: SpeakerConfig }): ImportResult {
+  const t = text.trim();
+  const badLines: { no: number; snippet: string }[] = [];
+  const lines: PodcastLine[] = [];
+  let format: ImportFormat = "text";
+  let docConfig: any | null = null;
+  let rawLines: string[] | null = null;
+
+  if (t.startsWith("{") || t.startsWith("[")) {
+    try {
+      const doc = JSON.parse(t);
+      rawLines = (Array.isArray(doc) ? doc : (doc && Array.isArray(doc.lines) ? doc.lines : [doc]))
+        .map((record: unknown) => JSON.stringify(record));
+      if (doc && !Array.isArray(doc) && Array.isArray(doc.lines)) docConfig = doc;
+      format = "json";
+    } catch {
+      rawLines = null; // JSONL 由逐行解析兜底
+    }
+  }
+  if (rawLines === null) {
+    rawLines = t.split("\n");
+    format = t.startsWith("{") ? "jsonl" : "text";
+  }
+
+  if (format !== "text") {
+    for (let idx = 0; idx < rawLines.length; idx++) {
+      const trimmed = rawLines[idx].trim();
+      if (!trimmed) continue;
+      if (!trimmed.startsWith("{")) {
+        badLines.push({ no: idx + 1, snippet: trimmed.slice(0, 40) });
+        continue;
+      }
+      try {
+        const obj = JSON.parse(trimmed);
+        if (!obj.text) {
+          badLines.push({ no: idx + 1, snippet: trimmed.slice(0, 40) });
+          continue;
+        }
+
+        // 判断说话人：优先 role 字段，其次 speaker，最后 voice（兼容旧格式）
+        let speaker: "A" | "B" = lines.length % 2 === 0 ? "A" : "B";
+        const speakerHint = obj.role || obj.speaker || obj.voice;
+        if (speakerHint) {
+          const hint = String(speakerHint);
+          const hintLower = hint.toLowerCase();
+          const fileName = hint.split("/").pop()?.split("\\").pop() || "";
+          if (hint === "A" || hint === "a" || hintLower === "a" || hint.includes(speakers.A.name)) {
+            speaker = "A";
+          } else if (hint === "B" || hint === "b" || hintLower === "b" || hint.includes(speakers.B.name)) {
+            speaker = "B";
+          } else if (speakers.A.voice_path && hint === speakers.A.voice_path) {
+            speaker = "A";
+          } else if (speakers.B.voice_path && hint === speakers.B.voice_path) {
+            speaker = "B";
+          } else if (speakers.A.voice_name && fileName === speakers.A.voice_name) {
+            speaker = "A";
+          } else if (speakers.B.voice_name && fileName === speakers.B.voice_name) {
+            speaker = "B";
+          }
+        }
+
+        // 情感：兼容 WebUI 嵌套 emotion，以及旧 JSONL 的 emotion_text/emotion_weight
+        const baseEmo = speakers[speaker].emotion;
+        const hasEmotionField = !!(obj.emotion || obj.emotion_text || obj.emotion_weight);
+        const sourceEmotion = obj.emotion || (obj.emotion_text
+          ? { mode: 3, text: obj.emotion_text, weight: obj.emotion_weight }
+          : null);
+        const emo = sourceEmotion
+          ? {
+              mode: (Number(sourceEmotion.mode ?? baseEmo.mode) as 0 | 1 | 2 | 3),
+              audio_path: sourceEmotion.audio_path ?? baseEmo.audio_path,
+              vector: Array.isArray(sourceEmotion.vector) ? sourceEmotion.vector.map(Number) : [...baseEmo.vector],
+              weight: Number(sourceEmotion.weight ?? baseEmo.weight),
+              text: sourceEmotion.text ?? baseEmo.text,
+              random: Boolean(sourceEmotion.random ?? baseEmo.random),
+            }
+          : { ...baseEmo, vector: [...baseEmo.vector] };
+
+        const hasSilenceField = Number.isFinite(Number(obj.silence_after_ms));
+        lines.push({
+          id: genId(),
+          speaker,
+          text: String(obj.text),
+          emotion: emo,
+          emotion_from_code: hasEmotionField,
+          silence_after_ms: hasSilenceField ? Math.max(0, Number(obj.silence_after_ms)) : undefined,
+          silence_from_code: hasSilenceField,
+        });
+      } catch {
+        badLines.push({ no: idx + 1, snippet: trimmed.slice(0, 40) });
+      }
+    }
+  } else {
+    // 纯文本："A:" / "B:" / 角色名前缀指定说话人，无前缀/未识别前缀交替分配
+    for (const raw of rawLines) {
+      const line = raw.trim();
+      if (!line) continue;
+      let speaker: "A" | "B";
+      let content = line;
+      const m = line.match(SPEAKER_PREFIX_RE);
+      if (m) {
+        const prefix = m[1].trim();
+        content = m[2].trim();
+        const nameA = (speakers.A.name || "A").trim();
+        const nameB = (speakers.B.name || "B").trim();
+        if (prefix === nameA || prefix.toUpperCase() === "A") speaker = "A";
+        else if (prefix === nameB || prefix.toUpperCase() === "B") speaker = "B";
+        else speaker = lines.length % 2 === 0 ? "A" : "B";
+      } else {
+        speaker = lines.length % 2 === 0 ? "A" : "B";
+      }
+      if (!content) continue;
+      const baseEmo = speakers[speaker].emotion;
+      lines.push({
+        id: genId(),
+        speaker,
+        text: content,
+        emotion: { ...baseEmo, vector: [...baseEmo.vector] },
+        emotion_from_code: false,
+        silence_after_ms: undefined,
+        silence_from_code: false,
+      });
+    }
+  }
+  return { format, lines, badLines, docConfig };
+}
+
+export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImportConfig }: ScriptEditorProps) {
   const [collapsedEmos, setCollapsedEmos] = useState<Set<string>>(new Set());
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
-  const [importing, setImporting] = useState(false);
+  const [importMode, setImportMode] = useState<"append" | "replace">("append");
+  const [fileLoading, setFileLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const totalChars = lines.reduce((s, l) => s + l.text.length, 0);
+
+  // 实时解析预览：输入变化即重解析，弹窗内直接反馈行数/分布/错误行
+  const preview = useMemo(
+    () => (importText.trim() ? parseImportText(importText, speakers) : null),
+    [importText, speakers],
+  );
 
   const add = (speaker: "A" | "B") =>
     onChange([...lines, makeLine(speaker, "", speakers[speaker].emotion)]);
@@ -160,52 +226,43 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
 
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const handleImport = async () => {
-    if (!importText.trim()) return;
-    setImporting(true);
-    try {
-      const trimmed = importText.trim();
-      let imported: PodcastLine[];
-      let documentConfig: any = null;
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        // 支持 JSONL，以及单个 JSON 文档/数组格式，前端直接解析。
-        // 完整队列 JSON 还要把顶层配置同步给左侧面板。
-        try {
-          const parsed = JSON.parse(trimmed);
-          if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.lines)) {
-            documentConfig = parsed;
-          }
-        } catch {
-          // JSONL 由 parseJSONL 逐行解析。
-        }
-        imported = parseJSONL(importText, speakers);
-      } else {
-        // 纯文本格式，调用后端解析
-        imported = await onImport(importText);
-      }
-      if (imported.length > 0) {
-        onChange(documentConfig ? imported : [...lines, ...imported]);
-        if (documentConfig && onImportConfig) {
-          onImportConfig({
-            voices: documentConfig.voices,
-            silence: documentConfig.silence,
-            params: documentConfig.params,
-            lines: imported,
-            projectName: documentConfig.project_name,
-          });
-        }
-        setImportText("");
-        setShowImport(false);
-      }
-    } finally { setImporting(false); }
+  const handleImport = () => {
+    if (!preview || preview.lines.length === 0) {
+      setImportError("没有可导入的内容：请检查文本格式，或查看上方解析提示");
+      return;
+    }
+    onChange(importMode === "replace" ? preview.lines : [...lines, ...preview.lines]);
+    // JSON 文档模式的顶层配置同步给左侧面板（仅替换模式应用，避免追加时覆盖配置）
+    if (preview.docConfig && onImportConfig) {
+      onImportConfig({
+        voices: preview.docConfig.voices,
+        silence: preview.docConfig.silence,
+        params: preview.docConfig.params,
+        lines: preview.lines,
+        projectName: preview.docConfig.project_name,
+      });
+    }
+    setImportText("");
+    setImportError(null);
+    setShowImport(false);
   };
 
-  const handleFileImport = (file: File) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImportText(String(reader.result || ""));
-    };
-    reader.readAsText(file);
+  /** doc/docx/pdf 走后端文档抽取（复用配音页能力），其余格式直接读文本 */
+  const handleFileImport = async (file: File) => {
+    setImportError(null);
+    setFileLoading(true);
+    try {
+      if (/\.(docx?|pdf)$/i.test(file.name)) {
+        const r = await api.extractDocument(file);
+        setImportText(r.text);
+      } else {
+        setImportText(await file.text());
+      }
+    } catch (e: any) {
+      setImportError(`读取文件失败：${e.message}`);
+    } finally {
+      setFileLoading(false);
+    }
   };
 
   const speakerColor = (spk: "A" | "B") => spk === "A"
@@ -339,54 +396,123 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
       {/* 批量导入弹窗 */}
       {showImport && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowImport(false)}>
-          <Card className="w-full max-w-lg mx-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+          <Card className="w-full max-w-xl mx-4 max-h-[90vh] overflow-y-auto scrollbar-thin" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 sticky top-0 bg-white rounded-t-xl">
               <h3 className="text-sm font-semibold text-gray-800">批量导入对话</h3>
               <button onClick={() => setShowImport(false)} className="text-gray-400 hover:text-gray-600">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="p-4 space-y-3">
+            <div
+              className="p-4 space-y-3"
+              onDragOver={e => { e.preventDefault(); setDragActive(true); }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={e => {
+                e.preventDefault(); setDragActive(false);
+                const f = e.dataTransfer.files?.[0];
+                if (f) handleFileImport(f);
+              }}
+            >
               {/* 格式说明 */}
               <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3 space-y-1.5">
-                <p className="text-xs font-medium text-indigo-700">支持两种格式（自动识别）：</p>
+                <p className="text-xs font-medium text-indigo-700">支持三种格式（自动识别）：</p>
                 <p className="text-[0.75rem] text-indigo-600">
-                  <strong>1. JSON / JSONL 格式</strong>：支持每行一个 JSON 对象，也支持包含 <code className="px-1 bg-white/60 rounded">lines</code> 数组的 WebUI 队列文件；对话项必填 <code className="px-1 bg-white/60 rounded">text</code>，可用 <code className="px-1 bg-white/60 rounded">role</code> 或 <code className="px-1 bg-white/60 rounded">speaker</code> 指定说话人。
-                  可选字段：<code className="px-1 bg-white/60 rounded">emotion</code>、<code className="px-1 bg-white/60 rounded">silence_after_ms</code> 等，不填则使用界面角色和参数。
-                  兼容旧格式的 <code className="px-1 bg-white/60 rounded">voice</code> / <code className="px-1 bg-white/60 rounded">speaker</code> 字段。
+                  <strong>1. JSON / JSONL</strong>：每行一个 JSON 对象，或包含 <code className="px-1 bg-white/60 rounded">lines</code> 数组的 WebUI 队列文件。必填 <code className="px-1 bg-white/60 rounded">text</code>，用 <code className="px-1 bg-white/60 rounded">role</code>/<code className="px-1 bg-white/60 rounded">speaker</code> 指定说话人，可选 <code className="px-1 bg-white/60 rounded">emotion</code>、<code className="px-1 bg-white/60 rounded">silence_after_ms</code>。
                 </p>
                 <p className="text-[0.75rem] text-indigo-600">
-                  <strong>2. 纯文本格式</strong>：每行一段对话，用 <code className="px-1 bg-white/60 rounded">A:</code> 或 <code className="px-1 bg-white/60 rounded">B:</code> 开头指定说话人。
+                  <strong>2. 纯文本</strong>：每行一段对话，用 <code className="px-1 bg-white/60 rounded">A:</code> / <code className="px-1 bg-white/60 rounded">B:</code> 或当前角色名（{speakers.A.name || "A"} / {speakers.B.name || "B"}）开头指定说话人，无前缀自动交替分配。
+                </p>
+                <p className="text-[0.75rem] text-indigo-600">
+                  <strong>3. 文档</strong>：doc / docx / pdf 自动抽取文字（md / txt 直接读取）。
                 </p>
               </div>
 
-              {/* 文件上传 */}
-              <div className="flex items-center gap-2">
+              {/* 文件上传（点击 / 拖拽） */}
+              <div className={cn(
+                "flex items-center gap-2 rounded-lg border border-dashed px-3 py-2.5 transition-colors",
+                dragActive ? "border-indigo-400 bg-indigo-50" : "border-gray-200",
+              )}>
                 <input
                   ref={fileRef}
                   type="file"
-                  accept=".jsonl,.txt,.json"
+                  accept=".jsonl,.txt,.json,.md,.doc,.docx,.pdf"
                   className="hidden"
                   onChange={e => { const f = e.target.files?.[0]; if (f) handleFileImport(f); e.target.value = ""; }}
                 />
-                <Button variant="outline" size="sm" icon={UploadCloud} onClick={() => fileRef.current?.click()}>
-                  选择文件
+                <Button variant="outline" size="sm" icon={UploadCloud} onClick={() => fileRef.current?.click()} disabled={fileLoading}>
+                  {fileLoading ? "读取中..." : "选择文件"}
                 </Button>
-                <span className="text-[0.75rem] text-gray-400">支持 .json / .jsonl / .txt 文件</span>
+                <span className="text-[0.75rem] text-gray-400">或把文件拖到这里（.json / .jsonl / .txt / .md / .doc / .docx / .pdf）</span>
               </div>
 
               <Textarea
                 value={importText}
-                onChange={e => setImportText(e.target.value)}
+                onChange={e => { setImportText(e.target.value); setImportError(null); }}
                 placeholder={'{"text":"大家好，欢迎收听今天的节目。","role":"A"}\n{"text":"今天我们来聊聊人工智能。","role":"B","emotion_text":"relaxed, cheerful","emotion_weight":0.7,"silence_after_ms":350}\n\n- 或纯文本格式 -\nA: 大家好，欢迎收听今天的节目。\nB: 今天我们来聊聊人工智能。'}
-                className="min-h-[200px] font-mono text-xs"
+                className="min-h-[160px] font-mono text-xs"
                 autoFocus
               />
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setShowImport(false)}>取消</Button>
-                <Button onClick={handleImport} disabled={importing || !importText.trim()}>
-                  {importing ? "导入中..." : "追加导入"}
-                </Button>
+
+              {/* 实时解析预览 */}
+              {preview && (
+                <div className={cn(
+                  "rounded-lg border p-3 space-y-1.5",
+                  preview.lines.length > 0 ? "bg-gray-50 border-gray-200" : "bg-red-50 border-red-200",
+                )}>
+                  {preview.lines.length > 0 ? (
+                    <>
+                      <p className="text-xs text-gray-700">
+                        解析出 <strong>{preview.lines.length}</strong> 行对话
+                        （{speakers.A.name || "A"} {preview.lines.filter(l => l.speaker === "A").length} 行 ·{" "}
+                        {speakers.B.name || "B"} {preview.lines.filter(l => l.speaker === "B").length} 行）
+                        <Badge color="blue" className="ml-2">{preview.format === "json" ? "JSON" : preview.format === "jsonl" ? "JSONL" : "纯文本"}</Badge>
+                      </p>
+                      {preview.badLines.length > 0 && (
+                        <p className="text-xs text-amber-600">
+                          ⚠ {preview.badLines.length} 行无法解析将被跳过：
+                          {preview.badLines.slice(0, 3).map(b => `第${b.no}行「${b.snippet}…`).join("、")}
+                          {preview.badLines.length > 3 && " 等"}
+                        </p>
+                      )}
+                      {importMode === "replace" && lines.length > 0 && (
+                        <p className="text-xs text-amber-600">替换模式：导入后将覆盖现有 {lines.length} 行对话</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-xs text-red-600">没有解析出任何对话行，请检查格式</p>
+                  )}
+                </div>
+              )}
+
+              {importError && <p className="text-xs text-red-600">{importError}</p>}
+
+              {/* 导入模式 + 操作 */}
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setImportMode("append")}
+                    className={cn("px-3 py-1.5 rounded-md text-xs font-medium", importMode === "append" ? "bg-white text-gray-800 shadow-sm" : "text-gray-500")}
+                  >
+                    追加到现有
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportMode("replace")}
+                    className={cn("px-3 py-1.5 rounded-md text-xs font-medium", importMode === "replace" ? "bg-white text-gray-800 shadow-sm" : "text-gray-500")}
+                  >
+                    替换现有
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setShowImport(false)}>取消</Button>
+                  <Button
+                    onClick={handleImport}
+                    disabled={fileLoading || !preview || preview.lines.length === 0}
+                  >
+                    {importMode === "append" ? `追加导入${preview?.lines.length ? `（${preview.lines.length} 行）` : ""}` : `替换导入${preview?.lines.length ? `（${preview.lines.length} 行）` : ""}`}
+                  </Button>
+                </div>
               </div>
             </div>
           </Card>

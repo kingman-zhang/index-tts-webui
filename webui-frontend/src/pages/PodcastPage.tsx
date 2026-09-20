@@ -117,20 +117,6 @@ export default function PodcastPage() {
     } catch (e2: any) { showToast(`删除失败: ${e2.message}`); }
   };
 
-  const handleImportText = async (text: string): Promise<PodcastLine[]> => {
-    const r = await api.importText(text, project.voices.A.name, project.voices.B.name);
-    return r.lines.map((l: any) => {
-      const spk = (l.speaker as "A" | "B") || "A";
-      const defaultEmo = project.voices[spk]?.emotion;
-      return {
-        ...l, id: Math.random().toString(36).slice(2, 10),
-        emotion: defaultEmo
-          ? { ...defaultEmo, vector: [...defaultEmo.vector] }
-          : { mode: 0, audio_path: null, vector: Array(8).fill(0), weight: 0.65, text: null, random: false },
-      };
-    });
-  };
-
   const handleImportConfig = useCallback((config: {
     voices?: Record<string, string>;
     silence?: Partial<PodcastProject["silence"]>;
@@ -285,7 +271,6 @@ export default function PodcastPage() {
               speakers={project.voices}
               voiceFiles={voiceFiles}
               onChange={lines => updateProject({ lines })}
-              onImport={handleImportText}
               onImportConfig={handleImportConfig}
             />
           </Card>

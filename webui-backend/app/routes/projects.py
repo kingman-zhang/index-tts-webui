@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -75,26 +76,29 @@ async def import_project_from_text(request: Request):
     """
     body = await request.json()
     raw_text = body.get("text", "")
-    speaker_a = body.get("speaker_a_name", "A")
-    speaker_b = body.get("speaker_b_name", "B")
+    speaker_a = (body.get("speaker_a_name") or "A").strip()
+    speaker_b = (body.get("speaker_b_name") or "B").strip()
 
     lines = []
     for raw_line in raw_text.strip().split("\n"):
         raw_line = raw_line.strip()
         if not raw_line:
             continue
-        # 支持 "A: 文本" / "A：文本" / "A 文本" 等格式
-        if ":" in raw_line:
-            spk, text = raw_line.split(":", 1)
-        elif "：" in raw_line:
-            spk, text = raw_line.split("：", 1)
+        # 支持 "A: 文本" / "A：文本" / "角色名: 文本"；前缀限 12 字符防 "https://..." 误切
+        m = re.match(r"^([^:：]{1,12})[:：]\s*(.*)$", raw_line)
+        if m:
+            prefix, text = m.group(1).strip(), m.group(2).strip()
+            if prefix == speaker_a or prefix.upper() == "A":
+                spk = "A"
+            elif prefix == speaker_b or prefix.upper() == "B":
+                spk = "B"
+            else:
+                # 未识别前缀，交替分配
+                spk = "A" if len(lines) % 2 == 0 else "B"
         else:
             # 无前缀，交替分配
             spk = "A" if len(lines) % 2 == 0 else "B"
             text = raw_line
-        spk = spk.strip().upper()
-        if spk not in ("A", "B"):
-            spk = "A" if len(lines) % 2 == 0 else "B"
         lines.append({
             "speaker": spk,
             "text": text.strip(),
