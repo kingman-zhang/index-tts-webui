@@ -63,7 +63,7 @@ export default function DubbingPage() {
   const [monoSpeed, setMonoSpeed] = useState<number>(initial.speed);
   const [monoText, setMonoText] = useState<string>(initial.text);
 
-  const { voiceFiles, ttsOnline, ttsInfo } = useAppInit();
+  const { voiceFiles, ttsOnline, ttsInfo, ttsWatch, setTtsWatch } = useAppInit();
   const { toast, showToast } = useToast();
 
   // 草稿自动保存（含项目名，刷新不丢；text 为画布文本唯一真源）
@@ -168,6 +168,8 @@ export default function DubbingPage() {
         showProjectActions={false}
         ttsOnline={ttsOnline}
         ttsInfo={ttsInfo}
+        ttsWatch={ttsWatch}
+        onToggleTtsWatch={() => setTtsWatch(v => !v)}
         onSaveProject={handleSaveProject}
         projectSaved={projectSaved}
         projects={projects}
