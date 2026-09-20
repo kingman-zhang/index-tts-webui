@@ -1,11 +1,9 @@
-import { useState, useEffect } from "react";
-import { FolderOpen, Trash2, X, FileText } from "lucide-react";
-import { Header } from "../components/Header";
+import { useState, useEffect, useRef } from "react";
+import { Header, type ProjectSwitcherItem } from "../components/Header";
 import { SpeakerPanel } from "../components/SpeakerPanel";
 import { MonoEditor } from "../components/MonoEditor";
 import { GlossaryPanel } from "../components/GlossaryPanel";
 import { QueuePanel } from "../components/QueuePanel";
-import { Card, EmptyState, Badge } from "../components/ui";
 import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
@@ -63,8 +61,9 @@ export default function PodcastPage() {
   const [glossaryCollapsed, setGlossaryCollapsed] = useState(false);
   const [queueCollapsed, setQueueCollapsed] = useState(false);
   const [queueRefreshKey, setQueueRefreshKey] = useState(0);
-  const [showProjects, setShowProjects] = useState(false);
-  const [projectList, setProjectList] = useState<any[]>([]);
+  const [projectSaved, setProjectSaved] = useState(false);
+  const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [projectList, setProjectList] = useState<ProjectSwitcherItem[]>([]);
 
   const { voiceFiles, ttsOnline, ttsInfo, reloadVoices, memberEnforce, memberPer1000 } = useAppInit();
   const { user } = useAuth();
@@ -127,26 +126,41 @@ export default function PodcastPage() {
     params: defaultParams(),
   });
 
+  // 拉取后端项目列表（Header 切换下拉用；保存/删除后刷新）
+  const refreshProjects = async () => {
+    try {
+      const r = await api.listProjects();
+      setProjectList((r.projects || []).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        savedAt: p.updated_at || p.created_at || "",
+        meta: `${p.line_count ?? 0} 行`,
+      })));
+    } catch { /* 列表拉取失败静默，不影响主流程 */ }
+  };
+
+  useEffect(() => { refreshProjects(); }, []);
+
   const handleSave = async () => {
+    if (saving) return;
     setSaving(true);
     try {
-      const result = await api.saveProject(buildProject());
+      // 与单人配音一致：同名覆盖（按项目名对齐存档，改名保存视为新项目）
+      const sameName = projectList.find(p => p.name === name.trim());
+      const result = await api.saveProject({ ...buildProject(), id: sameName?.id });
       setProjectId(result.id);
+      setProjectSaved(true);
+      if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
+      savedFlashTimer.current = setTimeout(() => setProjectSaved(false), 1500);
       showToast("项目已保存");
+      refreshProjects();
     } catch (e: any) {
       showToast(`保存失败: ${e.message}`);
     } finally { setSaving(false); }
   };
 
-  const handleOpenProjects = async () => {
-    try {
-      const r = await api.listProjects();
-      setProjectList(r.projects);
-      setShowProjects(true);
-    } catch (e: any) { showToast(`加载项目列表失败: ${e.message}`); }
-  };
-
-  const handleLoadProject = async (id: string) => {
+  const handleSwitchProject = async (id: string) => {
+    if (script.trim() && !window.confirm("切换项目将替换当前文稿与角色配置，是否继续？")) return;
     try {
       const p = await api.getProject(id);
       // 补全 voices 的 emotion 字段（兼容旧项目）
@@ -161,18 +175,18 @@ export default function PodcastPage() {
       setName(p.name);
       setVoices({ A: vA, B: vB });
       setScript(scriptText);
-      setShowProjects(false);
       setError(null); setGenerating(false);
       showToast(`已加载: ${p.name}`);
     } catch (e: any) { showToast(`加载失败: ${e.message}`); }
   };
 
-  const handleDeleteProject = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleDeleteProject = async (id: string) => {
     try {
       await api.deleteProject(id);
       setProjectList(projectList.filter(p => p.id !== id));
-      showToast("已删除");
+      if (projectId === id) setProjectId(undefined);
+      const target = projectList.find(p => p.id === id);
+      showToast(`已删除存档「${target?.name ?? "项目"}」`);
     } catch (e2: any) { showToast(`删除失败: ${e2.message}`); }
   };
 
@@ -252,11 +266,14 @@ export default function PodcastPage() {
       <Header
         name={name}
         onRename={setName}
-        onSave={handleSave}
-        onLoadProject={handleOpenProjects}
+        showProjectActions={false}
         ttsOnline={ttsOnline}
         ttsInfo={ttsInfo}
-        saving={saving}
+        onSaveProject={handleSave}
+        projectSaved={projectSaved}
+        projects={projectList}
+        onSwitchProject={handleSwitchProject}
+        onDeleteProject={handleDeleteProject}
       />
 
       <div className="flex-1 flex gap-3 p-3 overflow-hidden">
@@ -309,51 +326,6 @@ export default function PodcastPage() {
           />
         </aside>
       </div>
-
-      {/* 项目列表弹窗 */}
-      {showProjects && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setShowProjects(false)}>
-          <Card className="w-full max-w-lg mx-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-              <h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
-                <FolderOpen className="w-4 h-4 text-indigo-500" /> 我的项目
-              </h3>
-              <button onClick={() => setShowProjects(false)} className="text-gray-400 hover:text-gray-600">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-2 max-h-96 overflow-y-auto scrollbar-thin">
-              {projectList.length === 0 ? (
-                <EmptyState icon={FileText} title="还没有保存的项目" hint="点击右上角保存按钮即可创建项目" />
-              ) : (
-                projectList.map(p => (
-                  <div
-                    key={p.id}
-                    onClick={() => handleLoadProject(p.id)}
-                    className="flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-indigo-50 cursor-pointer transition-colors group"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-gray-700 truncate">{p.name}</p>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <Badge color="gray">{p.line_count} 行</Badge>
-                        <span className="text-[0.75rem] text-gray-400">
-                          {p.updated_at ? new Date(p.updated_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}
-                        </span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={e => handleDeleteProject(p.id, e)}
-                      className="p-1.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-50 transition-all"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
-        </div>
-      )}
 
       <ToastNode toast={toast} />
     </div>

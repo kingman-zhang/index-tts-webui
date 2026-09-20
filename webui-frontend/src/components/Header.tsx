@@ -6,8 +6,16 @@ import {
 import { Input, Button } from "./ui";
 import { UserMenu } from "./UserMenu";
 import { navigate } from "@/lib/auth";
-import type { MonoProjectSnapshot } from "@/lib/projectStore";
 import { cn } from "@/lib/utils";
+
+/** 顶部切换项目下拉的数据项（与具体存储解耦：mono 本地 / 播客后端各自映射） */
+export interface ProjectSwitcherItem {
+  id: string;
+  name: string;
+  savedAt: string; // ISO
+  /** 列表副标题（如 "123 字" / "8 行"） */
+  meta: string;
+}
 
 interface HeaderProps {
   name: string;
@@ -28,7 +36,7 @@ interface HeaderProps {
   /** 保存成功闪现（短暂显示 ✓） */
   projectSaved?: boolean;
   /** 切换项目下拉：已保存的项目列表 */
-  projects?: MonoProjectSnapshot[];
+  projects?: ProjectSwitcherItem[];
   onSwitchProject?: (id: string) => void;
   onDeleteProject?: (id: string) => void;
 }
@@ -193,7 +201,7 @@ export function Header({
                                 {p.name}
                               </p>
                               <p className="text-[0.6875rem] text-gray-400">
-                                {fmtTime(p.savedAt)} · {p.text.replace(/\s/g, "").length} 字
+                                {fmtTime(p.savedAt)} · {p.meta}
                               </p>
                             </div>
                             {isCurrent ? (

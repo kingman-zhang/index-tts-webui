@@ -186,7 +186,7 @@ export default function DubbingPage() {
         ttsInfo={ttsInfo}
         onSaveProject={handleSaveProject}
         projectSaved={projectSaved}
-        projects={projects}
+        projects={projects.map(p => ({ id: p.id, name: p.name, savedAt: p.savedAt, meta: `${p.text.replace(/\s/g, "").length} 字` }))}
         onSwitchProject={handleSwitchProject}
         onDeleteProject={handleDeleteProject}
       />
