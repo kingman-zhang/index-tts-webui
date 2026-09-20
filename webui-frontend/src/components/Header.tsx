@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  Save, Check, Loader2, Radio, CheckCircle2, XCircle, Pencil, FolderOpen,
+  Save, Check, Loader2, Radio, CheckCircle2, Pencil, FolderOpen,
   ChevronsUpDown, FileText, Trash2,
 } from "lucide-react";
 import { Input, Button } from "./ui";
@@ -224,18 +224,16 @@ export function Header({
       )}
 
       <div className="flex items-center gap-2">
-        {/* TTS 状态（图标+文字，个人中心隐藏） */}
-        {showTts && (
+        {/* TTS 状态（图标+文字，个人中心隐藏；离线时不显示，恢复在线后自动重现） */}
+        {showTts && ttsOnline !== false && (
           <div className="flex items-center gap-1.5 mr-2">
             {ttsOnline === null ? (
               <Loader2 className="w-3.5 h-3.5 text-gray-400 animate-spin" />
-            ) : ttsOnline ? (
-              <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
             ) : (
-              <XCircle className="w-3.5 h-3.5 text-red-400" />
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
             )}
             <span className="text-xs text-gray-500">
-              {ttsOnline === null ? "检测中" : ttsOnline ? (ttsInfo?.model_loaded ? "TTS 就绪" : "模型加载中") : "TTS 离线"}
+              {ttsOnline === null ? "检测中" : (ttsInfo?.model_loaded ? "TTS 就绪" : "模型加载中")}
             </span>
           </div>
         )}
