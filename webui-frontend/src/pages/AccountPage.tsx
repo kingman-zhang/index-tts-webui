@@ -122,7 +122,12 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
         body = await memberApi.registerEmail(email, code, password, nickname);
       }
       setSession(body.token, body.user);
-      onDone(mode === "login" ? `欢迎回来，${body.user.nickname}` : `注册成功，赠送 ${body.user.points} 积分`);
+      if (mode === "register") {
+        // 注册成功：直接进入单人配音工作台
+        navigate("/dubbing");
+        return;
+      }
+      onDone(`欢迎回来，${body.user.nickname}`);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "操作失败");
     } finally {

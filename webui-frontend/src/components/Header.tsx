@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { Input, Button } from "./ui";
 import { UserMenu } from "./UserMenu";
-import { navigate, useAuth } from "@/lib/auth";
+import { navigate } from "@/lib/auth";
 import type { MonoProjectSnapshot } from "@/lib/projectStore";
 import { cn } from "@/lib/utils";
 
@@ -35,20 +35,18 @@ interface HeaderProps {
 
 /**
  * 顶部全局导航：胶囊分段控件，当前页白底高亮。
- * 「个人中心」仅在已登录时出现（未登录时右侧只显示「登录」按钮，互斥）。
+ * 只含两个工作页；个人中心从右上角用户菜单进入，不占导航位。
  */
 const NAV_TABS = [
-  { path: "/podcast", label: "双人播客", memberOnly: false, match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") },
-  { path: "/dubbing", label: "单人配音", memberOnly: false, match: (p: string) => p.startsWith("/dubbing") },
-  { path: "/account", label: "个人中心", memberOnly: true, match: (p: string) => p.startsWith("/account") },
+  { path: "/podcast", label: "双人播客", match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") },
+  { path: "/dubbing", label: "单人配音", match: (p: string) => p.startsWith("/dubbing") },
 ];
 
 function NavTabs() {
   const path = window.location.pathname;
-  const { token } = useAuth();
   return (
     <nav className="flex items-center gap-0.5 ml-3 p-1 bg-gray-100 rounded-xl">
-      {NAV_TABS.filter(t => !t.memberOnly || !!token).map(t => {
+      {NAV_TABS.map(t => {
         const active = t.match(path);
         return (
           <button
