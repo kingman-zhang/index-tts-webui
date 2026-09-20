@@ -22,6 +22,23 @@ from ..membership import service as member_svc
 router = APIRouter()
 
 
+def _isolation_on() -> bool:
+    """数据隔离开关：会员或登录体系开启时生效。"""
+    return member_svc.ENFORCE or member_svc.REQUIRE_LOGIN
+
+
+def _check_access(task: dict, user: Optional[dict]):
+    """任务归属校验：隔离开启时，登录用户只能访问自己的任务。
+
+    无归属（member_id 为空）的遗留任务视为共享数据，仅在隔离未开启时可见；
+    可用 tools/migrate_owners.py 一次性划归指定用户。
+    """
+    if not _isolation_on():
+        return
+    if not user or task.get("member_id") != user["user_id"]:
+        raise HTTPException(404, "任务不存在")
+
+
 @router.post("/api/queue/submit")
 async def submit_to_queue(
     task: QueueTaskModel,
@@ -54,13 +71,14 @@ async def submit_to_queue(
     if member_svc.ENFORCE or member_svc.REQUIRE_LOGIN:
         if not user:
             raise HTTPException(401, "请先登录后再提交合成任务")
+    if user:
+        entry["member_id"] = user["user_id"]  # 登录态下总是记录归属（数据隔离依据）
     if member_svc.ENFORCE:
         try:
             charge = member_svc.charge_for_task(user, task.lines, task_id)
         except MemberError as e:
             raise HTTPException(e.code, e.message)
         if charge["log_id"]:
-            entry["member_id"] = user["user_id"]
             entry["points_charged"] = member_svc.estimate_task_cost(task.lines)
             entry["points_charge_log"] = charge["log_id"]
             entry["message"] = f"排队中（已预扣 {entry['points_charged']} 积分）"
@@ -75,12 +93,16 @@ async def submit_to_queue(
 
 
 @router.get("/api/queue")
-async def list_queue():
-    """列出所有队列任务。排序：运行中 → 排队中(按执行顺序) → 终态(按创建时间倒序)。"""
+async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
+    """列出当前用户可见的队列任务。排序：运行中 → 排队中(按执行顺序) → 终态(按创建时间倒序)。"""
+    if _isolation_on() and not user:
+        raise HTTPException(401, "请先登录后查看任务队列")
     running_tasks = []
     queued_tasks = []
     terminal_tasks = []
     for t in qs.queue_tasks.values():
+        if _isolation_on() and t.get("member_id") != user["user_id"]:
+            continue  # 只看自己的任务
         st = t.get("status")
         # 给每个任务标注 queue_position
         tid = t.get("id", "")
@@ -125,6 +147,7 @@ async def update_queue_task(
     task = qs.queue_tasks.get(task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    _check_access(task, user)
     if task.get("status") != qs.QueueTaskStatus.QUEUED:
         raise HTTPException(409, "只有尚未执行的排队任务可以编辑")
     validate_queue_lines(payload.lines)
@@ -153,11 +176,16 @@ async def update_queue_task(
 
 
 @router.patch("/api/queue/{task_id}/name")
-async def update_queue_task_name(task_id: str, payload: QueueTaskNameModel):
+async def update_queue_task_name(
+    task_id: str,
+    payload: QueueTaskNameModel,
+    user: Optional[dict] = Depends(get_optional_user),
+):
     """修改尚未执行任务的名称。"""
     task = qs.queue_tasks.get(task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    _check_access(task, user)
     editable_statuses = {
         qs.QueueTaskStatus.QUEUED,
         qs.QueueTaskStatus.PAUSED,
@@ -179,14 +207,15 @@ async def update_queue_task_name(task_id: str, payload: QueueTaskNameModel):
 
 
 @router.post("/api/queue/{task_id}/retry")
-async def retry_queue_task(task_id: str):
+async def retry_queue_task(task_id: str, user: Optional[dict] = Depends(get_optional_user)):
     """重新排队执行失败、中断、暂停或取消的任务，从第一行重新生成。"""
     task = qs.queue_tasks.get(task_id)
     if not task:
         raise HTTPException(404, "任务不存在")
+    _check_access(task, user)
     if task.get("status") not in (qs.QueueTaskStatus.FAILED, qs.QueueTaskStatus.INTERRUPTED, qs.QueueTaskStatus.PAUSED, qs.QueueTaskStatus.CANCELLED):
         raise HTTPException(409, "只有失败、中断、暂停或取消任务可以重新提交")
-    if qs.current_task_id == task_id:
+    if task_id in qs.running_ids:
         raise HTTPException(409, "任务当前仍在执行")
     task.update({
         "status": qs.QueueTaskStatus.QUEUED,
@@ -223,29 +252,34 @@ async def retry_queue_task(task_id: str):
 
 
 @router.post("/api/queue/bulk-pause")
-async def pause_queued_tasks():
-    """暂停所有排队中的任务；正在合成的任务不受影响。"""
+async def pause_queued_tasks(user: Optional[dict] = Depends(get_optional_user)):
+    """暂停当前用户排队中的任务；正在合成的任务不受影响。"""
     paused = []
+    keep = []
     for task_id in list(qs.queue_order):
         task = qs.queue_tasks.get(task_id)
-        if task and task.get("status") == qs.QueueTaskStatus.QUEUED:
+        mine = not _isolation_on() or (user and task and task.get("member_id") == user["user_id"])
+        if task and mine and task.get("status") == qs.QueueTaskStatus.QUEUED:
             task["status"] = qs.QueueTaskStatus.PAUSED
             task["message"] = "已暂停"
             task["paused_at"] = datetime.now().isoformat()
             qs.persist_task(task_id)
             paused.append(task_id)
-    qs.queue_order.clear()
+        else:
+            keep.append(task_id)
+    qs.queue_order[:] = keep
     qs.persist_queue_order()
     return {"paused": paused, "count": len(paused)}
 
 
 @router.post("/api/queue/bulk-resume")
-async def resume_paused_tasks():
+async def resume_paused_tasks(user: Optional[dict] = Depends(get_optional_user)):
     """将所有暂停任务按原创建时间恢复到队列末尾。"""
     resumed = []
     paused = [
         task for task in qs.queue_tasks.values()
         if task.get("status") == qs.QueueTaskStatus.PAUSED
+        and (not _isolation_on() or (user and task.get("member_id") == user["user_id"]))
     ]
     paused.sort(key=lambda task: task.get("created_at", ""))
     for task in paused:
@@ -264,19 +298,21 @@ async def resume_paused_tasks():
 
 
 @router.get("/api/queue/{task_id}")
-async def get_queue_task(task_id: str):
+async def get_queue_task(task_id: str, user: Optional[dict] = Depends(get_optional_user)):
     """获取队列中单个任务状态。"""
     if task_id not in qs.queue_tasks:
         raise HTTPException(404, "任务不存在")
+    _check_access(qs.queue_tasks[task_id], user)
     return qs.queue_tasks[task_id]
 
 
 @router.delete("/api/queue/{task_id}")
-async def cancel_queue_task(task_id: str):
+async def cancel_queue_task(task_id: str, user: Optional[dict] = Depends(get_optional_user)):
     """取消/删除队列任务。排队中直接删除，运行中标记取消。"""
     if task_id not in qs.queue_tasks:
         raise HTTPException(404, "任务不存在")
     task = qs.queue_tasks[task_id]
+    _check_access(task, user)
     if task["status"] == qs.QueueTaskStatus.QUEUED:
         # 排队中：直接从队列移除
         if task_id in qs.queue_order:
@@ -301,10 +337,11 @@ async def cancel_queue_task(task_id: str):
 
 
 @router.delete("/api/queue")
-async def clear_finished_tasks():
-    """清空所有已完成/失败/取消的任务。"""
+async def clear_finished_tasks(user: Optional[dict] = Depends(get_optional_user)):
+    """清空当前用户已完成/失败/取消的任务。"""
     to_remove = [tid for tid, t in qs.queue_tasks.items()
-                 if t["status"] in (qs.QueueTaskStatus.SUCCESS, qs.QueueTaskStatus.FAILED, qs.QueueTaskStatus.CANCELLED)]
+                 if t["status"] in (qs.QueueTaskStatus.SUCCESS, qs.QueueTaskStatus.FAILED, qs.QueueTaskStatus.CANCELLED)
+                 and (not _isolation_on() or (user and t.get("member_id") == user["user_id"]))]
     for tid in to_remove:
         del qs.queue_tasks[tid]
         qs.delete_persisted_task(tid)
@@ -312,7 +349,7 @@ async def clear_finished_tasks():
 
 
 @router.patch("/api/queue/reorder")
-async def reorder_queue(payload: dict):
+async def reorder_queue(payload: dict, user: Optional[dict] = Depends(get_optional_user)):
     """拖拽排序：接收新的排队任务 ID 顺序，重写 queue_order。"""
     new_order = payload.get("task_ids", [])
     if not isinstance(new_order, list):
@@ -330,10 +367,13 @@ async def reorder_queue(payload: dict):
             if extra:
                 detail.append(f"多余: {extra}")
             raise HTTPException(400, f"任务列表不匹配 {'; '.join(detail)}")
-        # 校验所有任务确实是 queued 状态
+        # 校验所有任务确实是 queued 状态且属于当前用户（隔离开启时）
         for tid in new_order:
-            if qs.queue_tasks[tid].get("status") != qs.QueueTaskStatus.QUEUED:
+            t = qs.queue_tasks.get(tid)
+            if not t or t.get("status") != qs.QueueTaskStatus.QUEUED:
                 raise HTTPException(400, f"任务 {tid} 不是排队状态，无法排序")
+            if _isolation_on() and t.get("member_id") != user["user_id"]:
+                raise HTTPException(404, f"任务 {tid} 不存在")
         qs.queue_order.clear()
         qs.queue_order.extend(new_order)
         qs.persist_queue_order()

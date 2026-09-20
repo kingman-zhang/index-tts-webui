@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -21,30 +24,75 @@ from ..config import (
     logger,
 )
 from ..models import FavoriteVoicesModel, SynthesizeRequestModel
+from ..membership import get_optional_user
+from ..membership import service as member_svc
 
 router = APIRouter()
 
+VOICES_META_PATH = DATA_DIR / "voices_meta.json"  # 本地上传音色的归属记录 {文件名: {owner_id, uploaded_at}}
 
-def _load_favorite_paths() -> list[str]:
-    if not FAVORITES_PATH.exists():
+
+def _isolation_on() -> bool:
+    return member_svc.ENFORCE or member_svc.REQUIRE_LOGIN
+
+
+def _load_voices_meta() -> dict:
+    if not VOICES_META_PATH.exists():
+        return {}
+    try:
+        data = json.loads(VOICES_META_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_voices_meta(meta: dict) -> None:
+    VOICES_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _voice_owner_ok(filename: str, user: Optional[dict]) -> bool:
+    """本地自定义音色归属校验；无归属记录的旧文件仅在隔离未开启时可见。"""
+    if not _isolation_on():
+        return True
+    if not user:
+        return False
+    meta = _load_voices_meta().get(filename)
+    return bool(meta) and meta.get("owner_id") == user["user_id"]
+
+
+def _favorites_path_for(user: Optional[dict]) -> str:
+    """收藏音色按用户分文件；未登录/隔离未开启用共享文件（旧行为）。"""
+    if user and _isolation_on():
+        return str(DATA_DIR / f"favorites_{user['user_id']}.json")
+    return str(FAVORITES_PATH)
+
+
+def _load_favorite_paths(path: Optional[str] = None) -> list[str]:
+    path = path or str(FAVORITES_PATH)
+    if not Path(path).exists():
         return []
     try:
-        value = json.loads(FAVORITES_PATH.read_text(encoding="utf-8"))
-        return list(dict.fromkeys(path for path in value if isinstance(path, str))) if isinstance(value, list) else []
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+        return list(dict.fromkeys(p for p in value if isinstance(p, str))) if isinstance(value, list) else []
     except (OSError, json.JSONDecodeError):
-        logger.warning("无法读取收藏音色文件: %s", FAVORITES_PATH)
+        logger.warning("无法读取收藏音色文件: %s", path)
         return []
 
 
-def _save_favorite_paths(paths: list[str]) -> list[str]:
-    normalized = list(dict.fromkeys(path for path in paths if isinstance(path, str) and path.strip()))
-    FAVORITES_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+def _save_favorite_paths(paths: list[str], path: Optional[str] = None) -> list[str]:
+    normalized = list(dict.fromkeys(p for p in paths if isinstance(p, str) and p.strip()))
+    Path(path or str(FAVORITES_PATH)).write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
     return normalized
 
 
 @router.get("/api/voices")
-async def list_voices():
-    """列出参考音频：合并 TTS 服务和本地 data/voices/ 的列表。"""
+async def list_voices(user: Optional[dict] = Depends(get_optional_user)):
+    """列出参考音频：合并 TTS 服务和本地 data/voices/ 的列表。
+
+    注意：TTS 服务侧音色库为共享池（tts-server 无用户体系），预置与经 TTS
+    上传的音色对所有用户可见；backend 本地 data/voices/ 下的自定义音色按
+    归属记录（voices_meta.json）过滤，只显示当前用户自己的。
+    """
     voices = []
     # 尝试从 TTS 服务获取
     try:
@@ -53,12 +101,15 @@ async def list_voices():
             voices.extend(resp.json().get("voices", []))
     except Exception:
         pass
-    # 合并本地保存的音频（去重）
+    # 合并本地保存的音频（去重；隔离开启时只显示当前用户上传的）
     existing_names = {v.get("name") for v in voices}
     if LOCAL_VOICES_DIR.exists():
         for ext in ("*.wav", "*.mp3", "*.flac", "*.ogg", "*.webm"):
             for f in sorted(LOCAL_VOICES_DIR.glob(ext)):
-                if f.name not in existing_names:
+                if f.name in existing_names:
+                    continue
+                if not _voice_owner_ok(f.name, user):
+                    continue
                     voices.append({
                         "name": f.name,
                         "path": str(f),
@@ -71,19 +122,23 @@ async def list_voices():
 
 
 @router.get("/api/voice-favorites")
-async def list_voice_favorites():
-    """读取持久化的收藏音色路径。"""
-    return {"paths": _load_favorite_paths()}
+async def list_voice_favorites(user: Optional[dict] = Depends(get_optional_user)):
+    """读取当前用户持久化的收藏音色路径。"""
+    return {"paths": _load_favorite_paths(_favorites_path_for(user))}
 
 
 @router.put("/api/voice-favorites")
-async def save_voice_favorites(payload: FavoriteVoicesModel):
-    """覆盖保存收藏音色路径。"""
-    return {"paths": _save_favorite_paths(payload.paths)}
+async def save_voice_favorites(payload: FavoriteVoicesModel, user: Optional[dict] = Depends(get_optional_user)):
+    """覆盖保存当前用户的收藏音色路径。"""
+    return {"paths": _save_favorite_paths(payload.paths, _favorites_path_for(user))}
 
 
 @router.post("/api/voices/upload")
-async def upload_voice(file: UploadFile = File(...), name: str = Form(None)):
+async def upload_voice(
+    file: UploadFile = File(...),
+    name: str = Form(None),
+    user: Optional[dict] = Depends(get_optional_user),
+):
     """上传参考音频，优先转发 TTS；TTS 不可达时才保存到本地。"""
     original_name = file.filename or "voice.wav"
     original_path = Path(original_name)
@@ -142,12 +197,16 @@ async def upload_voice(file: UploadFile = File(...), name: str = Form(None)):
     if dest.exists():
         raise HTTPException(409, f"音色名称已存在: {safe_name}")
     dest.write_bytes(content)
+    if user:
+        meta = _load_voices_meta()
+        meta[dest.name] = {"owner_id": user["user_id"], "uploaded_at": datetime.now().isoformat()}
+        _save_voices_meta(meta)
     logger.info("[voice-upload] completed locally path=%s size=%d", dest, len(content))
     return {"name": dest.name, "path": str(dest), "size_kb": round(len(content) / 1024, 1)}
 
 
 @router.post("/api/voices/rename")
-async def rename_voice(request: Request):
+async def rename_voice(request: Request, user: Optional[dict] = Depends(get_optional_user)):
     """重命名已上传的参考音频。"""
     body = await request.json()
     old_name = body.get("old_name", "")
@@ -171,6 +230,8 @@ async def rename_voice(request: Request):
     # TTS 不可用时，在本地 voices 目录查找
     old_path = LOCAL_VOICES_DIR / old_name
     new_path = LOCAL_VOICES_DIR / safe_new
+    if old_path.exists() and not _voice_owner_ok(old_name, user):
+        raise HTTPException(404, "音频文件不存在")
     if old_path.exists():
         if new_path.exists():
             raise HTTPException(409, "目标名称已存在")
@@ -185,7 +246,7 @@ async def rename_voice(request: Request):
 
 
 @router.delete("/api/voices/{filename}")
-async def delete_voice(filename: str):
+async def delete_voice(filename: str, user: Optional[dict] = Depends(get_optional_user)):
     """删除自定义参考音频，禁止删除内置预设。"""
     safe_name = Path(filename).name
     for d in [PRESET_VOICES_DIR, PRESET_VOICES_DIR / "emotions"]:
@@ -202,7 +263,12 @@ async def delete_voice(filename: str):
     target = LOCAL_VOICES_DIR / safe_name
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "自定义音频不存在")
+    if not _voice_owner_ok(safe_name, user):
+        raise HTTPException(404, "自定义音频不存在")
     target.unlink()
+    meta = _load_voices_meta()
+    meta.pop(safe_name, None)
+    _save_voices_meta(meta)
     return {"deleted": safe_name}
 
 

@@ -27,7 +27,8 @@ class QueueTaskStatus:
 
 queue_tasks: dict = {}  # task_id -> task_info
 queue_order: list = []  # 排队顺序
-current_task_id: Optional[str] = None  # 当前正在处理的任务
+current_task_id: Optional[str] = None  # 当前正在处理的任务（最早启动的一个，兼容旧展示）
+running_ids: set = set()  # 所有运行中任务 id（并发调度用）
 
 import asyncio  # noqa: E402  (与原实现保持一致：模块级单例锁)
 queue_lock = asyncio.Lock()

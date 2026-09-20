@@ -30,6 +30,7 @@ class ProjectModel(BaseModel):
     script: Optional[str] = None  # 画布标记文本（前端唯一真源）；旧项目无此字段时由 lines 迁移
     silence: dict = Field(default_factory=lambda: dict(PODCAST_DEFAULT_SILENCE))
     params: dict = Field(default_factory=_default_params_dict)
+    owner_id: Optional[str] = None  # 归属用户（membership user_id）；旧数据为 None（隔离开启时不可见）
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

@@ -102,3 +102,19 @@ async def mono_audio(task_id: str):
     if not output_path or not Path(output_path).exists():
         raise HTTPException(404, "音频文件不存在")
     return FileResponse(output_path, media_type="audio/wav", filename=f"mono_{task_id}.wav")
+
+
+@router.get("/api/podcast/audio/{task_id}")
+async def podcast_audio(task_id: str):
+    """提供播客任务的合成结果音频（适配层 backend 本地落盘）。
+
+    说明：<audio> 标签请求无法携带 Authorization 头，故此处不做请求级鉴权；
+    任务 id 为随机不可枚举，越权风险低。后续如需强隔离可换短时签名 URL。
+    """
+    task = qs.queue_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    output_path = task.get("output_path")
+    if not output_path or not Path(output_path).exists():
+        raise HTTPException(404, "音频文件不存在")
+    return FileResponse(output_path, media_type="audio/wav", filename=f"podcast_{task_id}.wav")

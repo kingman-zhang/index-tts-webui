@@ -5,22 +5,47 @@ from __future__ import annotations
 import json
 import re
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..config import PROJECTS_DIR
 from ..models import ProjectModel
 from ..stores import load_project, project_path, save_project
+from ..membership import get_optional_user
+from ..membership import service as member_svc
 
 router = APIRouter()
 
 
+def _isolation_on() -> bool:
+    """数据隔离开关：会员或登录体系开启时生效。"""
+    return member_svc.ENFORCE or member_svc.REQUIRE_LOGIN
+
+
+def _require_user(user: Optional[dict]) -> dict:
+    if _isolation_on() and not user:
+        raise HTTPException(401, "请先登录后使用项目存档")
+    return user
+
+
+def _owned(data: dict, user: Optional[dict]) -> bool:
+    """项目归属判断；无主（owner_id 空）遗留项目仅在隔离未开启时可见。"""
+    if not _isolation_on():
+        return True
+    return bool(user) and data.get("owner_id") == user["user_id"]
+
+
 @router.get("/api/projects")
-async def list_projects():
-    """列出所有保存的项目。"""
+async def list_projects(user: Optional[dict] = Depends(get_optional_user)):
+    """列出当前用户保存的项目。"""
+    _require_user(user)
     projects = []
     for f in sorted(PROJECTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
+            if not _owned(data, user):
+                continue
             projects.append({
                 "id": data.get("id"),
                 "name": data.get("name", "未命名"),
@@ -33,38 +58,48 @@ async def list_projects():
 
 
 @router.post("/api/projects")
-async def save_project_route(project: ProjectModel):
-    """保存（或新建）项目。"""
+async def save_project_route(project: ProjectModel, user: Optional[dict] = Depends(get_optional_user)):
+    """保存（或新建）项目；隔离开启时归属当前用户，不得覆盖他人同名存档。"""
+    _require_user(user)
+    if _isolation_on() and user:
+        if project.id:
+            existing = load_project(project.id)
+            if existing and existing.owner_id and existing.owner_id != user["user_id"]:
+                raise HTTPException(403, "不能覆盖其他用户的项目")
+        project.owner_id = user["user_id"]
     project_id = save_project(project)
     return {"id": project_id, "name": project.name, "updated_at": project.updated_at}
 
 
 @router.get("/api/projects/{project_id}")
-async def get_project(project_id: str):
+async def get_project(project_id: str, user: Optional[dict] = Depends(get_optional_user)):
     """加载项目。"""
     project = load_project(project_id)
-    if project is None:
+    if project is None or not _owned(project.model_dump(), user):
         raise HTTPException(404, "项目不存在")
     return project
 
 
 @router.put("/api/projects/{project_id}")
-async def update_project(project_id: str, project: ProjectModel):
+async def update_project(project_id: str, project: ProjectModel, user: Optional[dict] = Depends(get_optional_user)):
     """更新项目。"""
-    if not project_path(project_id).exists():
+    existing = load_project(project_id)
+    if existing is None or not _owned(existing.model_dump(), user):
         raise HTTPException(404, "项目不存在")
     project.id = project_id
+    if _isolation_on() and user:
+        project.owner_id = existing.owner_id or user["user_id"]
     save_project(project)
     return {"id": project_id, "name": project.name, "updated_at": project.updated_at}
 
 
 @router.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str):
+async def delete_project(project_id: str, user: Optional[dict] = Depends(get_optional_user)):
     """删除项目。"""
-    path = project_path(project_id)
-    if not path.exists():
+    existing = load_project(project_id)
+    if existing is None or not _owned(existing.model_dump(), user):
         raise HTTPException(404, "项目不存在")
-    path.unlink()
+    project_path(project_id).unlink()
     return {"deleted": project_id}
 
 

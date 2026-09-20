@@ -89,7 +89,20 @@ async def get_task(task_id: str):
 
 @router.get("/api/podcast/audio/{task_id}")
 async def podcast_audio(task_id: str):
-    """代理下载指定任务的合成音频（流式）。"""
+    """下载指定任务的合成音频。
+
+    优先返回 backend 适配层产物（任务 output_path 本地文件，播客已迁至
+    backend 合成）；无本地产物时回退代理 tts-server（历史任务）。
+    """
+    from .. import queue_state as qs
+    from pathlib import Path as _Path
+    from fastapi.responses import FileResponse
+    task = qs.queue_tasks.get(task_id)
+    if task:
+        output_path = task.get("output_path")
+        if output_path and _Path(output_path).exists():
+            return FileResponse(output_path, media_type="audio/wav",
+                                filename=f"podcast_{task_id}.wav")
     try:
         resp = await http_client.get(f"{TTS_URL}/api/task/{task_id}/audio", timeout=120.0)
         if resp.status_code != 200:
