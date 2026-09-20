@@ -278,7 +278,7 @@ export default function PodcastPage() {
 
       <div className="flex-1 flex gap-3 p-3 overflow-hidden">
         {/* 左侧：角色/音色配置 + 术语表 */}
-        <aside className="w-96 shrink-0 overflow-y-auto scrollbar-thin">
+        <aside className="w-72 shrink-0 overflow-y-auto scrollbar-none">
           <div className="mb-2 flex items-center gap-2">
             <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">角色与音色</h2>
           </div>

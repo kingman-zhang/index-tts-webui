@@ -57,6 +57,14 @@ html {
   .scrollbar-thin::-webkit-scrollbar-thumb:hover {
     background: hsl(220 13% 70%);
   }
+  /* 完全隐藏滚动条（内容仍可滚动） */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 input[type="range"] {
