@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from ..config import TTS_STATUS_POLL, TTS_URL, http_client
+from ..membership import service as member_svc
 
 router = APIRouter()
 
@@ -33,6 +34,9 @@ async def get_config():
         "tts_status_poll": TTS_STATUS_POLL,
         "tts_online": tts_ok,
         "tts_info": tts_info,
+        # 积分定价（前端预估扣费用；均为静态配置，零探测成本）
+        "member_enforce": member_svc.ENFORCE,
+        "member_points_per_1000_chars": member_svc.POINTS_PER_1000_CHARS,
     }
 
 

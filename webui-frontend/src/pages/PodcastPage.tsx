@@ -14,6 +14,7 @@ import {
   defaultProject, defaultEmotion, defaultParams, defaultSilence,
   type PodcastProject, type PodcastLine, type TaskInfo,
 } from "../types";
+import { useAuth, refreshUser } from "@/lib/auth";
 
 /** 双人播客页（/podcast）：角色配置 + 对话脚本 + 参数生成 */
 export default function PodcastPage() {
@@ -30,7 +31,8 @@ export default function PodcastPage() {
   const [showProjects, setShowProjects] = useState(false);
   const [projectList, setProjectList] = useState<any[]>([]);
 
-  const { voiceFiles, ttsOnline, ttsInfo, reloadVoices } = useAppInit();
+  const { voiceFiles, ttsOnline, ttsInfo, reloadVoices, memberEnforce, memberPer1000 } = useAppInit();
+  const { user } = useAuth();
   const { toast, showToast } = useToast();
 
   // ─── 项目操作 ─────────────────────────────────────────────
@@ -183,9 +185,18 @@ export default function PodcastPage() {
   const activeSpeakers = Array.from(new Set(
     project.lines.filter(l => l.text.trim().length > 0).map(l => l.speaker)
   )) as ("A" | "B")[];
+  // 积分预估（与后端 estimate_task_cost 同口径：行文本 trim 后按 1000 字向上取整）
+  const totalChars = project.lines.reduce((n, l) => n + l.text.trim().length, 0);
+  const pointsCost = memberEnforce && memberPer1000 > 0
+    ? Math.ceil(totalChars / 1000) * memberPer1000
+    : 0;
+  const balance = user?.points ?? null;
+  const pointsInsufficient = pointsCost > 0 && balance != null && pointsCost > balance;
+  const pointsInfo = pointsCost > 0 ? { cost: pointsCost, balance } : null;
   const canGenerate =
     activeSpeakers.length > 0 &&
-    activeSpeakers.every(s => !!project.voices[s]?.voice_path);
+    activeSpeakers.every(s => !!project.voices[s]?.voice_path) &&
+    !pointsInsufficient;
 
   const handleGenerate = async () => {
     setError(null);
@@ -248,10 +259,15 @@ export default function PodcastPage() {
       setQueueRefreshKey(k => k + 1);  // 触发队列面板刷新
       setQueueCollapsed(false);  // 展开队列面板
       setGenerating(false);
+      refreshUser();  // 扣费后刷新余额
     } catch (e: any) {
       setGenerating(false);
       setError(e.message);
-      showToast(`提交失败: ${e.message}`);
+      if ((e.message || "").includes("积分不足")) {
+        showToast("积分不足：可在右上角菜单进入个人中心，用兑换码充值");
+      } else {
+        showToast(`提交失败: ${e.message}`);
+      }
     }
   };
 
@@ -328,6 +344,7 @@ export default function PodcastPage() {
             durationSec={durationSec}
             error={error}
             onReset={handleReset}
+            pointsInfo={pointsInfo}
           />
           <QueuePanel
             collapsed={queueCollapsed}

@@ -26,6 +26,8 @@ export const api = {
       tts_status_poll: boolean;
       tts_online: boolean | null;
       tts_info: { model_loaded: boolean; device: string; fp16: boolean } | null;
+      member_enforce: boolean;
+      member_points_per_1000_chars: number;
     }>(`${BASE}/config`);
   },
 

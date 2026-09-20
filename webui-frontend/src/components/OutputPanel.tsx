@@ -13,9 +13,11 @@ interface OutputPanelProps {
   durationSec: number;
   error: string | null;
   onReset: () => void;
+  /** 积分预估（MEMBER_ENFORCE=1 时由页面传入；null = 不展示） */
+  pointsInfo?: { cost: number; balance: number | null } | null;
 }
 
-export function OutputPanel({ onGenerate, canGenerate, task, generating, audioUrl, durationSec, error, onReset }: OutputPanelProps) {
+export function OutputPanel({ onGenerate, canGenerate, task, generating, audioUrl, durationSec, error, onReset, pointsInfo }: OutputPanelProps) {
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -44,12 +46,27 @@ export function OutputPanel({ onGenerate, canGenerate, task, generating, audioUr
 
         {/* 生成按钮 */}
         {!generating && (
-          <Button
-            size="lg" icon={Play} onClick={onGenerate} disabled={!canGenerate}
-            className="w-full text-base"
-          >
-            生成音频
-          </Button>
+          <>
+            <Button
+              size="lg" icon={Play} onClick={onGenerate} disabled={!canGenerate}
+              className="w-full text-base"
+            >
+              生成音频
+            </Button>
+            {pointsInfo && pointsInfo.cost > 0 && (
+              <p className={cn(
+                "text-xs text-center tabular-nums",
+                pointsInfo.balance != null && pointsInfo.cost > pointsInfo.balance
+                  ? "text-red-500"
+                  : "text-gray-400"
+              )}>
+                本次约扣 {pointsInfo.cost} 积分
+                {pointsInfo.balance != null ? `（余额 ${pointsInfo.balance}）` : ""}
+                {pointsInfo.balance != null && pointsInfo.cost > pointsInfo.balance
+                  ? " · 可在个人中心用兑换码充值" : ""}
+              </p>
+            )}
+          </>
         )}
 
         {/* 进度展示 */}

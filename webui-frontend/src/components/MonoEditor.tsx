@@ -41,6 +41,8 @@ interface MonoEditorProps {
   canGenerate: boolean;
   generating: boolean;
   error: string | null;
+  /** 积分预估（MEMBER_ENFORCE=1 时由页面传入；null = 不展示） */
+  pointsInfo?: { cost: number; balance: number | null } | null;
 }
 
 type EmotionMeta = { label: string; chip: string; dot: string; scope: string };
@@ -414,7 +416,7 @@ interface HistoryEntry {
   caret: number | null;
 }
 
-export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error }: MonoEditorProps) {
+export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo }: MonoEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -945,10 +947,16 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
           <input ref={fileRef} type="file" accept=".doc,.docx,.pdf,.txt,.md" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleImportFile(f); e.target.value = ""; }} />
 
-          <div className="ml-auto flex items-center gap-4 shrink-0">
+          <div className="ml-auto flex items-center gap-3 shrink-0">
             <span className="text-xs text-gray-400 tabular-nums whitespace-nowrap hidden sm:inline">
               {totalChars} 字 · {parsed.length} 段
+              {pointsInfo && pointsInfo.cost > 0 ? ` · 约 ${pointsInfo.cost} 积分` : ""}
             </span>
+            {pointsInfo && pointsInfo.balance != null && pointsInfo.cost > pointsInfo.balance && (
+              <span className="text-xs text-red-500 whitespace-nowrap">
+                积分不足（余额 {pointsInfo.balance} / 需 {pointsInfo.cost}），可用兑换码充值
+              </span>
+            )}
             <button
               type="button"
               onClick={onGenerate}

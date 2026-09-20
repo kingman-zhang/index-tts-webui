@@ -13,6 +13,7 @@ import {
 import {
   loadProjects, saveProject, removeProject, type MonoProjectSnapshot,
 } from "@/lib/projectStore";
+import { useAuth, refreshUser } from "@/lib/auth";
 
 const MONO_DRAFT_KEY = "wb-mono-draft-v2";
 
@@ -63,8 +64,9 @@ export default function DubbingPage() {
   const [monoSpeed, setMonoSpeed] = useState<number>(initial.speed);
   const [monoText, setMonoText] = useState<string>(initial.text);
 
-  const { voiceFiles, ttsOnline, ttsInfo } = useAppInit();
+  const { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000 } = useAppInit();
   const { toast, showToast } = useToast();
+  const { user } = useAuth();
 
   // 草稿自动保存（含项目名，刷新不丢；text 为画布文本唯一真源）
   useEffect(() => {
@@ -107,10 +109,19 @@ export default function DubbingPage() {
   };
 
   const parsed = textToMonoLines(monoText);
+  // 积分预估（与后端 estimate_task_cost 同口径：行文本 trim 后按 1000 字向上取整）
+  const totalChars = parsed.reduce((n, l) => n + l.text.trim().length, 0);
+  const pointsCost = memberEnforce && memberPer1000 > 0
+    ? Math.ceil(totalChars / 1000) * memberPer1000
+    : 0;
+  const balance = user?.points ?? null;
+  const pointsInsufficient = pointsCost > 0 && balance != null && pointsCost > balance;
+  const pointsInfo = pointsCost > 0 ? { cost: pointsCost, balance } : null;
   const canGenerate =
     !!monoVoice.voice_path &&
     parsed.length > 0 &&
-    parsed.every(l => l.text.trim().length > 0);
+    parsed.every(l => l.text.trim().length > 0) &&
+    !pointsInsufficient;
 
   // ─── 提交（kind=mono，后端走引擎适配层） ───────────────────
   const handleGenerate = async () => {
@@ -141,10 +152,15 @@ export default function DubbingPage() {
       setQueueRefreshKey(k => k + 1);
       setQueueCollapsed(false);
       setGenerating(false);
+      refreshUser();  // 扣费后刷新余额
     } catch (e: any) {
       setGenerating(false);
       setError(e.message);
-      showToast(`提交失败: ${e.message}`);
+      if ((e.message || "").includes("积分不足")) {
+        showToast("积分不足：可在右上角菜单进入个人中心，用兑换码充值");
+      } else {
+        showToast(`提交失败: ${e.message}`);
+      }
     }
   };
 
@@ -201,6 +217,7 @@ export default function DubbingPage() {
             canGenerate={canGenerate}
             generating={generating}
             error={error}
+            pointsInfo={pointsInfo}
           />
         </main>
 
