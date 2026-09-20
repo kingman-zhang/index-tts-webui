@@ -67,6 +67,8 @@ export interface PodcastProject {
     B: SpeakerConfig;
   };
   lines: PodcastLine[];
+  /** 画布标记文本（新模型唯一真源）；旧项目无此字段时由 lines 迁移 */
+  script?: string;
   silence: SilenceConfig;
   params: GenerationParams;
   created_at?: string;
@@ -263,6 +265,161 @@ export function textToMonoLines(text: string): MonoParsedLine[] {
     flushTo(line.length);
   }
   return out;
+}
+
+// ─── 双人播客（标记文本模型：单人配音画布 + 主持人标识块） ─────────
+//
+// 画布文本是唯一真源，每行一位主持人的发言：
+//   【A】今天聊点什么呢？【喜悦】我很期待 [pause:0.5]
+// - 行首【A】/【B】= 主持人标识块（点击切换，不可删除，每行至多一个）
+// - 【喜悦】等情绪标记与 [pause:秒] 停顿与单人配音画布同语义；
+//   行内 [pause:N] 由播客引擎原生支持（子段拼接插静音），提交时原样保留在 text 里。
+// 提交时由 textToPodcastSegments 解析为后端协议的行列表。
+
+export interface PodcastParsedSegment {
+  /** null = 未标注（提交前校验会拦截） */
+  speaker: "A" | "B" | null;
+  /** 保留行内 [pause:秒] 标记 */
+  text: string;
+  /** null = 跟随音色 */
+  emotion_label: string | null;
+  /** 同一视觉行内被情绪切分出的非末段为 0（段间零静音，覆盖全局 between_lines） */
+  silence_after_ms?: number;
+}
+
+/** 情绪 value → 8 维向量下标（与后端 EMO_VECTOR_ORDER 对齐） */
+const EMO_VALUE_ORDER = ["happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised", "calm"];
+
+/** 情绪标签 → 行级 EmotionConfig（mode=2 one-hot 向量；权重与 mono 引擎一致取 1.0） */
+export function emotionFromLabel(label: string): EmotionConfig {
+  const vector = Array(8).fill(0);
+  const i = EMO_VALUE_ORDER.indexOf(label);
+  if (i >= 0) vector[i] = 1.0;
+  return { mode: 2, audio_path: null, vector, weight: 1.0, text: null, random: false };
+}
+
+function speakerMarkerKey(marker: string): "A" | "B" | null {
+  const m = marker.match(/^【([AB])】$/);
+  return m ? (m[1] as "A" | "B") : null;
+}
+
+/** 视觉行 → 段列表（作用域切分逻辑与 textToMonoLines 一致，另加主持人前缀） */
+function podcastLineToSegments(raw: string): PodcastParsedSegment[] {
+  const line = raw.trim();
+  if (!line) return [];
+  // 行首主持人标识
+  let speaker: "A" | "B" | null = null;
+  let body = line;
+  const sp = line.match(/^【([AB])】\s*/);
+  if (sp) {
+    speaker = sp[1] as "A" | "B";
+    body = line.slice(sp[0].length);
+  }
+  // 收集结构 token：情绪标记（起点）与【/】（作用域终点）；未知【xx】按普通文本
+  const toks: { idx: number; end: number; kind: "emo" | "end"; emotion?: string }[] = [];
+  for (const m of body.matchAll(/【[^【】]+】/g)) {
+    const idx = m.index ?? 0;
+    if (m[0] === MONO_SCOPE_END) {
+      toks.push({ idx, end: idx + m[0].length, kind: "end" });
+      continue;
+    }
+    const value = MONO_EMOTION_MARKERS[m[0].slice(1, -1)];
+    if (value !== undefined) toks.push({ idx, end: idx + m[0].length, kind: "emo", emotion: value });
+  }
+  const stripEnds = (s: string) => s.split(MONO_SCOPE_END).join("");
+  const segs: { text: string; emotion_label: string | null }[] = [];
+  if (!toks.some(t => t.kind === "emo")) {
+    const t = stripEnds(body).trim();
+    if (t) segs.push({ text: t, emotion_label: null });
+  } else {
+    const push = (s: string, emotion: string | null) => {
+      const t = stripEnds(s).trim();
+      if (t) segs.push({ text: t, emotion_label: emotion });
+    };
+    let curEmotion: string | null = null;
+    let segStart = 0;
+    for (const t of toks) {
+      push(body.slice(segStart, t.idx), curEmotion);
+      curEmotion = t.kind === "emo" ? t.emotion! : null;
+      segStart = t.end;
+    }
+    push(body.slice(segStart), curEmotion);
+  }
+  // 同一视觉行内切出的非末段：显式 0 静音（播客引擎行级 silence_after_ms 优先级最高）
+  return segs.map((s, i) => ({
+    speaker,
+    text: s.text,
+    emotion_label: s.emotion_label,
+    ...(i < segs.length - 1 ? { silence_after_ms: 0 as const } : {}),
+  }));
+}
+
+/** 画布文本 → 播客段列表（空行跳过；空段跳过） */
+export function textToPodcastSegments(text: string): PodcastParsedSegment[] {
+  const out: PodcastParsedSegment[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    out.push(...podcastLineToSegments(raw));
+  }
+  return out;
+}
+
+/** 提交前校验：返回未标注主持人的非空视觉行号（1 起） */
+export function podcastScriptIssues(text: string): number[] {
+  const issues: number[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (!/^【[AB]】/.test(line)) issues.push(i + 1);
+  }
+  return issues;
+}
+
+/** 旧版逐行项目（可视化行模型）→ 画布文本（迁移用） */
+export function podcastLinesToScript(lines: PodcastLine[]): string {
+  return (lines || [])
+    .map(l => {
+      const speaker = l.speaker ? `【${l.speaker}】` : "";
+      let emo = "";
+      if (l.emotion?.mode === 2) {
+        const hits = (l.emotion.vector || [])
+          .map((v, i) => ({ v, i }))
+          .filter(x => x.v >= 0.5);
+        if (hits.length === 1) {
+          const value = EMO_VALUE_ORDER[hits[0].i];
+          const label = Object.entries(MONO_EMOTION_META).find(([k]) => k === value)?.[1].label;
+          if (label) emo = `【${label}】`;
+        }
+      }
+      const pause =
+        l.silence_after_ms && l.silence_after_ms > 0
+          ? ` [pause:${String(Math.round((l.silence_after_ms / 1000) * 10) / 10)}]`
+          : "";
+      return speaker + emo + l.text + pause;
+    })
+    .join("\n");
+}
+
+/** 导入纯文本 → 画布文本：识别行首 A: / B:（含全角冒号）转主持人标识，
+ *  无前缀行按对话节奏自动交替（有前缀行会重置交替状态） */
+export function dialogTextToScript(raw: string): string {
+  let last: "A" | "B" | null = null;
+  return raw
+    .split(/\r?\n/)
+    .map(line => {
+      const t = line.trim();
+      if (!t) return line;
+      const m = t.match(/^([AB])[:：]\s*/);
+      if (m) {
+        const k = m[1] as "A" | "B";
+        last = k;
+        return `【${k}】` + t.slice(m[0].length);
+      }
+      const k: "A" | "B" = last ? (last === "A" ? "B" : "A") : "A";
+      last = k;
+      return `【${k}】` + t;
+    })
+    .join("\n");
 }
 
 /** 旧版逐段模型 → 画布文本（v1 草稿迁移用） */

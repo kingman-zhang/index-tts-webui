@@ -27,6 +27,7 @@ class ProjectModel(BaseModel):
         "B": {"name": "主持人B", "voice_path": None, "voice_name": None},
     })
     lines: list = Field(default_factory=list)
+    script: Optional[str] = None  # 画布标记文本（前端唯一真源）；旧项目无此字段时由 lines 迁移
     silence: dict = Field(default_factory=lambda: dict(PODCAST_DEFAULT_SILENCE))
     params: dict = Field(default_factory=_default_params_dict)
     created_at: Optional[str] = None

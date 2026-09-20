@@ -27,6 +27,7 @@ import {
   MONO_EMOTION_MARKERS,
   MONO_SCOPE_END,
   textToMonoLines,
+  textToPodcastSegments,
 } from "@/types";
 import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,11 @@ interface MonoEditorProps {
   error: string | null;
   /** 积分预估（MEMBER_ENFORCE=1 时由页面传入；null = 不展示） */
   pointsInfo?: { cost: number; balance: number | null } | null;
+  /** 播客模式：启用主持人标识块（行首【A】/【B】芯片，点击切换 A↔B，不可删除），
+   *  值为两位主持人的显示名；不传 = 单人配音模式 */
+  speakers?: { A: string; B: string };
+  /** 导入文档解析后的纯文本 → 画布文本转换（播客模式用于识别 A:/B: 前缀） */
+  importTransform?: (raw: string) => string;
 }
 
 type EmotionMeta = { label: string; chip: string; dot: string; scope: string };
@@ -55,6 +61,12 @@ function escapeHtml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/** 主持人标识 marker → A/B（其余返回 null） */
+function speakerMarkerKey(marker: string): "A" | "B" | null {
+  const m = marker.match(/^【([AB])】$/);
+  return m ? (m[1] as "A" | "B") : null;
 }
 
 const PAUSE_TOKEN_RE = /\[pause:\s*([\d.]+)\s*\]/g;
@@ -81,6 +93,21 @@ function emotionChipHtml(meta: EmotionMeta): string {
   );
 }
 
+/** 主持人标识块：A=靛蓝 / B=玫红，徽标字母 + 显示名 */
+function speakerChipHtml(key: "A" | "B", label: string): string {
+  const badge =
+    key === "A"
+      ? "bg-indigo-500 text-white"
+      : "bg-rose-500 text-white";
+  return (
+    `<span contenteditable="false" data-marker="【${key}】" ` +
+    `class="mono-chip mono-chip-speaker ${key === "A" ? "border-indigo-200 bg-indigo-50 text-indigo-700" : "border-rose-200 bg-rose-50 text-rose-700"}">` +
+    `<i class="not-italic w-4 h-4 rounded-full ${badge} text-[0.6rem] flex items-center justify-center font-bold">${key}</i>` +
+    escapeHtml(label) +
+    `</span>`
+  );
+}
+
 /** 无情绪区间：[pause] 转芯片、未知【xx】按普通文本转义；【/】终止符不渲染 */
 function renderPlain(txt: string, pauseAsChip: boolean): string {
   if (!txt) return "";
@@ -101,13 +128,18 @@ function renderPlain(txt: string, pauseAsChip: boolean): string {
  * 作用域终点 = 【/】终止符、下一个情绪标记、或行尾三者中最早出现的；
  * 无【/】时与旧语义一致（到下一个标记/行尾），旧草稿无缝兼容。
  */
-function lineToHtml(line: string): string {
-  type Ev = { idx: number; end: number; kind: "emo" | "end"; meta?: EmotionMeta };
+function lineToHtml(line: string, speakerNames?: { A: string; B: string }): string {
+  type Ev = { idx: number; end: number; kind: "emo" | "end" | "speaker"; meta?: EmotionMeta; speaker?: "A" | "B" };
   const events: Ev[] = [];
   for (const m of line.matchAll(EMOTION_TOKEN_RE)) {
     const idx = m.index ?? 0;
     if (m[0] === MONO_SCOPE_END) {
       events.push({ idx, end: idx + m[0].length, kind: "end" });
+      continue;
+    }
+    const spk = speakerMarkerKey(m[0]);
+    if (spk) {
+      events.push({ idx, end: idx + m[0].length, kind: "speaker", speaker: spk });
       continue;
     }
     const value = MONO_EMOTION_MARKERS[m[0].slice(1, -1)];
@@ -134,6 +166,9 @@ function lineToHtml(line: string): string {
     if (ev.kind === "emo") {
       out += emotionChipHtml(ev.meta!);
       scopeMeta = ev.meta!;
+    } else if (ev.kind === "speaker") {
+      out += speakerChipHtml(ev.speaker!, speakerNames?.[ev.speaker!] || `主持人${ev.speaker!}`);
+      // 主持人标识不引入情绪作用域
     } else {
       scopeMeta = null; // 【/】：作用域显式终止，其后文字跟随音色
     }
@@ -144,10 +179,10 @@ function lineToHtml(line: string): string {
 }
 
 /** 标记文本 → 画布 innerHTML（每行一个 div，与 Chrome 的 Enter 行为一致） */
-export function markerTextToHtml(text: string): string {
+export function markerTextToHtml(text: string, speakerNames?: { A: string; B: string }): string {
   return text
     .split("\n")
-    .map(line => `<div>${lineToHtml(line) || "<br>"}</div>`)
+    .map(line => `<div>${lineToHtml(line, speakerNames) || "<br>"}</div>`)
     .join("");
 }
 
@@ -229,6 +264,15 @@ function serializeBefore(root: HTMLElement, target: Node): number {
         cur += brSerChar(node).length;
         return false;
       }
+      if (node.classList.contains("mono-scope")) {
+        // 作用域 span：与 serializeCanvas（serializeInline）对齐，补计终止符长度，
+        // 否则偏移会差 3×(前方 scope 数)，插入/删除定位错行
+        for (const c of Array.from(node.childNodes)) {
+          if (walk(c)) return true;
+        }
+        cur += MONO_SCOPE_END.length;
+        return false;
+      }
       if ((node.tagName === "DIV" || node.tagName === "P") && node.parentElement === root) {
         // 行容器：先关闭挂起的裸文本行（同 serializeCanvas）
         if (cur > 0) {
@@ -260,7 +304,26 @@ function markerOffsetAt(root: HTMLElement, container: Node, offset: number): num
   }
   if (container instanceof HTMLElement) {
     const child = container.childNodes[offset] ?? null;
-    return child ? serializeBefore(root, child) : serializeBefore(root, container);
+    if (child) return serializeBefore(root, child);
+    // offset 落在容器末尾：取最后一个子节点序列化之后的位置。
+    // 之前直接 serializeBefore(root, container) 会返回容器起点，
+    // 导致"行尾/画布末尾"光标处的插入全部错位到行首/文档开头（实测 bug）
+    const kids = container.childNodes;
+    if (kids.length === 0) {
+      return container === root ? serializeCanvas(root).length : serializeBefore(root, container);
+    }
+    const last = kids[kids.length - 1];
+    const before = serializeBefore(root, last);
+    if (last.nodeType === Node.TEXT_NODE) {
+      return before + (last.textContent?.length ?? 0);
+    }
+    if (last instanceof HTMLElement) {
+      const mk = last.getAttribute("data-marker");
+      if (mk) return before + mk.length;
+      if (last.tagName === "BR") return before + brSerChar(last).length;
+      return before + serializeCanvas(last).length;
+    }
+    return before;
   }
   return null;
 }
@@ -416,7 +479,7 @@ interface HistoryEntry {
   caret: number | null;
 }
 
-export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo }: MonoEditorProps) {
+export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo, speakers, importTransform }: MonoEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -435,11 +498,21 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   const [dragOver, setDragOver] = useState(false);
 
   const parsed = textToMonoLines(text);
-  const totalChars = parsed.reduce(
-    (acc, l) => acc + l.text.replace(/\[pause:\s*[\d.]+\s*\]/g, "").length,
-    0
-  );
+  const podcastSegs = speakers ? textToPodcastSegments(text) : null;
+  const totalChars = podcastSegs
+    ? podcastSegs.reduce((acc, s) => acc + s.text.length, 0)
+    : parsed.reduce(
+        (acc, l) => acc + l.text.replace(/\[pause:\s*[\d.]+\s*\]/g, "").length,
+        0
+      );
+  const segCount = podcastSegs ? podcastSegs.length : parsed.length;
   const isEmpty = text.trim().length === 0;
+  const speakerNames = speakers
+    ? {
+        A: speakers.A || "主持人A",
+        B: speakers.B || "主持人B",
+      }
+    : undefined;
 
   // ─── 导入文档（弹窗上传/拖拽；doc/docx/pdf/txt/md → 纯文本填充画布） ──────
   const handleImportFile = async (file: File) => {
@@ -456,7 +529,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
       undoStack.current.push({ text: textRef.current, caret: null });
       if (undoStack.current.length > 100) undoStack.current.shift();
       redoStack.current = [];
-      onChange(r.text);
+      onChange(importTransform ? importTransform(r.text) : r.text);
       setImportOpen(false);
     } catch (e: any) {
       setImportError(`导入失败：${e.message}`);
@@ -471,10 +544,20 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     const el = canvasRef.current;
     if (!el) return;
     if (serializeCanvas(el) !== text) {
-      el.innerHTML = markerTextToHtml(text);
+      el.innerHTML = markerTextToHtml(text, speakerNames);
       savedRange.current = null;
     }
   }, [text]);
+
+  // 主持人显示名变化（改名）时重绘标识块文字；text 真源不变
+  useEffect(() => {
+    if (!speakerNames) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    el.innerHTML = markerTextToHtml(textRef.current, speakerNames);
+    savedRange.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speakerNames?.A, speakerNames?.B]);
 
   // text 变化后芯片 DOM 可能已被替换，弹窗引用失效 → 关闭
   useEffect(() => {
@@ -508,7 +591,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
       const el = canvasRef.current;
       if (!el) return;
       if (serializeCanvas(el) !== entry.text) {
-        el.innerHTML = markerTextToHtml(entry.text);
+        el.innerHTML = markerTextToHtml(entry.text, speakerNames);
       }
       if (entry.caret !== null) setCaretAtMarkerOffset(el, entry.caret);
       savedRange.current = null;
@@ -571,6 +654,12 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   const restoreSelection = (): boolean => {
     const el = canvasRef.current;
     if (!el) return false;
+    // 优先采信画布内的实时选区：程序化 DOM 选区（或未触发 keyup/mouseup/blur 的场景）
+    // 不会经过 saveSelection，savedRange 可能过期
+    const live = window.getSelection();
+    if (live && live.rangeCount > 0 && el.contains(live.anchorNode)) {
+      savedRange.current = live.getRangeAt(0).cloneRange();
+    }
     el.focus();
     const sel = window.getSelection();
     if (!sel) return false;
@@ -599,9 +688,9 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     const canvas = canvasRef.current;
     if (!canvas) return;
     if (line === canvas) {
-      canvas.innerHTML = markerTextToHtml(serializeCanvas(canvas));
+      canvas.innerHTML = markerTextToHtml(serializeCanvas(canvas), speakerNames);
     } else {
-      line.innerHTML = lineToHtml(serializeCanvas(line));
+      line.innerHTML = lineToHtml(serializeCanvas(line), speakerNames);
     }
   };
 
@@ -642,6 +731,56 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     setCaretAtMarkerOffset(line, before);
     saveSelection();
     emitChange();
+  };
+
+  /** 点击主持人标识块：切换 A↔B（不可删除） */
+  const toggleSpeakerChip = (chip: HTMLElement) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !speakerNames) return;
+    const key = speakerMarkerKey(chip.getAttribute("data-marker") ?? "");
+    if (!key) return;
+    const next: "A" | "B" = key === "A" ? "B" : "A";
+    const line = lineOfNode(chip, canvas) ?? canvas;
+    const before = serializeBefore(line, chip);
+    chip.replaceWith(htmlToElement(speakerChipHtml(next, speakerNames[next])));
+    rerenderLine(line);
+    setCaretAtMarkerOffset(line, before);
+    saveSelection();
+    emitChange();
+  };
+
+  /** 在光标所在行的行首插入/替换主持人标识块（每行至多一个）。
+   *  纯文本模型拼接（同 insertPause/insertEmotion），不做 DOM 手术。 */
+  const insertSpeaker = (key: "A" | "B") => {
+    const el = canvasRef.current;
+    if (!el) return;
+    if (!restoreSelection()) {
+      showHint("请先把光标放回文稿内再插入主持人标识");
+      return;
+    }
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const r = sel.getRangeAt(0);
+    if (!el.contains(r.startContainer)) {
+      showHint("请先把光标放回文稿内再插入主持人标识");
+      return;
+    }
+    const off = caretOffsetIn(el);
+    if (off === null) {
+      showHint("请先把光标放回文稿内再插入主持人标识");
+      return;
+    }
+    const prev = textRef.current;
+    const lineStart = prev.lastIndexOf("\n", Math.max(0, off - 1)) + 1;
+    const marker = `【${key}】`;
+    const existing = prev.slice(lineStart).match(/^【([AB])】/);
+    if (existing) {
+      // 已有标识：原地替换
+      const newText = prev.slice(0, lineStart) + marker + prev.slice(lineStart + existing[0].length);
+      applyMarkerInsert(newText, lineStart, marker.length);
+    } else {
+      applyMarkerInsert(prev.slice(0, lineStart) + marker + prev.slice(lineStart), lineStart, marker.length);
+    }
   };
 
   // ─── 光标处插入 ────────────────────────────────────────────
@@ -688,18 +827,22 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   };
 
   /** 纯文本模型插入的收尾：整体重渲染 + 光标落到插入内容之后 + 入 undo 栈。
-   *  onChange 触发 App 状态更新后，useEffect 因 serialize 相等而跳过，不扰动 DOM。 */
+   *  onChange 触发 App 状态更新后，useEffect 因 serialize 相等而跳过，不扰动 DOM。
+   *  注意真源必须取插入后 DOM 的序列化结果：插情绪芯片时 DOM 会生成作用域 span，
+   *  其序列化带【/】终止符，若直接用 newText 会与 DOM 不等 → effect 重渲染 → 光标被
+   *  Chrome 重置到画布开头（实测 bug）。 */
   const applyMarkerInsert = (newText: string, at: number, insertedLen: number) => {
     const el = canvasRef.current;
     if (!el) return;
     undoStack.current.push({ text: textRef.current, caret: at });
     if (undoStack.current.length > 100) undoStack.current.shift();
     redoStack.current = [];
-    el.innerHTML = markerTextToHtml(newText);
-    textRef.current = newText;
+    el.innerHTML = markerTextToHtml(newText, speakerNames);
     setCaretAtMarkerOffset(el, at + insertedLen);
+    const finalText = serializeCanvas(el);
+    textRef.current = finalText;
     saveSelection();
-    onChange(newText);
+    onChange(finalText);
   };
 
   /** 情绪作用域操作。
@@ -794,16 +937,22 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     const chip = adjacentChip(sel.getRangeAt(0), e.key === "Backspace" ? -1 : 1);
     if (!chip) return;
     e.preventDefault();
+    // 主持人标识块不可删除（点击可切换 A↔B）
+    if (speakerMarkerKey(chip.getAttribute("data-marker") ?? "")) return;
     deleteChip(chip);
   };
 
-  // 点击芯片弹出编辑浮层（不移动光标）
+  // 点击芯片弹出编辑浮层（不移动光标）；主持人标识块点击 = 切换 A↔B
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const chip = target.closest?.("[data-marker]") as HTMLElement | null;
     if (!chip || !canvasRef.current?.contains(chip)) return;
     e.preventDefault();
     const marker = chip.getAttribute("data-marker") ?? "";
+    if (speakerMarkerKey(marker)) {
+      toggleSpeakerChip(chip);
+      return;
+    }
     if (marker.startsWith("【")) {
       setPopover({ kind: "emotion", chip, rect: chip.getBoundingClientRect() });
     } else {
@@ -858,10 +1007,12 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
             suppressContentEditableWarning
             role="textbox"
             aria-multiline="true"
-            aria-label="配音文稿"
             data-placeholder={
-              "在这里粘贴或输入要配音的文稿……\n每行一段；行首加【喜悦】等情绪标记，行内可插入停顿。"
+              speakerNames
+                ? "在这里粘贴或输入播客对话稿……\n每行一位主持人的发言：用工具栏「A 发言 / B 发言」在行首插主持人标识；行内可加情绪与停顿。"
+                : "在这里粘贴或输入要配音的文稿……\n每行一段；行首加【喜悦】等情绪标记，行内可插入停顿。"
             }
+            aria-label={speakerNames ? "播客对话稿" : "配音文稿"}
             className={cn(
               "mono-canvas w-full min-h-full text-[0.9375rem] leading-8 text-gray-800",
               isEmpty && "text-gray-300"
@@ -889,6 +1040,19 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
 
         {/* 工具条 */}
         <div className="shrink-0 border-t border-gray-100 bg-white px-5 py-3 flex items-center gap-2">
+          {speakerNames &&
+            (["A", "B"] as const).map(k => (
+              <button
+                key={k}
+                type="button"
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => insertSpeaker(k)}
+                className={TOOL_BTN}
+              >
+                <span className={cn("w-2 h-2 rounded-full shrink-0", k === "A" ? "bg-indigo-500" : "bg-rose-500")} />
+                {k} 发言
+              </button>
+            ))}
           <div className="relative">
             <button
               type="button"
@@ -949,7 +1113,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
 
           <div className="ml-auto flex items-center gap-3 shrink-0">
             <span className="text-xs text-gray-400 tabular-nums whitespace-nowrap hidden sm:inline">
-              {totalChars} 字 · {parsed.length} 段
+              {totalChars} 字 · {segCount} 段
               {pointsInfo && pointsInfo.cost > 0 ? ` · 约 ${pointsInfo.cost} 积分` : ""}
             </span>
             {pointsInfo && pointsInfo.balance != null && pointsInfo.cost > pointsInfo.balance && (
