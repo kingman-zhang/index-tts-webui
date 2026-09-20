@@ -4,7 +4,7 @@
  * 角色默认情感不再在此配置（新行默认"跟随音色"，行级可在脚本芯片单独调整）。
  */
 import { useEffect, useRef, useState } from "react";
-import { Upload, Play, Square, AudioLines, Mic, FolderOpen, Save, Pencil, Trash2 } from "lucide-react";
+import { Upload, Play, Square, AudioLines, FolderOpen, Save, Pencil, Trash2 } from "lucide-react";
 import { Card, CardContent, Button, Badge, Label } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 import { api } from "@/api/client";
@@ -59,20 +59,15 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   const [uploading, setUploading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [playingName, setPlayingName] = useState<string | null>(null);
-  const [recording, setRecording] = useState(false);
-  const [recordSecs, setRecordSecs] = useState(0);
   const [showVoicePicker, setShowVoicePicker] = useState(false);
   const [showSavePreset, setShowSavePreset] = useState(false);
   const [presetName, setPresetName] = useState("");
   const [savedPresets, setSavedPresets] = useState<any[]>([]);
   const [showPresetList, setShowPresetList] = useState(false);
   const [renameValue, setRenameValue] = useState("");
-  const [uploadDialog, setUploadDialog] = useState<{ file: File; mode: "upload" | "record" } | null>(null);
+  const [uploadDialog, setUploadDialog] = useState<{ file: File } | null>(null);
   const [speedText, setSpeedText] = useState((config.speed ?? 1.0).toFixed(2));
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordChunksRef = useRef<Blob[]>([]);
-  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const c = COLORS[speakerKey];
 
   useEffect(() => {
@@ -107,36 +102,9 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
     audioRef.current.onended = () => { setPlaying(false); setPlayingName(null); };
   };
 
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      recordChunksRef.current = [];
-      recorder.ondataavailable = e => { if (e.data.size > 0) recordChunksRef.current.push(e.data); };
-      recorder.onstop = () => {
-        const blob = new Blob(recordChunksRef.current, { type: "audio/webm" });
-        const file = new File([blob], `recording_${speakerKey}_${Date.now()}.webm`, { type: "audio/webm" });
-        setRenameValue(`${speakerKey === "A" ? "主持A" : "主持B"}_录制_${new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
-        setUploadDialog({ file, mode: "record" });
-        stream.getTracks().forEach(t => t.stop());
-      };
-      recorder.start();
-      mediaRecorderRef.current = recorder;
-      setRecording(true); setRecordSecs(0);
-      recordTimerRef.current = setInterval(() => setRecordSecs(s => s + 1), 1000);
-    } catch (e) { alert("无法访问麦克风: " + e); }
-  };
-
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && recording) {
-      mediaRecorderRef.current.stop(); setRecording(false);
-      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-    }
-  };
-
   const handleFileSelect = (file: File) => {
     setRenameValue(file.name.replace(/\.[^.]+$/, ""));
-    setUploadDialog({ file, mode: "upload" });
+    setUploadDialog({ file });
   };
 
   const confirmUpload = async () => {
@@ -295,30 +263,17 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
           <Badge color={c.badge}>{speakerKey}</Badge>
         </div>
 
-        {/* 操作两键 + 录制 */}
-        <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
+        {/* 操作两键 */}
+        <div className="grid grid-cols-2 gap-2">
           <Button variant="outline" size="sm" icon={AudioLines} onClick={() => setShowVoicePicker(true)}>
             选择音色
           </Button>
           <Button variant="outline" size="sm" icon={Upload} onClick={() => fileRef.current?.click()} disabled={uploading}>
             {uploading ? "上传中" : "上传本地音色"}
           </Button>
-          {!recording ? (
-            <Button variant="outline" size="sm" icon={Mic} onClick={startRecording} title="录制一段参考音频" />
-          ) : (
-            <Button variant="outline" size="sm" icon={Square} onClick={stopRecording} title="停止录制" className="text-red-600 border-red-300">
-              {recordSecs}s
-            </Button>
-          )}
           <input ref={fileRef} type="file" accept="audio/*" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }} />
         </div>
-
-        {recording && (
-          <div className="flex items-center gap-2 text-xs text-red-600">
-            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /> 正在录制... {recordSecs}秒
-          </div>
-        )}
 
         {/* 语速：对数刻度滑条（1.0x 居中）+ 数值输入 */}
         <div>
@@ -364,7 +319,7 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
       {uploadDialog && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => !uploading && setUploadDialog(null)}>
           <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-4 space-y-3" onClick={e => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold text-gray-800">{uploadDialog.mode === "upload" ? "保存上传的音频" : "保存录制的音频"}</h3>
+            <h3 className="text-sm font-semibold text-gray-800">保存上传的音频</h3>
             <p className="text-[0.75rem] text-gray-400">原始文件: {uploadDialog.file.name}</p>
             <div>
               <Label className="text-[0.75rem]">音频名称</Label>

@@ -115,9 +115,6 @@ function parseJSONL(text: string, speakers: { A: SpeakerConfig; B: SpeakerConfig
 
 export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, onImportConfig }: ScriptEditorProps) {
   const [collapsedEmos, setCollapsedEmos] = useState<Set<string>>(new Set());
-  const [scriptView, setScriptView] = useState<"visual" | "code">("visual");
-  const [codeText, setCodeText] = useState("");
-  const [codeError, setCodeError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState("");
   const [importing, setImporting] = useState(false);
@@ -125,70 +122,6 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const totalChars = lines.reduce((s, l) => s + l.text.length, 0);
-
-  /** 比较两个情感配置是否完全一致（用于判断是否偏离角色默认值）。
-   *  vector 用近似比较避免浮点误差。
-   */
-  const emotionEquals = (a: EmotionConfig, b: EmotionConfig): boolean => {
-    if (a.mode !== b.mode) return false;
-    if ((a.audio_path ?? null) !== (b.audio_path ?? null)) return false;
-    if (Math.abs((a.weight ?? 0) - (b.weight ?? 0)) > 0.001) return false;
-    if ((a.text ?? null) !== (b.text ?? null)) return false;
-    if (!!a.random !== !!b.random) return false;
-    const va = a.vector || [];
-    const vb = b.vector || [];
-    if (va.length !== vb.length) return false;
-    for (let i = 0; i < va.length; i++) {
-      if (Math.abs((va[i] ?? 0) - (vb[i] ?? 0)) > 0.001) return false;
-    }
-    return true;
-  };
-
-  const lineToJSON = (line: PodcastLine) => {
-    const obj: Record<string, unknown> = {
-      text: line.text,
-      role: line.speaker,
-    };
-
-    // 情感：JSONL 中原本写了情感 或 用户在可视化中修改了情感（偏离角色默认值）时才输出
-    const speakerCfg = line.speaker === "A" ? speakers.A : speakers.B;
-    const baseEmo = speakerCfg.emotion;
-    const emotionChanged = !emotionEquals(line.emotion, baseEmo);
-    if (line.emotion_from_code || emotionChanged) {
-      obj.emotion = line.emotion;
-    }
-
-    // 行级静音：JSONL 中原本写了 或 用户在可视化中设置过时才输出
-    if (line.silence_from_code || line.silence_after_ms !== undefined) {
-      obj.silence_after_ms = line.silence_after_ms ?? 0;
-    }
-
-    return obj;
-  };
-
-  const serializeLines = (items: PodcastLine[]) =>
-    items.map(line => JSON.stringify(lineToJSON(line))).join("\n");
-
-  const syncCodeFromLines = () => {
-    setCodeText(serializeLines(lines));
-    setCodeError(null);
-  };
-
-  const applyCode = () => {
-    if (!codeText.trim()) {
-      onChange([]);
-      setCodeError(null);
-      return;
-    }
-    const parsed = parseJSONL(codeText, speakers);
-    const sourceLines = codeText.split("\n").filter(line => line.trim());
-    if (parsed.length !== sourceLines.length) {
-      setCodeError(`代码中有无法解析的行：已识别 ${parsed.length}/${sourceLines.length} 行`);
-      return;
-    }
-    onChange(parsed);
-    setCodeError(null);
-  };
 
   const add = (speaker: "A" | "B") =>
     onChange([...lines, makeLine(speaker, "", speakers[speaker].emotion)]);
@@ -313,45 +246,7 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
         </div>
       </div>
 
-      {/* 同一份脚本数据的双视图 */}
-      <div className="flex items-center justify-between px-1 pb-2">
-        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-0.5">
-          <button
-            type="button"
-            onClick={() => setScriptView("visual")}
-            className={cn("px-3 py-1.5 rounded-md text-xs font-medium", scriptView === "visual" ? "bg-white text-gray-800 shadow-sm" : "text-gray-500")}
-          >
-            可视化编辑
-          </button>
-          <button
-            type="button"
-            onClick={() => { syncCodeFromLines(); setScriptView("code"); }}
-            className={cn("px-3 py-1.5 rounded-md text-xs font-medium", scriptView === "code" ? "bg-white text-gray-800 shadow-sm" : "text-gray-500")}
-          >
-            JSONL 代码
-          </button>
-        </div>
-        {scriptView === "code" && <span className="text-[0.75rem] text-gray-400">每行一个 JSON 对象，修改后点击应用</span>}
-      </div>
-
-      {scriptView === "code" ? (
-        <div className="flex-1 min-h-0 px-1 pb-2 flex flex-col gap-2">
-          <textarea
-            value={codeText}
-            onChange={e => { setCodeText(e.target.value); setCodeError(null); }}
-            spellCheck={false}
-            aria-label="JSONL 对话脚本代码"
-            className="flex-1 min-h-[360px] w-full resize-none rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 font-mono text-xs leading-6 text-gray-100 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-            placeholder={'{"text":"大家好","role":"A"}\n{"text":"今天我们来聊聊AI","role":"B","emotion_text":"relaxed, cheerful","emotion_weight":0.7,"silence_after_ms":350}'}
-          />
-          {codeError && <p className="text-xs text-red-600">{codeError}</p>}
-          <div className="flex items-center justify-between">
-            <span className="text-[0.75rem] text-gray-400">必填：text、role（A/B）；可选：emotion、silence_after_ms 等</span>
-            <Button size="sm" onClick={applyCode}>应用到可视化</Button>
-          </div>
-        </div>
-      ) : (
-      /* 对话列表 */
+      {/* 对话列表 */}
       <div className="flex-1 overflow-y-auto scrollbar-thin px-1 pb-2 space-y-2">
         {lines.length === 0 ? (
           <Card className="border-dashed">
@@ -440,7 +335,6 @@ export function ScriptEditor({ lines, speakers, voiceFiles, onChange, onImport, 
           })
         )}
       </div>
-      )}
 
       {/* 批量导入弹窗 */}
       {showImport && (
