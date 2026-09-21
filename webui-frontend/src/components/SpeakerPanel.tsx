@@ -89,7 +89,8 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   };
 
   const preview = (name?: string) => {
-    const target = name || config.voice_name;
+    // 试听目标：优先显式文件名；否则用 voice_path 的文件名（BreezeBlue 音色的 voice_name 是显示名，不是文件名）
+    const target = name || (config.voice_path ? config.voice_path.split(/[\\/]/).pop() || "" : "") || config.voice_name;
     if (!target) return;
     if (playing && playingName === target) {
       audioRef.current?.pause(); setPlaying(false); setPlayingName(null); return;

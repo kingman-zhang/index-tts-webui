@@ -14,3 +14,6 @@ logs/
 # 密钥配置（模板 .env.example 入库，真实 .env 不入库）
 webui-backend/.env
 .env
+
+# BreezeBlue 抓取原始音频（165MB，不入库；正式数据在 webui-backend/data/breezeblue/，随 data/ 忽略）
+tools/breezeblue/zh_audio/

@@ -84,6 +84,31 @@ export interface VoiceFile {
   source?: VoiceSource;
   renameable?: boolean;
   deletable?: boolean;
+  /** 试听时实际请求的文件名；缺省用 name（BreezeBlue 音色的 name 是显示名，与文件名不同） */
+  preview_name?: string;
+}
+
+/** BreezeBlue 音色库条目（data/breezeblue/voices.json，经 /api/breezeblue/voices 返回） */
+export interface BreezeblueVoice {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  category_zh: string;
+  gender: "female" | "male" | "";
+  gender_zh: string;
+  age: "child" | "young" | "middle_aged" | "old" | "";
+  age_zh: string;
+  tones: string[];
+  tones_zh: string[];
+  audio: string;
+  duration_s: number | null;
+  source: "breezeblue";
+  imported_at: string;
+  /** 服务端音频绝对路径（作 voice_path 用） */
+  path: string;
+  /** 服务端音频文件名（voc_xxx.wav，作试听 key 用） */
+  filename: string;
 }
 
 export interface TaskInfo {

@@ -110,14 +110,14 @@ async def list_voices(user: Optional[dict] = Depends(get_optional_user)):
                     continue
                 if not _voice_owner_ok(f.name, user):
                     continue
-                    voices.append({
-                        "name": f.name,
-                        "path": str(f),
-                        "size_kb": round(f.stat().st_size / 1024, 1),
-                        "source": "custom",
-                        "renameable": True,
-                        "deletable": True,
-                    })
+                voices.append({
+                    "name": f.name,
+                    "path": str(f),
+                    "size_kb": round(f.stat().st_size / 1024, 1),
+                    "source": "custom",
+                    "renameable": True,
+                    "deletable": True,
+                })
     return {"voices": voices, "count": len(voices)}
 
 
@@ -307,9 +307,10 @@ async def proxy_audio(filename: str):
             )
     except Exception:
         pass
-    # 本地查找：voices 目录 / preset-voices 目录（含 emotions 子目录） / outputs 目录
+    # 本地查找：voices 目录 / breezeblue 音色库 / preset-voices 目录（含 emotions 子目录） / outputs 目录
     search_dirs = [
         LOCAL_VOICES_DIR,
+        DATA_DIR / "breezeblue" / "audio",
         PRESET_VOICES_DIR,
         PRESET_VOICES_DIR / "emotions",
         DATA_DIR / "outputs",

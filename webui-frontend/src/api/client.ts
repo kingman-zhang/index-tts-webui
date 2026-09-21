@@ -1,8 +1,10 @@
 /** WebUI 后端 API 客户端。 */
-import type { PodcastProject, TaskInfo, VoiceFile, EmotionConfig, GenerationParams } from "@/types";
+import type { PodcastProject, TaskInfo, VoiceFile, EmotionConfig, GenerationParams, BreezeblueVoice } from "@/types";
 import { authFetch } from "@/lib/auth";
 
 const BASE = "/api";
+
+let breezeblueCache: Promise<BreezeblueVoice[]> | null = null;
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   // 统一走 authFetch：登录后所有请求带 Authorization，401 自动清登录态
@@ -181,6 +183,38 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     });
+  },
+
+  // ─── BreezeBlue 音色库 ───
+  // 全量拉取（310 条 <200KB），模块级缓存：每个页面生命周期只请求一次
+  async listBreezeblueVoices(): Promise<BreezeblueVoice[]> {
+    if (!breezeblueCache) {
+      breezeblueCache = (async () => {
+        const pages = [1, 2, 3, 4].map(page =>
+          fetchJSON<{ items: BreezeblueVoice[]; has_more: boolean; total: number }>(
+            `${BASE}/breezeblue/voices?page=${page}&page_size=100`
+          )
+        );
+        const results = await Promise.all(pages);
+        const items = results.flatMap(r => r.items);
+        const total = results[0]?.total ?? items.length;
+        if (items.length < total) {
+          // 超过 400 条时兜底：按需继续拉（当前 310 条不会走到）
+          for (let page = 5; items.length < total; page++) {
+            const r = await fetchJSON<{ items: BreezeblueVoice[]; has_more: boolean }>(
+              `${BASE}/breezeblue/voices?page=${page}&page_size=100`
+            );
+            items.push(...r.items);
+            if (!r.has_more) break;
+          }
+        }
+        return items;
+      })().catch(err => {
+        breezeblueCache = null; // 失败不缓存，下次重试
+        throw err;
+      });
+    }
+    return breezeblueCache;
   },
 
   // ─── 术语词汇表 ───

@@ -59,7 +59,8 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
   };
 
   const preview = (name?: string) => {
-    const target = name || voice.voice_name;
+    // 试听目标：优先显式文件名；否则用 voice_path 的文件名（BreezeBlue 音色的 voice_name 是显示名，不是文件名）
+    const target = name || (voice.voice_path ? voice.voice_path.split(/[\\/]/).pop() || "" : "") || voice.voice_name;
     if (!target) return;
     if (playing && playingName === target) {
       audioRef.current?.pause(); setPlaying(false); setPlayingName(null); return;

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import system, voices, podcast, projects, presets, glossary, voice_presets, queue, mono
+from . import system, voices, podcast, projects, presets, glossary, voice_presets, queue, mono, breezeblue
 from ..membership import router as membership_router
 
 all_routers = [
@@ -15,5 +15,6 @@ all_routers = [
     voice_presets.router,
     queue.router,
     mono.router,
+    breezeblue.router,
     membership_router,
 ]
