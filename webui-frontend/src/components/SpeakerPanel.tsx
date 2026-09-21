@@ -336,12 +336,11 @@ export function SpeakerPanel({ speakers, onChange, voiceFiles, onUpload, onRenam
               )}
               title={`切换到角色 ${k}`}
             >
-              <span className={cn("h-2 w-2 shrink-0 rounded-full", cc.dot)} />
-              <span className="truncate">{speakers[k].name?.trim() || `主持人${k}`}</span>
-              <span className={cn("shrink-0 rounded px-1 text-[0.625rem] font-semibold",
-                isActive ? cn(cc.avatar) : "bg-gray-200 text-gray-400")}>
+              {/* A/B 字母放最左，常亮角色主题色，强化标识 */}
+              <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-bold leading-none", cc.avatar)}>
                 {k}
               </span>
+              <span className="truncate">{speakers[k].name?.trim() || `主持人${k}`}</span>
             </button>
           );
         })}
