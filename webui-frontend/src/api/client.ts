@@ -310,11 +310,13 @@ export const api = {
   async retryQueueTask(taskId: string): Promise<{ task_id: string; status: string; queue_position: number }> {
     return fetchJSON(`${BASE}/queue/${taskId}/retry`, { method: "POST" });
   },
-  async pauseQueuedTasks(): Promise<{ paused: string[]; count: number }> {
-    return fetchJSON(`${BASE}/queue/bulk-pause`, { method: "POST" });
+  async pauseQueuedTasks(kind?: "podcast" | "mono"): Promise<{ paused: string[]; count: number }> {
+    const q = kind ? `?kind=${kind}` : "";
+    return fetchJSON(`${BASE}/queue/bulk-pause${q}`, { method: "POST" });
   },
-  async resumePausedTasks(): Promise<{ resumed: string[]; count: number }> {
-    return fetchJSON(`${BASE}/queue/bulk-resume`, { method: "POST" });
+  async resumePausedTasks(kind?: "podcast" | "mono"): Promise<{ resumed: string[]; count: number }> {
+    const q = kind ? `?kind=${kind}` : "";
+    return fetchJSON(`${BASE}/queue/bulk-resume${q}`, { method: "POST" });
   },
   async cancelQueueTask(taskId: string): Promise<any> {
     return fetchJSON(`${BASE}/queue/${taskId}`, { method: "DELETE" });
@@ -322,11 +324,11 @@ export const api = {
   async clearFinishedTasks(): Promise<{ cleared: number; remaining: number }> {
     return fetchJSON(`${BASE}/queue`, { method: "DELETE" });
   },
-  async reorderQueue(taskIds: string[]): Promise<{ queue_order: string[] }> {
+  async reorderQueue(taskIds: string[], kind?: "podcast" | "mono"): Promise<{ queue_order: string[] }> {
     return fetchJSON(`${BASE}/queue/reorder`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task_ids: taskIds }),
+      body: JSON.stringify(kind ? { task_ids: taskIds, kind } : { task_ids: taskIds }),
     });
   },
 };

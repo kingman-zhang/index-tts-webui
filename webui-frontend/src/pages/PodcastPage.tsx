@@ -323,6 +323,7 @@ export default function PodcastPage() {
             collapsed={queueCollapsed}
             onToggle={() => setQueueCollapsed(!queueCollapsed)}
             refreshKey={queueRefreshKey}
+            defaultKind="podcast"
           />
         </aside>
       </div>

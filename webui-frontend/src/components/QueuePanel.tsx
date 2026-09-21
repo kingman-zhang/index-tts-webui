@@ -25,12 +25,15 @@ interface QueueTask {
   params?: any;
   glossary_enabled?: boolean;
   queue_position?: number | null;
+  cancel_requested?: boolean;
 }
 
 interface QueuePanelProps {
   collapsed: boolean;
   onToggle: () => void;
   refreshKey: number;
+  /** 初始展示的任务类型 tab：播客页传 podcast、配音页传 mono（默认 podcast） */
+  defaultKind?: "podcast" | "mono";
 }
 
 const STATUS_CONFIG: Record<string, {
@@ -49,8 +52,9 @@ const STATUS_CONFIG: Record<string, {
   cancelled: { icon: Square, color: "gray", label: "已取消" },
 };
 
-export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps) {
+export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "podcast" }: QueuePanelProps) {
   const [tasks, setTasks] = useState<QueueTask[]>([]);
+  const [activeKind, setActiveKind] = useState<"podcast" | "mono">(defaultKind);
   const [current, setCurrent] = useState<string | null>(null);
   const [queued, setQueued] = useState(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -61,6 +65,8 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
   // 报错详情弹窗（失败自动弹出；队列内详情图标可再次打开）
   const [errorModal, setErrorModal] = useState<{ name: string; error: string } | null>(null);
   const prevStatusRef = useRef<Map<string, string>>(new Map());
+  // 行级进度控制台输出去重：仅在进度实际变化时打印
+  const lastProgressRef = useRef<Map<string, string>>(new Map());
 
   // 拖拽状态
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -91,6 +97,16 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
         }
       }
       prevStatusRef.current = new Map(r.tasks.map(t => [t.id, t.status]));
+      // 行级进度（如 第 1/5 行）输出到浏览器控制台，界面不再显示
+      for (const t of r.tasks) {
+        if ((t.status === "running" || t.status === "syncing") && t.total_lines > 0) {
+          const key = `${t.current_line}/${t.total_lines}`;
+          if (lastProgressRef.current.get(t.id) !== key) {
+            lastProgressRef.current.set(t.id, key);
+            console.log(`[进度] ${t.project_name}: 第 ${key} 行（${Math.round(t.progress * 100)}%）`);
+          }
+        }
+      }
     } catch {}
   };
 
@@ -100,22 +116,28 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     return () => clearInterval(timer);
   }, [refreshKey]);
 
-  const stats = {
-    total: tasks.length,
-    success: tasks.filter(t => t.status === "success").length,
-    failed: tasks.filter(t => t.status === "failed" || t.status === "interrupted").length,
-    queued: tasks.filter(t => t.status === "queued").length,
-    paused: tasks.filter(t => t.status === "paused").length,
+  const kindOf = (t: QueueTask): "podcast" | "mono" => (t.kind === "mono" ? "mono" : "podcast");
+
+  // 当前 tab 的任务列表（双人播客 / 单人配音 各自独立）
+  const kindTasks = tasks.filter(t => kindOf(t) === activeKind);
+  const kindCounts = {
+    podcast: tasks.filter(t => kindOf(t) === "podcast").length,
+    mono: tasks.filter(t => kindOf(t) === "mono").length,
   };
 
-  // 任务类型徽标只在队列混排（播客+配音并存）时显示，单一类型时无信息量
-  const showKindBadge = new Set(tasks.map(t => t.kind ?? "podcast")).size > 1;
+  const stats = {
+    total: kindTasks.length,
+    success: kindTasks.filter(t => t.status === "success").length,
+    failed: kindTasks.filter(t => t.status === "failed" || t.status === "interrupted").length,
+    queued: kindTasks.filter(t => t.status === "queued").length,
+    paused: kindTasks.filter(t => t.status === "paused").length,
+  };
 
   const filteredTasks = activeFilter === "failed"
-    ? tasks.filter(t => t.status === "failed" || t.status === "interrupted")
+    ? kindTasks.filter(t => t.status === "failed" || t.status === "interrupted")
     : activeFilter
-      ? tasks.filter(t => t.status === activeFilter)
-      : tasks;
+      ? kindTasks.filter(t => t.status === activeFilter)
+      : kindTasks;
 
   const toggleFilter = (status: string) => {
     setActiveFilter(current => current === status ? null : status);
@@ -136,7 +158,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
               <CardTitle>任务队列</CardTitle>
               {stats.queued > 0 && <Badge color="amber">{stats.queued} 排队</Badge>}
             </div>
-            <span className="text-xs text-gray-400">{stats.total} 个任务</span>
+            <span className="text-xs text-gray-400">{tasks.length} 个任务</span>
           </div>
         </CardHeader>
       </Card>
@@ -162,7 +184,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     if (!stats.queued || bulkBusy) return;
     setBulkBusy(true);
     try {
-      await api.pauseQueuedTasks();
+      await api.pauseQueuedTasks(activeKind);
       await load();
     } catch (e: any) {
       window.alert(`暂停排队任务失败: ${e.message}`);
@@ -175,20 +197,13 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     if (!tasks.some(t => t.status === "paused") || bulkBusy) return;
     setBulkBusy(true);
     try {
-      await api.resumePausedTasks();
+      await api.resumePausedTasks(activeKind);
       await load();
     } catch (e: any) {
       window.alert(`恢复暂停任务失败: ${e.message}`);
     } finally {
       setBulkBusy(false);
     }
-  };
-
-  const viewContent = (task: QueueTask) => {
-    const lines = task.lines || [];
-    const preview = lines.slice(0, 3).map(line => `${line.speaker}: ${line.text}`).join("\n");
-    const suffix = lines.length > 3 ? `\n... 共 ${lines.length} 行` : `\n共 ${lines.length} 行`;
-    window.alert(`${task.project_name}\n\n${preview || "暂无台词内容"}${suffix}`);
   };
 
   const beginEditName = (task: QueueTask) => {
@@ -242,26 +257,34 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
       return;
     }
 
-    // 取出所有 queued 任务 ID（按当前展示顺序）
-    const queuedIds = tasks.filter(t => t.status === "queued").map(t => t.id);
-    const fromIdx = queuedIds.indexOf(draggingId);
-    const toIdx = queuedIds.indexOf(targetId);
+    // 仅重排当前 tab 类型的排队任务（其他类型任务的相对顺序由后端保持）
+    const kindQueued = tasks.filter(t => t.status === "queued" && kindOf(t) === activeKind).map(t => t.id);
+    const fromIdx = kindQueued.indexOf(draggingId);
+    const toIdx = kindQueued.indexOf(targetId);
     if (fromIdx === -1 || toIdx === -1) {
       resetDrag();
       return;
     }
 
-    // 计算新顺序
-    const newOrder = [...queuedIds];
-    newOrder.splice(fromIdx, 1);
-    newOrder.splice(toIdx, 0, draggingId);
+    // 计算当前类型的新顺序
+    const newKindOrder = [...kindQueued];
+    newKindOrder.splice(fromIdx, 1);
+    newKindOrder.splice(toIdx, 0, draggingId);
 
-    // optimistic 更新：重排 tasks 中的 queued 任务
+    // optimistic 更新：按全局排队顺序，把当前类型的排队任务替换为新顺序
     setTasks(prev => {
+      const globalQueued = prev.filter(t => t.status === "queued").map(t => t.id);
+      const merged: string[] = [];
+      let k = 0;
+      for (const id of globalQueued) {
+        const t = prev.find(x => x.id === id);
+        if (t && kindOf(t) === activeKind) merged.push(newKindOrder[k++]);
+        else merged.push(id);
+      }
       const running = prev.filter(t => t.status === "running" || t.status === "syncing");
-      const queuedTasks = newOrder.map(id => {
+      const queuedTasks = merged.map(id => {
         const t = prev.find(x => x.id === id)!;
-        return { ...t, queue_position: newOrder.indexOf(id) + 1 };
+        return { ...t, queue_position: merged.indexOf(id) + 1 };
       });
       const terminal = prev.filter(t => !["queued", "running", "syncing"].includes(t.status));
       return [...running, ...queuedTasks, ...terminal];
@@ -270,7 +293,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
     resetDrag();
 
     try {
-      await api.reorderQueue(newOrder);
+      await api.reorderQueue(newKindOrder, activeKind);
     } catch (e: any) {
       window.alert(`排序失败: ${e.message}`);
       load();
@@ -294,7 +317,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
           <div className="flex min-w-0 items-center gap-2">
             <ListVideo className="w-4 h-4 shrink-0 text-indigo-600" />
             <CardTitle>任务队列</CardTitle>
-            <span className="text-[0.75rem] text-gray-400">共 {stats.total} 个</span>
+            <span className="text-[0.75rem] text-gray-400">{kindCounts[activeKind] ? `共 ${kindCounts[activeKind]} 个` : ""}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {stats.queued > 0 && (
@@ -309,7 +332,31 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
             )}
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2" onClick={e => e.stopPropagation()}>
+        <div className="mt-2 flex items-center gap-1 border-t border-gray-100 pt-2" onClick={e => e.stopPropagation()}>
+          <button
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[0.75rem] font-medium transition-colors",
+              activeKind === "podcast"
+                ? "bg-indigo-600 text-white shadow-sm"
+                : "text-gray-500 hover:bg-gray-100"
+            )}
+            onClick={() => setActiveKind("podcast")}
+          >
+            双人播客 <b>{kindCounts.podcast}</b>
+          </button>
+          <button
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[0.75rem] font-medium transition-colors",
+              activeKind === "mono"
+                ? "bg-indigo-600 text-white shadow-sm"
+                : "text-gray-500 hover:bg-gray-100"
+            )}
+            onClick={() => setActiveKind("mono")}
+          >
+            单人配音 <b>{kindCounts.mono}</b>
+          </button>
+        </div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1" onClick={e => e.stopPropagation()}>
           <button className={filterButtonClass("success")} onClick={() => toggleFilter("success")}>成功 <b>{stats.success}</b></button>
           <button className={filterButtonClass("failed")} onClick={() => toggleFilter("failed")}>失败 <b>{stats.failed}</b></button>
           <button className={filterButtonClass("queued")} onClick={() => toggleFilter("queued")}>排队 <b>{stats.queued}</b></button>
@@ -326,10 +373,14 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
             <div className="space-y-1.5 max-h-[520px] overflow-y-auto scrollbar-thin">
               {filteredTasks.length === 0 ? (
                 <p className="py-8 text-center text-xs text-gray-400">
-                  {activeFilter ? "当前状态暂无任务" : "暂无任务"}
+                  {activeFilter ? "当前状态暂无任务" : activeKind === "mono" ? "暂无配音任务" : "暂无播客任务"}
                 </p>
               ) : filteredTasks.map(task => {
-                const cfg = STATUS_CONFIG[task.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.queued;
+                // 已请求取消的运行中任务显示「取消中」（等待进行中的分段合成结束）
+                const cancelling = !!task.cancel_requested && (task.status === "running" || task.status === "syncing");
+                const cfg = cancelling
+                  ? { icon: Loader2, color: "gray", label: "取消中", spin: true }
+                  : STATUS_CONFIG[task.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.queued;
                 const Icon = cfg.icon;
                 const isQueued = task.status === "queued";
                 const isDragging = draggingId === task.id;
@@ -387,9 +438,6 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                             {task.project_name}
                           </span>
                         )}
-                        {showKindBadge && (task.kind === "mono"
-                          ? <Badge color="green" className="shrink-0">配音</Badge>
-                          : <Badge color="gray" className="shrink-0">播客</Badge>)}
                         <Badge color={cfg.color as any} className="shrink-0">{cfg.label}</Badge>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -402,9 +450,6 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                             <AlertCircle className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        <button onClick={() => viewContent(task)} className="px-1.5 py-0.5 text-[0.6875rem] text-gray-500 hover:bg-gray-200 rounded" title="查看任务内容">
-                          查看内容
-                        </button>
                         {task.status === "success" && task.audio_url && (
                           <>
                             <button onClick={() => play(task)} className="p-1 text-indigo-600 hover:bg-indigo-100 rounded">
@@ -415,7 +460,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                             </a>
                           </>
                         )}
-                        {(task.status === "queued" || task.status === "running") && (
+                        {(task.status === "queued" || task.status === "running") && !task.cancel_requested && (
                           <button onClick={() => cancel(task.id)} className="p-1 text-red-500 hover:bg-red-100 rounded" title="取消">
                             <Square className="w-3.5 h-3.5" />
                           </button>
@@ -433,16 +478,18 @@ export function QueuePanel({ collapsed, onToggle, refreshKey }: QueuePanelProps)
                       </div>
                     </div>
 
-                    {/* 进度信息 */}
+                    {/* 进度信息（行级进度 1/5 输出到浏览器控制台，界面只显示百分比） */}
                     {(task.status === "running" || task.status === "syncing") && task.total_lines > 0 && (
                       <div className="mt-1.5">
-                        <div className="flex items-center justify-between text-[0.75rem] text-gray-500 mb-0.5">
-                          <span>{task.message || `第 ${task.current_line}/${task.total_lines} 行`}</span>
-                          <span>{Math.round(task.progress * 100)}%</span>
+                        {cancelling && (
+                          <p className="text-[0.75rem] text-gray-500 mb-0.5">{task.message || "正在取消，等待进行中的合成结束"}</p>
+                        )}
+                        <div className={cn("text-right text-[0.75rem] mb-0.5 tabular-nums", cancelling ? "text-gray-400" : "text-gray-500")}>
+                          {Math.round(task.progress * 100)}%
                         </div>
-                        <div className="h-1.5 bg-amber-100 rounded-full overflow-hidden">
+                        <div className={cn("h-1.5 rounded-full overflow-hidden", cancelling ? "bg-gray-200" : "bg-amber-100")}>
                           <div
-                            className="h-full bg-amber-500 transition-all duration-300"
+                            className={cn("h-full transition-all duration-300", cancelling ? "bg-gray-400" : "bg-amber-500")}
                             style={{ width: `${task.progress * 100}%` }}
                           />
                         </div>

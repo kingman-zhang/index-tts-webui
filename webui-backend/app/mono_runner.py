@@ -326,7 +326,9 @@ async def run_mono_task(task: dict) -> None:
             else:
                 break
         task["current_line"] = current_line
-        if done >= total:
+        if task.get("cancel_requested"):
+            task["message"] = "正在取消，等待进行中的合成结束"  # 取消中不覆盖提示
+        elif done >= total:
             task["message"] = "拼接音频中"
         elif done > 0:
             task["message"] = f"已合成 {done}/{total} 段"
@@ -355,7 +357,8 @@ async def run_mono_task(task: dict) -> None:
 
     results = await _run_batch(entries)
 
-    if task.get("cancel_requested") and any(isinstance(r, _TaskCancelled) for r in results):
+    # 无条件检查取消：即使所有分段都在标记设置前提交（短任务），停止也必须生效
+    if task.get("cancel_requested"):
         task["status"] = qs.QueueTaskStatus.CANCELLED
         task["message"] = "已取消"
         qs.persist_task(task_id)
@@ -365,8 +368,6 @@ async def run_mono_task(task: dict) -> None:
     retry_idx = _failed(results)
     if retry_idx:
         for i in retry_idx:
-            if isinstance(results[i], _TaskCancelled):
-                continue
             logger.warning("[mono] task=%s 段 %d/%d 首次合成失败，重试: %s", task_id, i + 1, total, results[i])
         task["message"] = f"重试 {len(retry_idx)} 个失败段"
         qs.persist_task(task_id)
@@ -374,7 +375,8 @@ async def run_mono_task(task: dict) -> None:
         for slot, i in enumerate(retry_idx):
             results[i] = retry_results[slot]
 
-    if task.get("cancel_requested") and any(isinstance(r, _TaskCancelled) for r in results):
+    # 重试批次期间也可能被取消
+    if task.get("cancel_requested"):
         task["status"] = qs.QueueTaskStatus.CANCELLED
         task["message"] = "已取消"
         qs.persist_task(task_id)

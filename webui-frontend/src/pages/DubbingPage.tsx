@@ -226,6 +226,7 @@ export default function DubbingPage() {
             collapsed={queueCollapsed}
             onToggle={() => setQueueCollapsed(!queueCollapsed)}
             refreshKey={queueRefreshKey}
+            defaultKind="mono"
           />
         </aside>
       </div>

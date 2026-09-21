@@ -252,14 +252,19 @@ async def retry_queue_task(task_id: str, user: Optional[dict] = Depends(get_opti
 
 
 @router.post("/api/queue/bulk-pause")
-async def pause_queued_tasks(user: Optional[dict] = Depends(get_optional_user)):
-    """暂停当前用户排队中的任务；正在合成的任务不受影响。"""
+async def pause_queued_tasks(kind: Optional[str] = None, user: Optional[dict] = Depends(get_optional_user)):
+    """暂停当前用户排队中的任务；正在合成的任务不受影响。
+
+    kind 可选（podcast/mono）：只暂停该类型的任务（前端按 tab 操作）；
+    缺省时暂停全部排队任务（兼容旧行为）。
+    """
     paused = []
     keep = []
     for task_id in list(qs.queue_order):
         task = qs.queue_tasks.get(task_id)
         mine = not _isolation_on() or (user and task and task.get("member_id") == user["user_id"])
-        if task and mine and task.get("status") == qs.QueueTaskStatus.QUEUED:
+        kind_match = not kind or task.get("kind") == kind
+        if task and mine and kind_match and task.get("status") == qs.QueueTaskStatus.QUEUED:
             task["status"] = qs.QueueTaskStatus.PAUSED
             task["message"] = "已暂停"
             task["paused_at"] = datetime.now().isoformat()
@@ -273,12 +278,16 @@ async def pause_queued_tasks(user: Optional[dict] = Depends(get_optional_user)):
 
 
 @router.post("/api/queue/bulk-resume")
-async def resume_paused_tasks(user: Optional[dict] = Depends(get_optional_user)):
-    """将所有暂停任务按原创建时间恢复到队列末尾。"""
+async def resume_paused_tasks(kind: Optional[str] = None, user: Optional[dict] = Depends(get_optional_user)):
+    """将暂停任务按原创建时间恢复到队列末尾。
+
+    kind 可选（podcast/mono）：只恢复该类型的任务；缺省时恢复全部。
+    """
     resumed = []
     paused = [
         task for task in qs.queue_tasks.values()
         if task.get("status") == qs.QueueTaskStatus.PAUSED
+        and (not kind or task.get("kind") == kind)
         and (not _isolation_on() or (user and task.get("member_id") == user["user_id"]))
     ]
     paused.sort(key=lambda task: task.get("created_at", ""))
@@ -324,9 +333,10 @@ async def cancel_queue_task(task_id: str, user: Optional[dict] = Depends(get_opt
         qs.persist_queue_order()
         return {"cancelled": task_id}
     elif task["status"] == qs.QueueTaskStatus.RUNNING:
-        # 运行中：标记取消（TTS 无法真正停止，但后续不再更新）
+        # 运行中：标记取消。执行器（mono_runner/podcast_runner）在每个分段启动前
+        # 检查该标记——排队中的分段立即放弃，进行中的分段（≤并发数）合成完后终止。
         task["cancel_requested"] = True
-        task["message"] = "取消请求已发送"
+        task["message"] = "正在取消，等待进行中的合成结束"
         qs.persist_task(task_id)
         return {"cancelling": task_id}
     else:
@@ -350,32 +360,48 @@ async def clear_finished_tasks(user: Optional[dict] = Depends(get_optional_user)
 
 @router.patch("/api/queue/reorder")
 async def reorder_queue(payload: dict, user: Optional[dict] = Depends(get_optional_user)):
-    """拖拽排序：接收新的排队任务 ID 顺序，重写 queue_order。"""
+    """拖拽排序：接收新的排队任务 ID 顺序，重写 queue_order。
+
+    kind 可选（podcast/mono）：task_ids 只含该类型的排队任务，重排后
+    该类型任务按新顺序填回原类型槽位，其余类型任务的相对顺序保持不变；
+    缺省时 task_ids 必须覆盖全部排队任务（兼容旧行为）。
+    """
     new_order = payload.get("task_ids", [])
+    kind = payload.get("kind")
     if not isinstance(new_order, list):
         raise HTTPException(400, "task_ids 必须是数组")
     async with qs.queue_lock:
-        old_set = set(qs.queue_order)
-        new_set = set(new_order)
-        # 校验：新顺序必须包含且仅包含当前所有排队任务
-        if new_set != old_set:
-            missing = old_set - new_set
-            extra = new_set - old_set
-            detail = []
-            if missing:
-                detail.append(f"缺少: {missing}")
-            if extra:
-                detail.append(f"多余: {extra}")
-            raise HTTPException(400, f"任务列表不匹配 {'; '.join(detail)}")
-        # 校验所有任务确实是 queued 状态且属于当前用户（隔离开启时）
-        for tid in new_order:
-            t = qs.queue_tasks.get(tid)
-            if not t or t.get("status") != qs.QueueTaskStatus.QUEUED:
-                raise HTTPException(400, f"任务 {tid} 不是排队状态，无法排序")
-            if _isolation_on() and t.get("member_id") != user["user_id"]:
-                raise HTTPException(404, f"任务 {tid} 不存在")
+        old_queued = [tid for tid in qs.queue_order
+                      if (t := qs.queue_tasks.get(tid)) and t.get("status") == qs.QueueTaskStatus.QUEUED]
+        if kind:
+            # 部分重排：校验 task_ids 恰好是该类型的全部排队任务
+            kind_queued = [tid for tid in old_queued if qs.queue_tasks[tid].get("kind") == kind]
+            if set(new_order) != set(kind_queued) or len(new_order) != len(kind_queued):
+                raise HTTPException(400, f"任务列表与 {kind} 类型的排队任务不匹配")
+            if _isolation_on():
+                for tid in new_order:
+                    if qs.queue_tasks[tid].get("member_id") != user["user_id"]:
+                        raise HTTPException(404, f"任务 {tid} 不存在")
+            it = iter(new_order)
+            final_order = [next(it) if tid in set(kind_queued) else tid for tid in old_queued]
+        else:
+            # 全量重排（旧行为）
+            old_set, new_set = set(old_queued), set(new_order)
+            if new_set != old_set:
+                missing, extra = old_set - new_set, new_set - old_set
+                detail = []
+                if missing:
+                    detail.append(f"缺少: {missing}")
+                if extra:
+                    detail.append(f"多余: {extra}")
+                raise HTTPException(400, f"任务列表不匹配 {'; '.join(detail)}")
+            for tid in new_order:
+                t = qs.queue_tasks.get(tid)
+                if _isolation_on() and t.get("member_id") != user["user_id"]:
+                    raise HTTPException(404, f"任务 {tid} 不存在")
+            final_order = new_order
         qs.queue_order.clear()
-        qs.queue_order.extend(new_order)
+        qs.queue_order.extend(final_order)
         qs.persist_queue_order()
     logger.info("[queue] reordered: %s", new_order)
     return {"queue_order": list(qs.queue_order)}

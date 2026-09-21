@@ -100,6 +100,11 @@ async def resume_polling(webui_task_id: str):
                     task["error"] = payload.get("error", "未知错误")
                     qs.persist_task(webui_task_id)
                     break
+                elif task.get("cancel_requested"):
+                    task["status"] = qs.QueueTaskStatus.CANCELLED
+                    task["message"] = "已取消"
+                    qs.persist_task(webui_task_id)
+                    break
             except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError) as e:
                 poll_errors += 1
                 logger.warning("[resume] poll error webui=%s retry=%d error=%s", webui_task_id, poll_errors, e)
