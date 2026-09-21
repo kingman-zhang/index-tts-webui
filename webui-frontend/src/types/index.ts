@@ -86,6 +86,14 @@ export interface VoiceFile {
   deletable?: boolean;
   /** 试听时实际请求的文件名；缺省用 name（BreezeBlue 音色的 name 是显示名，与文件名不同） */
   preview_name?: string;
+  /** 预设音色补充元数据（来自 manifest.json） */
+  description?: string;
+  /** child / young / middle_aged / old */
+  age?: string;
+  /** 中文风格标签 */
+  tones_zh?: string[];
+  /** 真实分类 code（narration/roleplay/podcast…，与音色库一致） */
+  voice_category?: string;
 }
 
 /** BreezeBlue 音色库条目（data/breezeblue/voices.json，经 /api/breezeblue/voices 返回） */

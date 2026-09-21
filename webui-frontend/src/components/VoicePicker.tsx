@@ -25,11 +25,20 @@ interface VoicePickerProps {
 
 type Tab = "library" | "mine" | "favorites";
 
-/** 推荐音色（从音色库中人工挑选的四个方向：暖声男/优雅男/元气女/市井老者） */
+/** 推荐音色（人工挑选的四个方向：暖声男/优雅男/元气女/市井老者） */
 const RECOMMENDED_IDS = ["voc_534z3zu7d53k", "voc_wk37myhn43qy", "voc_un8qby3rnhn6", "voc_xx6h6fxy2c26"];
 
 /** 试试快捷词，点击直接填入搜索 */
 const TRY_CHIPS = ["温柔", "磁性", "旁白", "播客", "元气", "治愈"];
+
+/** 分类 code → 中文名（内置预设与音色库共用同一套分类） */
+const CAT_LABEL: Record<string, string> = {
+  narration: "旁白叙述", "social-media": "社交媒体", learning: "教育学习",
+  podcast: "播客与主持", "support-agents": "客服与助理", stylized: "风格化",
+  roleplay: "角色扮演", cinematic: "影视", animation: "动画",
+  "ads-brand": "广告品牌", gaming: "游戏", wellness: "疗愈冥想",
+};
+const AGE_ZH: Record<string, string> = { child: "儿童", young: "青年", middle_aged: "中年", old: "老年" };
 
 /** 头像渐变色板（按性别选色板、按 id 选具体颜色） */
 const GRADIENTS_FEMALE = ["from-rose-400 to-orange-300", "from-fuchsia-400 to-pink-300", "from-pink-400 to-rose-300", "from-purple-400 to-fuchsia-300"];
@@ -49,12 +58,9 @@ interface LibVoice {
   path: string;
   name: string;
   gender: string;
-  desc: string;
-  isBb: boolean;
-  sourceLabel: string;   // 来源标签（音色库 / 预设 · 女声 / 预设 · 男声 / 情感参考）
-  category: string;      // 分类 code（预设无分类，为空）
-  categoryLabel: string;
   age: string;
+  desc: string;
+  category: string;      // 分类 code（统一词表）
   metaTags: string[];    // 行右侧展示的标签
   extraTag?: string;     // 「+N」
   previewKey: string;
@@ -68,7 +74,6 @@ export function VoicePicker({
   const [tab, setTab] = useState<Tab>("library");
   const [search, setSearch] = useState("");
   const [favoritePaths, setFavoritePaths] = useState<string[]>([]);
-  const [showFilters, setShowFilters] = useState(false);
   const [menuPath, setMenuPath] = useState<string | null>(null); // ⋮ 菜单展开的行
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -76,10 +81,11 @@ export function VoicePicker({
   const [bbVoices, setBbVoices] = useState<BreezeblueVoice[]>([]);
   const [bbLoading, setBbLoading] = useState(false);
   const [bbError, setBbError] = useState<string | null>(null);
-  const [libSource, setLibSource] = useState(""); // "" | "breezeblue" | "preset"
-  const [libCat, setLibCat] = useState("");
+  // 已应用的筛选（弹窗里确认后生效）
   const [libGender, setLibGender] = useState("");
   const [libAge, setLibAge] = useState("");
+  const [libCats, setLibCats] = useState<string[]>([]);
+  const [showFilterModal, setShowFilterModal] = useState(false);
   const [libLimit, setLibLimit] = useState(30);
 
   const loadBbVoices = () => {
@@ -105,7 +111,7 @@ export function VoicePicker({
     [presetVoices]
   );
 
-  // ── 统一音色库：BreezeBlue（310）+ 内置预设（65）合并 ──
+  // ── 统一音色库：BreezeBlue（310）+ 内置预设（65）合并，共用分类词表 ──
   const libVoices = useMemo<LibVoice[]>(() => {
     const bbList: LibVoice[] = bbVoices.map(v => {
       const meta0 = v.gender_zh && v.age_zh ? `${v.gender_zh} · ${v.age_zh}` : v.category_zh;
@@ -114,12 +120,9 @@ export function VoicePicker({
         path: v.path,
         name: v.name,
         gender: v.gender,
-        desc: v.description,
-        isBb: true,
-        sourceLabel: "音色库",
-        category: v.category,
-        categoryLabel: v.category_zh,
         age: v.age,
+        desc: v.description,
+        category: v.category,
         metaTags: [meta0, v.tones_zh[0]].filter(Boolean) as string[],
         extraTag: v.tones_zh.length > 1 ? String(v.tones_zh.length - 1) : undefined,
         previewKey: v.filename,
@@ -129,20 +132,21 @@ export function VoicePicker({
     const presetList: LibVoice[] = presetAll.map(f => {
       const isFemale = presetVoices.female.includes(f);
       const isMale = presetVoices.male.includes(f);
-      const label = isFemale ? "预设 · 女声" : isMale ? "预设 · 男声" : "情感参考";
-      const displayName = f.name.replace(/\.(mp3|wav|flac|m4a|ogg)$/i, "");
+      const gender = isFemale ? "female" : isMale ? "male" : "";
+      const genderZh = gender === "female" ? "女" : gender === "male" ? "男" : "";
+      const ageZh = f.age ? AGE_ZH[f.age] ?? "" : "";
+      const tones = f.tones_zh ?? [];
+      const meta0 = genderZh && ageZh ? `${genderZh} · ${ageZh}` : "";
       return {
         key: `p-${f.path}`,
         path: f.path,
-        name: displayName,
-        gender: isFemale ? "female" : isMale ? "male" : "",
-        desc: f.size_kb ? `内置预设参考音频 · ${f.size_kb}KB` : "内置预设参考音频",
-        isBb: false,
-        sourceLabel: label,
-        category: "",
-        categoryLabel: label,
-        age: "",
-        metaTags: [label],
+        name: f.name.replace(/\.(mp3|wav|flac|m4a|ogg)$/i, ""),
+        gender,
+        age: f.age ?? "",
+        desc: f.description ?? "",
+        category: f.voice_category ?? "",
+        metaTags: [meta0, tones[0]].filter(Boolean) as string[],
+        extraTag: tones.length > 1 ? String(tones.length - 1) : undefined,
         previewKey: f.preview_name || f.name,
         voiceFile: f,
       };
@@ -187,53 +191,35 @@ export function VoicePicker({
   const libFiltered = useMemo(() => {
     const kw = search.trim().toLowerCase();
     return libVoices.filter(v => {
-      if (libSource === "breezeblue" && !v.isBb) return false;
-      if (libSource === "preset" && v.isBb) return false;
-      if (libCat && v.category !== libCat) return false;
       if (libGender && v.gender !== libGender) return false;
       if (libAge && v.age !== libAge) return false;
+      if (libCats.length > 0 && !libCats.includes(v.category)) return false;
       if (!kw) return true;
       return (
         v.name.toLowerCase().includes(kw) ||
         v.desc.toLowerCase().includes(kw) ||
-        v.categoryLabel.toLowerCase().includes(kw) ||
-        v.sourceLabel.toLowerCase().includes(kw) ||
+        (CAT_LABEL[v.category] ?? "").toLowerCase().includes(kw) ||
         v.metaTags.some(t => t.toLowerCase().includes(kw))
       );
     });
-  }, [libVoices, search, libSource, libCat, libGender, libAge]);
+  }, [libVoices, search, libGender, libCats, libAge]);
   const libVisible = useMemo(() => libFiltered.slice(0, libLimit), [libFiltered, libLimit]);
-  const libBrowsing = search.trim() === "" && !libSource && !libCat && !libGender && !libAge;
+  const activeFilterCount = (libGender ? 1 : 0) + (libAge ? 1 : 0) + libCats.length;
+  const libBrowsing = search.trim() === "" && activeFilterCount === 0;
 
   const recommended = useMemo(
-    () => libVoices.filter(v => v.isBb && RECOMMENDED_IDS.includes(v.key.slice(3))),
+    () => libVoices.filter(v => v.key.startsWith("bb-") && RECOMMENDED_IDS.includes(v.key.slice(3))),
     [libVoices]
   );
 
   const libFacets = useMemo(() => {
     const cats = new Map<string, { code: string; name: string; count: number }>();
-    const genders = new Map<string, { code: string; name: string; count: number }>();
-    const ages = new Map<string, { code: string; name: string; count: number }>();
     for (const v of libVoices) {
-      if (v.category) {
-        const c = cats.get(v.category) ?? { code: v.category, name: v.categoryLabel, count: 0 };
-        c.count++; cats.set(v.category, c);
-      }
-      if (v.gender) {
-        const g = genders.get(v.gender) ?? { code: v.gender, name: v.gender === "female" ? "女" : "男", count: 0 };
-        g.count++; genders.set(v.gender, g);
-      }
-      if (v.age) {
-        const a = ages.get(v.age) ?? { code: v.age, name: v.age === "child" ? "儿童" : v.age === "young" ? "青年" : v.age === "middle_aged" ? "中年" : "老年", count: 0 };
-        a.count++; ages.set(v.age, a);
-      }
+      if (!v.category) continue;
+      const c = cats.get(v.category) ?? { code: v.category, name: CAT_LABEL[v.category] ?? v.category, count: 0 };
+      c.count++; cats.set(v.category, c);
     }
-    const byCount = (x: { count: number }, y: { count: number }) => y.count - x.count;
-    return {
-      cats: [...cats.values()].sort(byCount),
-      genders: [...genders.values()].sort(byCount),
-      ages: [...ages.values()].sort(byCount),
-    };
+    return [...cats.values()].sort((x, y) => y.count - x.count);
   }, [libVoices]);
 
   const allInTab: VoiceFile[] = useMemo(() => {
@@ -341,12 +327,7 @@ export function VoicePicker({
         {/* 右侧元信息标签 */}
         <div className="hidden md:flex items-center gap-1.5 shrink-0">
           {metaTags.filter(Boolean).slice(0, 2).map(t => (
-            <span key={t} className={cn(
-              "text-xs rounded px-2 py-0.5",
-              t === "音色库" || t.startsWith("预设") || t === "情感参考"
-                ? "bg-amber-50 text-amber-600"
-                : "bg-gray-100 text-gray-500"
-            )}>{t}</span>
+            <span key={t} className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-0.5">{t}</span>
           ))}
           {extraTag && <span className="text-xs text-gray-400">+{extraTag}</span>}
         </div>
@@ -464,7 +445,7 @@ export function VoicePicker({
           ))}
         </div>
 
-        {/* 搜索 + 筛选 */}
+        {/* 搜索 + 筛选入口 */}
         <div className="px-6 pt-3 pb-3 border-b border-gray-50">
           <div className="flex items-center gap-2.5">
             <div className="relative flex-1">
@@ -479,66 +460,27 @@ export function VoicePicker({
             </div>
             {tab === "library" && (
               <button
-                onClick={() => setShowFilters(s => !s)}
+                onClick={() => setShowFilterModal(true)}
                 className={cn(
-                  "flex items-center gap-1.5 h-10 px-4 rounded-full text-sm font-medium transition-colors shrink-0",
-                  showFilters || libSource || libCat || libGender || libAge
+                  "relative flex items-center gap-1.5 h-10 px-4 rounded-full text-sm font-medium transition-colors shrink-0",
+                  activeFilterCount > 0
                     ? "bg-indigo-50 text-indigo-600"
                     : "text-gray-500 hover:bg-gray-50"
                 )}
               >
                 <SlidersHorizontal className="w-4 h-4" />
                 筛选
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-indigo-600 text-white text-[10px] font-medium">
+                    {activeFilterCount}
+                  </span>
+                )}
               </button>
             )}
           </div>
 
-          {/* 筛选展开区（音色库） */}
-          {tab === "library" && showFilters && (
-            <div className="flex flex-wrap items-center gap-2 mt-2.5">
-              <select
-                value={libSource} onChange={e => { setLibSource(e.target.value); setLibLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
-              >
-                <option value="">全部来源</option>
-                <option value="breezeblue">BreezeBlue 精选</option>
-                <option value="preset">内置预设</option>
-              </select>
-              <select
-                value={libCat} onChange={e => { setLibCat(e.target.value); setLibLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
-              >
-                <option value="">全部分类</option>
-                {libFacets.cats.map(c => <option key={c.code} value={c.code}>{c.name} ({c.count})</option>)}
-              </select>
-              <select
-                value={libGender} onChange={e => { setLibGender(e.target.value); setLibLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
-              >
-                <option value="">全部性别</option>
-                {libFacets.genders.map(g => <option key={g.code} value={g.code}>{g.name} ({g.count})</option>)}
-              </select>
-              <select
-                value={libAge} onChange={e => { setLibAge(e.target.value); setLibLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
-              >
-                <option value="">全部年龄段</option>
-                {libFacets.ages.map(a => <option key={a.code} value={a.code}>{a.name} ({a.count})</option>)}
-              </select>
-              {(libSource || libCat || libGender || libAge) && (
-                <button
-                  onClick={() => { setLibSource(""); setLibCat(""); setLibGender(""); setLibAge(""); }}
-                  className="text-xs text-gray-400 hover:text-gray-600 px-2"
-                >
-                  清除筛选
-                </button>
-              )}
-              <span className="ml-auto text-xs text-gray-400">{libFiltered.length} 个音色</span>
-            </div>
-          )}
-
           {/* 试试快捷词（音色库、无筛选时展示） */}
-          {tab === "library" && !showFilters && (
+          {tab === "library" && !showFilterModal && (
             <div className="flex flex-wrap items-center gap-2 mt-2.5">
               <span className="text-xs text-gray-400">试试：</span>
               {TRY_CHIPS.map(chip => (
@@ -608,6 +550,133 @@ export function VoicePicker({
           ) : (
             allInTab.map(fileRow)
           )}
+        </div>
+      </div>
+
+      {/* ── 筛选弹窗 ── */}
+      {showFilterModal && (
+        <FilterModal
+          facets={libFacets}
+          initial={{ gender: libGender, age: libAge, cats: libCats }}
+          onApply={(gender, age, cats) => {
+            setLibGender(gender);
+            setLibAge(age);
+            setLibCats(cats);
+            setLibLimit(30);
+            setShowFilterModal(false);
+          }}
+          onClose={() => setShowFilterModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 筛选弹窗：性别分段控制 + 年龄/类别 chips（无语言口音、无来源区分） */
+function FilterModal({
+  facets, initial, onApply, onClose,
+}: {
+  facets: { code: string; name: string; count: number }[];
+  initial: { gender: string; age: string; cats: string[] };
+  onApply: (gender: string, age: string, cats: string[]) => void;
+  onClose: () => void;
+}) {
+  const [gender, setGender] = useState(initial.gender);
+  const [age, setAge] = useState(initial.age);
+  const [cats, setCats] = useState<string[]>(initial.cats);
+
+  const toggleCat = (code: string) => {
+    setCats(current => current.includes(code) ? current.filter(c => c !== code) : [...current, code]);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-[60]" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden" onClick={e => e.stopPropagation()}>
+        {/* 头部 */}
+        <div className="flex items-center justify-between px-6 pt-5">
+          <h3 className="text-lg font-semibold text-gray-900">音色筛选</h3>
+          <button onClick={onClose} className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="px-6 py-4 space-y-5 max-h-[65vh] overflow-y-auto">
+          {/* 性别：分段控制 */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">性别</p>
+            <div className="flex bg-gray-100 rounded-full p-1">
+              {[["", "全部"], ["male", "男"], ["female", "女"]].map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setGender(value)}
+                  className={cn(
+                    "flex-1 h-8 rounded-full text-sm font-medium transition-all",
+                    gender === value ? "bg-white text-gray-900 shadow" : "text-gray-500 hover:text-gray-700"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 年龄：单选 chips */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">年龄</p>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(AGE_ZH).map(([code, label]) => (
+                <button
+                  key={code}
+                  onClick={() => setAge(age === code ? "" : code)}
+                  className={cn(
+                    "h-8 px-4 rounded-full text-sm border transition-colors",
+                    age === code
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-600 font-medium"
+                      : "border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50"
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 类别：多选 chips */}
+          <div>
+            <p className="text-sm font-medium text-gray-700 mb-2">类别</p>
+            <div className="flex flex-wrap gap-2">
+              {facets.map(c => (
+                <button
+                  key={c.code}
+                  onClick={() => toggleCat(c.code)}
+                  className={cn(
+                    "h-8 px-4 rounded-full text-sm border transition-colors",
+                    cats.includes(c.code)
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-600 font-medium"
+                      : "border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50"
+                  )}
+                >
+                  {c.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* 底部操作 */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4">
+          <button
+            onClick={() => { setGender(""); setAge(""); setCats([]); }}
+            className="h-10 px-5 rounded-full text-sm text-gray-500 hover:bg-gray-100 transition-colors"
+          >
+            重置所有
+          </button>
+          <button
+            onClick={() => onApply(gender, age, cats)}
+            className="h-10 px-7 rounded-full text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+          >
+            筛选
+          </button>
         </div>
       </div>
     </div>

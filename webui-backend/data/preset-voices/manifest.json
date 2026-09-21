@@ -1,0 +1,858 @@
+{
+ "version": "1.0",
+ "source": "https://9000-cpod-1tagrw0lgc45.pod.compshare.cn/",
+ "count": 65,
+ "categories": {
+  "female": [
+   {
+    "name": "女-傲娇女友-傲娇小姐姐.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-傲娇女友-傲娇小姐姐.mp3",
+    "size_kb": 107.3,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "俏皮",
+     "元气"
+    ],
+    "description": "口是心非的傲娇少女感，嘴上凶巴巴心里软乎乎，适合恋爱向角色扮演与情侣剧情配音"
+   },
+   {
+    "name": "女-傲娇御姐.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-傲娇御姐.mp3",
+    "size_kb": 114.3,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "middle_aged",
+    "tones_zh": [
+     "俏皮",
+     "威严"
+    ],
+    "description": "气场全开的御姐声线，带着居高临下的调侃与傲气，适合女王型角色与吐槽向内容"
+   },
+   {
+    "name": "女-傲慢娇声-腹黑傲娇.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-傲慢娇声-腹黑傲娇.mp3",
+    "size_kb": 123.8,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "俏皮",
+     "优雅"
+    ],
+    "description": "腹黑系傲娇声线，甜美里藏着算计感，适合反派千金、腹黑角色演绎"
+   },
+   {
+    "name": "女-初恋女友.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-初恋女友.mp3",
+    "size_kb": 103.6,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "亲切"
+    ],
+    "description": "甜美青涩的初恋感女声，语气亲昵自然，适合恋爱剧情与陪伴类内容"
+   },
+   {
+    "name": "女-嚣张小姐.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-嚣张小姐.mp3",
+    "size_kb": 53.0,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "威严",
+     "热情"
+    ],
+    "description": "张扬跋扈的大小姐声线，气势十足，适合千金角色与针锋相对的剧情对白"
+   },
+   {
+    "name": "女-憨憨萌兽.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-憨憨萌兽.mp3",
+    "size_kb": 113.9,
+    "category": "female",
+    "voice_category": "animation",
+    "age": "child",
+    "tones_zh": [
+     "俏皮",
+     "元气"
+    ],
+    "description": "憨态可掬的萌系声线，呆萌可爱，适合动物角色、萌宠形象与搞笑动画"
+   },
+   {
+    "name": "女-成熟姐姐-御姐型女强人.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-成熟姐姐-御姐型女强人.mp3",
+    "size_kb": 137.8,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "middle_aged",
+    "tones_zh": [
+     "威严",
+     "稳重"
+    ],
+    "description": "干练沉稳的女强人声线，气场从容，适合职场精英、女总裁类角色"
+   },
+   {
+    "name": "女-播客1.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-播客1.mp3",
+    "size_kb": 701.4,
+    "category": "female",
+    "voice_category": "podcast",
+    "age": "young",
+    "tones_zh": [
+     "亲切",
+     "清晰"
+    ],
+    "description": "自然放松的播客主持女声，语速适中、聊天感强，适合对谈与杂谈类节目"
+   },
+   {
+    "name": "女-新闻女生.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-新闻女生.mp3",
+    "size_kb": 87.8,
+    "category": "female",
+    "voice_category": "podcast",
+    "age": "young",
+    "tones_zh": [
+     "清晰",
+     "精准"
+    ],
+    "description": "字正腔圆的新闻播报女声，端庄大方，适合资讯播报与正式场合解说"
+   },
+   {
+    "name": "女-清脆少女.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-清脆少女.mp3",
+    "size_kb": 97.2,
+    "category": "female",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "明亮",
+     "元气"
+    ],
+    "description": "清脆明亮的少女声线，活泼悦耳，适合 vlog、种草与日常分享类内容"
+   },
+   {
+    "name": "女-温暖少女.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-温暖少女.mp3",
+    "size_kb": 158.5,
+    "category": "female",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "暖声",
+     "温柔"
+    ],
+    "description": "温暖治愈的少女声线，柔和亲切，适合晚安电台、情感陪伴类内容"
+   },
+   {
+    "name": "女-温暖闺蜜.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-温暖闺蜜.mp3",
+    "size_kb": 103.7,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "暖声",
+     "亲切"
+    ],
+    "description": "贴心闺蜜感的自然女声，像好友聊天般轻松，适合情感话题与陪伴类播客"
+   },
+   {
+    "name": "女-温柔学姐.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-温柔学姐.mp3",
+    "size_kb": 93.9,
+    "category": "female",
+    "voice_category": "learning",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "亲切"
+    ],
+    "description": "知性温柔的学姐声线，耐心娓娓道来，适合知识讲解与课程伴读"
+   },
+   {
+    "name": "女-灿灿-声线元气温柔.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-灿灿-声线元气温柔.mp3",
+    "size_kb": 123.3,
+    "category": "female",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "元气",
+     "温柔"
+    ],
+    "description": "元气与温柔兼备的活力女声，明快有感染力，适合好物分享与生活类口播"
+   },
+   {
+    "name": "女-热心大婶.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-热心大婶.mp3",
+    "size_kb": 76.3,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "middle_aged",
+    "tones_zh": [
+     "热情",
+     "亲切"
+    ],
+    "description": "热心肠的大婶声线，市井烟火气十足，适合生活剧情与邻里角色演绎"
+   },
+   {
+    "name": "女-甜美女声.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-甜美女声.mp3",
+    "size_kb": 144.6,
+    "category": "female",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "元气"
+    ],
+    "description": "甜度满分的清亮女声，娇俏可人，适合广告植入与甜宠内容配音"
+   },
+   {
+    "name": "女-病娇姐姐-病弱的姐姐.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-病娇姐姐-病弱的姐姐.mp3",
+    "size_kb": 105.0,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "深沉"
+    ],
+    "description": "柔弱中带着偏执的病娇声线，气声明显，适合悬疑氛围与病娇系角色"
+   },
+   {
+    "name": "女-病娇萌妹-破碎感美人.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-病娇萌妹-破碎感美人.mp3",
+    "size_kb": 101.2,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "俏皮"
+    ],
+    "description": "破碎感十足的萌系病娇声线，惹人怜爱，适合剧情向、情感冲突强烈的角色"
+   },
+   {
+    "name": "女-病弱少女-稚气可爱.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-病弱少女-稚气可爱.mp3",
+    "size_kb": 240.5,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "亲切"
+    ],
+    "description": "稚气柔软的病弱少女声线，气若游丝却可爱，适合柔弱角色与治愈系内容"
+   },
+   {
+    "name": "女-纯澈女生.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-纯澈女生.mp3",
+    "size_kb": 77.3,
+    "category": "female",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "明亮",
+     "真挚"
+    ],
+    "description": "清澈纯净的女生声线，干净不造作，适合文艺旁白与品牌形象内容"
+   },
+   {
+    "name": "女-纯真少女-清冷稳重.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-纯真少女-清冷稳重.mp3",
+    "size_kb": 242.8,
+    "category": "female",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "平静",
+     "优雅"
+    ],
+    "description": "清冷疏离的少女声线，安静沉稳，适合文艺片旁白与高级感内容配音"
+   },
+   {
+    "name": "女-花甲奶奶.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-花甲奶奶.mp3",
+    "size_kb": 119.6,
+    "category": "female",
+    "voice_category": "narration",
+    "age": "old",
+    "tones_zh": [
+     "暖声",
+     "亲切"
+    ],
+    "description": "慈祥亲切的花甲老人声线，岁月感十足，适合怀旧故事与隔代亲情内容"
+   },
+   {
+    "name": "女-调皮公主-娇俏公主.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-调皮公主-娇俏公主.mp3",
+    "size_kb": 95.6,
+    "category": "female",
+    "voice_category": "animation",
+    "age": "child",
+    "tones_zh": [
+     "俏皮",
+     "元气"
+    ],
+    "description": "娇俏调皮的公主声线，灵动活泼，适合童话故事与活泼角色配音"
+   },
+   {
+    "name": "女-谄媚女声-成熟.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-谄媚女声-成熟.mp3",
+    "size_kb": 236.7,
+    "category": "female",
+    "voice_category": "roleplay",
+    "age": "middle_aged",
+    "tones_zh": [
+     "优雅",
+     "热情"
+    ],
+    "description": "八面玲珑的谄媚声线，圆滑世故，适合职场剧、市井角色与讽刺向内容"
+   },
+   {
+    "name": "女-软软女孩.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-软软女孩.mp3",
+    "size_kb": 101.8,
+    "category": "female",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "温柔",
+     "俏皮"
+    ],
+    "description": "软糯甜美的女孩声线，奶声奶气，适合撒娇卖萌类内容与萌系角色"
+   },
+   {
+    "name": "女-阅历姐姐.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/女-阅历姐姐.mp3",
+    "size_kb": 130.3,
+    "category": "female",
+    "voice_category": "podcast",
+    "age": "middle_aged",
+    "tones_zh": [
+     "沉稳",
+     "优雅"
+    ],
+    "description": "历经世事的知性姐姐声线，从容通透，适合情感电台与人生话题分享"
+   }
+  ],
+  "male": [
+   {
+    "name": "男-不羁青年.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-不羁青年.mp3",
+    "size_kb": 87.8,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "俏皮",
+     "热情"
+    ],
+    "description": "桀骜不驯的青年声线，带着痞气与随性，适合热血角色与街头感内容"
+   },
+   {
+    "name": "男-东方浩然-阳刚的军阀大叔.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-东方浩然-阳刚的军阀大叔.mp3",
+    "size_kb": 382.5,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "middle_aged",
+    "tones_zh": [
+     "威严",
+     "稳重"
+    ],
+    "description": "阳刚硬朗的军阀大叔声线，气势压迫感强，适合年代剧与强势角色"
+   },
+   {
+    "name": "男-低音沉郁-高冷沉稳.wav",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-低音沉郁-高冷沉稳.wav",
+    "size_kb": 50.1,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "深沉",
+     "稳重"
+    ],
+    "description": "低沉郁结的高冷声线，情绪克制，适合悬疑旁白与暗调质感内容"
+   },
+   {
+    "name": "男-傲娇霸总-磁性声音.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-傲娇霸总-磁性声音.mp3",
+    "size_kb": 342.7,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "middle_aged",
+    "tones_zh": [
+     "威严",
+     "沉稳"
+    ],
+    "description": "磁性霸总的强势声线，自信外露，适合总裁角色与商战剧情配音"
+   },
+   {
+    "name": "男-南方小哥.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-南方小哥.mp3",
+    "size_kb": 157.2,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "亲切",
+     "暖声"
+    ],
+    "description": "带着南方口音的亲和声线，温软随和，适合生活剧情与地方特色内容"
+   },
+   {
+    "name": "男-嘴硬竹马.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-嘴硬竹马.mp3",
+    "size_kb": 75.5,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "俏皮",
+     "真挚"
+    ],
+    "description": "嘴硬心软的青梅竹马声线，少年感与傲娇并存，适合青春恋爱剧情"
+   },
+   {
+    "name": "男-大壹-语气沉稳有力.wav",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-大壹-语气沉稳有力.wav",
+    "size_kb": 652.8,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "middle_aged",
+    "tones_zh": [
+     "沉稳",
+     "精准"
+    ],
+    "description": "沉稳有力的解说声线，字字铿锵，适合纪录片解说与观点输出类内容"
+   },
+   {
+    "name": "男-抒情男声.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-抒情男声.mp3",
+    "size_kb": 158.0,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "暖声",
+     "温情"
+    ],
+    "description": "温柔抒情的男声，情感充沛，适合爱情故事与情感类文案朗读"
+   },
+   {
+    "name": "男-抒情男生.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-抒情男生.mp3",
+    "size_kb": 158.0,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "温情",
+     "真挚"
+    ],
+    "description": "干净抒情的男生声线，娓娓道来，适合情感电台与文艺旁白"
+   },
+   {
+    "name": "男-搞笑大爷.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-搞笑大爷.mp3",
+    "size_kb": 81.2,
+    "category": "male",
+    "voice_category": "animation",
+    "age": "old",
+    "tones_zh": [
+     "俏皮",
+     "热情"
+    ],
+    "description": "自带喜感的搞笑大爷声线，市井幽默，适合段子、吐槽与喜剧角色"
+   },
+   {
+    "name": "男-播客1.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-播客1.mp3",
+    "size_kb": 489.8,
+    "category": "male",
+    "voice_category": "podcast",
+    "age": "young",
+    "tones_zh": [
+     "亲切",
+     "清晰"
+    ],
+    "description": "轻松自然的播客主持男声，聊天感强，适合对谈节目与闲聊杂谈"
+   },
+   {
+    "name": "男-播报男声.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-播报男声.mp3",
+    "size_kb": 131.1,
+    "category": "male",
+    "voice_category": "podcast",
+    "age": "young",
+    "tones_zh": [
+     "清晰",
+     "精准"
+    ],
+    "description": "标准规范的播报男声，庄重大气，适合新闻资讯与正式通知"
+   },
+   {
+    "name": "男-机械战甲.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-机械战甲.mp3",
+    "size_kb": 50.2,
+    "category": "male",
+    "voice_category": "gaming",
+    "age": "middle_aged",
+    "tones_zh": [
+     "深沉",
+     "威严"
+    ],
+    "description": "冷峻的机械感声线，金属质感十足，适合科幻角色、机甲与游戏配音"
+   },
+   {
+    "name": "男-沉稳高管.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-沉稳高管.mp3",
+    "size_kb": 91.0,
+    "category": "male",
+    "voice_category": "ads-brand",
+    "age": "middle_aged",
+    "tones_zh": [
+     "稳重",
+     "威严"
+    ],
+    "description": "沉稳可靠的高管声线，商务感强，适合企业宣传与商业旁白"
+   },
+   {
+    "name": "男-清澈邻家弟弟.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-清澈邻家弟弟.mp3",
+    "size_kb": 79.2,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "明亮",
+     "亲切"
+    ],
+    "description": "清澈干净的邻家弟弟声线，阳光天然，适合青春剧情与日常角色"
+   },
+   {
+    "name": "男-温润男声.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-温润男声.mp3",
+    "size_kb": 129.0,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "暖声",
+     "温柔"
+    ],
+    "description": "温润如玉的男声，温和亲切，适合晚安电台与治愈系内容"
+   },
+   {
+    "name": "男-温润青年.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-温润青年.mp3",
+    "size_kb": 106.2,
+    "category": "male",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "暖声",
+     "真挚"
+    ],
+    "description": "温润细腻的青年声线，真诚不做作，适合知识分享与情感内容"
+   },
+   {
+    "name": "男-率真弟弟.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-率真弟弟.mp3",
+    "size_kb": 78.4,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "元气",
+     "真挚"
+    ],
+    "description": "率直天真的弟弟声线，活力十足，适合少年角色与日常喜剧"
+   },
+   {
+    "name": "男-电台男主播.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-电台男主播.mp3",
+    "size_kb": 98.0,
+    "category": "male",
+    "voice_category": "podcast",
+    "age": "middle_aged",
+    "tones_zh": [
+     "沉稳",
+     "优雅"
+    ],
+    "description": "经典的深夜电台男主播声线，低沉磁性，适合情感电台与夜间伴听"
+   },
+   {
+    "name": "男-真诚青年.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-真诚青年.mp3",
+    "size_kb": 103.7,
+    "category": "male",
+    "voice_category": "social-media",
+    "age": "young",
+    "tones_zh": [
+     "真挚",
+     "亲切"
+    ],
+    "description": "真诚朴实的青年声线，值得信赖，适合测评分享与真诚叙事内容"
+   },
+   {
+    "name": "男-磁性男嗓-磁性浑厚.wav",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-磁性男嗓-磁性浑厚.wav",
+    "size_kb": 71.3,
+    "category": "male",
+    "voice_category": "ads-brand",
+    "age": "middle_aged",
+    "tones_zh": [
+     "深沉",
+     "威严"
+    ],
+    "description": "浑厚磁性的男嗓，质感高级，适合品牌广告、大片预告与高端宣传"
+   },
+   {
+    "name": "男-舒朗男声.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-舒朗男声.mp3",
+    "size_kb": 117.6,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "明亮",
+     "清晰"
+    ],
+    "description": "舒朗开阔的男声，明朗大气，适合正能量旁白与风光纪录片"
+   },
+   {
+    "name": "男-醇厚低音-儒雅青年.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-醇厚低音-儒雅青年.mp3",
+    "size_kb": 218.4,
+    "category": "male",
+    "voice_category": "narration",
+    "age": "young",
+    "tones_zh": [
+     "沉稳",
+     "优雅"
+    ],
+    "description": "醇厚儒雅的低音声线，书卷气浓，适合人文纪录片与深度内容解说"
+   },
+   {
+    "name": "男-醋精男友-少年感.wav",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-醋精男友-少年感.wav",
+    "size_kb": 577.7,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "俏皮",
+     "元气"
+    ],
+    "description": "醋意满满的男友声线，少年感强，适合恋爱剧情与吃醋名场面"
+   },
+   {
+    "name": "男-醋精男生-清亮干净.wav",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-醋精男生-清亮干净.wav",
+    "size_kb": 514.9,
+    "category": "male",
+    "voice_category": "roleplay",
+    "age": "young",
+    "tones_zh": [
+     "明亮",
+     "俏皮"
+    ],
+    "description": "清亮干净的醋精男生声线，青涩直接，适合校园恋爱剧情配音"
+   },
+   {
+    "name": "男-黯刃秦主-低沉帅气.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/男-黯刃秦主-低沉帅气.mp3",
+    "size_kb": 152.8,
+    "category": "male",
+    "voice_category": "gaming",
+    "age": "middle_aged",
+    "tones_zh": [
+     "深沉",
+     "威严"
+    ],
+    "description": "低沉帅气的古风枭雄声线，杀伐决断，适合权谋剧集与游戏角色"
+   }
+  ],
+  "emotion": [
+   {
+    "name": "抖音爆款-叙事.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-叙事.mp3",
+    "size_kb": 285.2,
+    "category": "emotion",
+    "voice_category": "narration",
+    "age": "",
+    "tones_zh": [
+     "有节奏感",
+     "深沉"
+    ],
+    "description": "抖音爆款叙事腔，节奏张弛有度，适合故事号、奇闻轶事类短视频"
+   },
+   {
+    "name": "抖音爆款-恐怖1.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-恐怖1.mp3",
+    "size_kb": 368.5,
+    "category": "emotion",
+    "voice_category": "cinematic",
+    "age": "",
+    "tones_zh": [
+     "深沉",
+     "急迫"
+    ],
+    "description": "悬疑恐怖解说腔，压低声线营造压迫感，适合恐怖故事与灵异话题"
+   },
+   {
+    "name": "抖音爆款-恐怖2.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-恐怖2.mp3",
+    "size_kb": 412.0,
+    "category": "emotion",
+    "voice_category": "cinematic",
+    "age": "",
+    "tones_zh": [
+     "深沉",
+     "急迫"
+    ],
+    "description": "惊悚感更强的恐怖解说变体，转折处骤然收紧，适合高能反转片段"
+   },
+   {
+    "name": "抖音爆款-恐怖3.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-恐怖3.mp3",
+    "size_kb": 401.9,
+    "category": "emotion",
+    "voice_category": "cinematic",
+    "age": "",
+    "tones_zh": [
+     "深沉",
+     "稳重"
+    ],
+    "description": "阴冷低回的恐怖旁白，细思极恐型，适合氛围铺垫类灵异内容"
+   },
+   {
+    "name": "抖音爆款-正说清代十二朝1.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-正说清代十二朝1.mp3",
+    "size_kb": 416.1,
+    "category": "emotion",
+    "voice_category": "narration",
+    "age": "",
+    "tones_zh": [
+     "威严",
+     "稳重"
+    ],
+    "description": "历史正说腔，庄重厚重的史感声线，适合历史科普与朝代解读视频"
+   },
+   {
+    "name": "抖音爆款-正说清代十二朝2.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-正说清代十二朝2.mp3",
+    "size_kb": 264.2,
+    "category": "emotion",
+    "voice_category": "narration",
+    "age": "",
+    "tones_zh": [
+     "威严",
+     "有节奏感"
+    ],
+    "description": "历史正说变体，评书韵味更浓，适合帝王将相故事连载解说"
+   },
+   {
+    "name": "抖音爆款-爱情1.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-爱情1.mp3",
+    "size_kb": 364.7,
+    "category": "emotion",
+    "voice_category": "stylized",
+    "age": "",
+    "tones_zh": [
+     "温柔",
+     "温情"
+    ],
+    "description": "深情款款的爱情旁白腔，缱绻动人，适合情感故事与恋爱文案"
+   },
+   {
+    "name": "抖音爆款-爱情2.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-爱情2.mp3",
+    "size_kb": 299.1,
+    "category": "emotion",
+    "voice_category": "stylized",
+    "age": "",
+    "tones_zh": [
+     "温柔",
+     "深沉"
+    ],
+    "description": "遗憾感更强的爱情旁白，欲说还休，适合虐心情感语录"
+   },
+   {
+    "name": "抖音爆款-犯罪电影.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-犯罪电影.mp3",
+    "size_kb": 212.9,
+    "category": "emotion",
+    "voice_category": "cinematic",
+    "age": "",
+    "tones_zh": [
+     "深沉",
+     "急迫"
+    ],
+    "description": "犯罪片预告式旁白，紧张冷硬，适合悬疑罪案类内容解说"
+   },
+   {
+    "name": "抖音爆款-纪录片.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/抖音爆款-纪录片.mp3",
+    "size_kb": 513.2,
+    "category": "emotion",
+    "voice_category": "narration",
+    "age": "",
+    "tones_zh": [
+     "沉稳",
+     "精准"
+    ],
+    "description": "标准纪录片解说腔，客观大气，适合自然、人文与科普纪录片"
+   },
+   {
+    "name": "爆款-广告专用.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/爆款-广告专用.mp3",
+    "size_kb": 394.0,
+    "category": "emotion",
+    "voice_category": "ads-brand",
+    "age": "",
+    "tones_zh": [
+     "热情",
+     "明亮"
+    ],
+    "description": "带货感十足的广告腔，卖点清晰节奏快，适合产品推广与促销视频"
+   },
+   {
+    "name": "爆款-舌尖上的中国1.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/爆款-舌尖上的中国1.mp3",
+    "size_kb": 461.1,
+    "category": "emotion",
+    "voice_category": "narration",
+    "age": "",
+    "tones_zh": [
+     "暖声",
+     "稳重"
+    ],
+    "description": "《舌尖》式美食解说腔，烟火气与文学性兼备，适合美食探店内容"
+   },
+   {
+    "name": "爆款-舌尖上的中国2.mp3",
+    "path": "/Users/zhangjianwen/Documents/Kingman/workbuddy/index-tts/podcast-webui/webui-backend/data/preset-voices/emotions/爆款-舌尖上的中国2.mp3",
+    "size_kb": 248.9,
+    "category": "emotion",
+    "voice_category": "narration",
+    "age": "",
+    "tones_zh": [
+     "暖声",
+     "亲切"
+    ],
+    "description": "《舌尖》式解说变体，更绵密娓娓道来，适合人文美食纪录片"
+   }
+  ]
+ }
+}
