@@ -26,8 +26,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -89,16 +93,50 @@ class IndexttsArtEngine:
         return bool(self.token)
 
     def _audio_data_uri(self, path: str) -> str:
-        """带缓存的 data URI 编码（避免每段重复 base64 整个参考音频）。"""
+        """带缓存的 data URI 编码（避免每段重复 base64 整个参考音频）。
+
+        平台工作流（indextts2-v1）只接受 mp3（audio/mpeg）参考音频，wav 会被
+        拒绝"参数值非法"（2026-09-21 实测二分定位：同内容 wav 拒、mp3 收）。
+        非 mp3 一律先转 mp3 再编码，转换结果落盘缓存（键含 size+mtime，文件
+        变化自动失效）。
+        """
         p = Path(path)
         st = p.stat()
         key = (st.st_size, st.st_mtime_ns)
         hit = self._audio_cache.get(path)
         if hit and hit[0] == key:
             return hit[1]
-        uri = audio_data_uri(path)
+        if p.suffix.lower() in (".mp3", ".mpeg"):
+            uri = audio_data_uri(path)
+        else:
+            uri = audio_data_uri(self._to_mp3(p, st))
         self._audio_cache[path] = (key, uri)
         return uri
+
+    def _to_mp3(self, p: Path, st: os.stat_result) -> Path:
+        """wav/其它格式 → mp3（ffmpeg 转码，按内容哈希缓存到临时目录）。"""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            for cand in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+                if Path(cand).is_file():
+                    ffmpeg = cand
+                    break
+        if not ffmpeg:
+            # 无 ffmpeg：原样提交，让平台侧给出明确错误（与跳过归一的兜底策略一致）
+            return p
+        digest = hashlib.sha1(f"{p.resolve()}:{st.st_size}:{st.st_mtime_ns}".encode()).hexdigest()[:16]
+        out = Path(tempfile.gettempdir()) / "art_voice_mp3" / f"{digest}.mp3"
+        if not out.is_file():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            tmp_out = out.with_suffix(".tmp.mp3")
+            result = subprocess.run(
+                [ffmpeg, "-y", "-loglevel", "error", "-i", str(p), "-b:a", "128k", str(tmp_out)],
+                capture_output=True,
+            )
+            if result.returncode != 0 or not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+                raise RuntimeError(f"参考音频转 mp3 失败: {result.stderr.decode('utf-8', 'ignore')[-200:]}")
+            tmp_out.rename(out)
+        return out
 
     def _build_body(self, req: SegmentRequest) -> dict:
         import copy
