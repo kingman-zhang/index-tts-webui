@@ -319,8 +319,8 @@ export function SpeakerPanel({ speakers, onChange, voiceFiles, onUpload, onRenam
   const activeCfg = COLORS[active];
   return (
     <div className="space-y-2">
-      {/* A/B 切换 tab：色点 + 角色名（未命名时显示 主持人A/B）+ 角色字母 */}
-      <div className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1">
+      {/* A/B 切换 tab：对齐画布说话人芯片样式——彩色圆字母头 + 粗体角色名的圆角胶囊 */}
+      <div className="grid grid-cols-2 gap-1.5">
         {(["A", "B"] as const).map(k => {
           const cc = COLORS[k];
           const isActive = active === k;
@@ -329,18 +329,19 @@ export function SpeakerPanel({ speakers, onChange, voiceFiles, onUpload, onRenam
               key={k}
               onClick={() => setActive(k)}
               className={cn(
-                "flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[0.8125rem] font-medium transition-all",
+                "flex h-9 min-w-0 items-center gap-2 rounded-full border px-2 transition-all",
                 isActive
-                  ? cn("border bg-white shadow-sm", cc.ring, cc.text)
-                  : "border border-transparent text-gray-500 hover:bg-white/60 hover:text-gray-700"
+                  ? cn("shadow-sm", cc.avatar)  // 激活：淡色底+主题色边框+主题色文字（同画布芯片）
+                  : "border-transparent bg-gray-100 hover:bg-gray-200/70"
               )}
               title={`切换到角色 ${k}`}
             >
-              {/* A/B 字母放最左，常亮角色主题色，强化标识 */}
-              <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[0.625rem] font-bold leading-none", cc.avatar)}>
+              <span className={cn("flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[0.6875rem] font-bold leading-none text-white", cc.dot)}>
                 {k}
               </span>
-              <span className="truncate">{speakers[k].name?.trim() || `主持人${k}`}</span>
+              <span className={cn("truncate text-[0.8125rem] font-semibold", isActive ? "" : "text-gray-500")}>
+                {speakers[k].name?.trim() || `主持人${k}`}
+              </span>
             </button>
           );
         })}
