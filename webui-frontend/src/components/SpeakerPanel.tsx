@@ -72,6 +72,9 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
     api.listVoicePresets().then(r => setSavedPresets(r.presets)).catch(() => {});
   }, []);
 
+  // 卸载时停止试听（tab 切换会卸载非当前角色的卡片，避免声音残留）
+  useEffect(() => () => { audioRef.current?.pause(); }, []);
+
   // 语速输入框跟随外部状态（如项目加载）
   useEffect(() => { setSpeedText((config.speed ?? 1.0).toFixed(2)); }, [config.speed]);
 
@@ -308,15 +311,52 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
 
 export function SpeakerPanel({ speakers, onChange, voiceFiles, onUpload, onRenameVoice, onDeleteVoice }: SpeakerPanelProps) {
   const [presetVoices, setPresetVoices] = useState<PresetVoices>({ female: [], male: [], emotion: [] });
+  // A/B 叠放于同一面板区域，顶部 tab 切换当前编辑的角色
+  const [active, setActive] = useState<"A" | "B">("A");
   useEffect(() => {
     api.listPresetVoices().then(r => setPresetVoices(r.categories || { female: [], male: [], emotion: [] })).catch(() => {});
   }, []);
+  const activeCfg = COLORS[active];
   return (
-    <div className="space-y-3">
-      <SpeakerCard speakerKey="A" config={speakers.A} voiceFiles={voiceFiles} presetVoices={presetVoices}
-        onChange={c => onChange("A", c)} onUpload={onUpload} onRenameVoice={onRenameVoice} onDeleteVoice={onDeleteVoice} />
-      <SpeakerCard speakerKey="B" config={speakers.B} voiceFiles={voiceFiles} presetVoices={presetVoices}
-        onChange={c => onChange("B", c)} onUpload={onUpload} onRenameVoice={onRenameVoice} onDeleteVoice={onDeleteVoice} />
+    <div className="space-y-2">
+      {/* A/B 切换 tab：色点 + 角色名（未命名时显示 主持人A/B）+ 角色字母 */}
+      <div className="grid grid-cols-2 gap-1 rounded-xl bg-gray-100 p-1">
+        {(["A", "B"] as const).map(k => {
+          const cc = COLORS[k];
+          const isActive = active === k;
+          return (
+            <button
+              key={k}
+              onClick={() => setActive(k)}
+              className={cn(
+                "flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 text-[0.8125rem] font-medium transition-all",
+                isActive
+                  ? cn("border bg-white shadow-sm", cc.ring, cc.text)
+                  : "border border-transparent text-gray-500 hover:bg-white/60 hover:text-gray-700"
+              )}
+              title={`切换到角色 ${k}`}
+            >
+              <span className={cn("h-2 w-2 shrink-0 rounded-full", cc.dot)} />
+              <span className="truncate">{speakers[k].name?.trim() || `主持人${k}`}</span>
+              <span className={cn("shrink-0 rounded px-1 text-[0.625rem] font-semibold",
+                isActive ? cn(cc.avatar) : "bg-gray-200 text-gray-400")}>
+                {k}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <SpeakerCard
+        key={active}
+        speakerKey={active}
+        config={speakers[active]}
+        voiceFiles={voiceFiles}
+        presetVoices={presetVoices}
+        onChange={c => onChange(active, c)}
+        onUpload={onUpload}
+        onRenameVoice={onRenameVoice}
+        onDeleteVoice={onDeleteVoice}
+      />
     </div>
   );
 }
