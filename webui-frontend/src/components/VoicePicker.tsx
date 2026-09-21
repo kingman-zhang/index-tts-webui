@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from "react";
-import { Search, X, Play, Square, User, Layers, Heart, Upload as UploadIcon, Pencil, Trash2, Library } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Search, X, Play, Square, Pencil, Trash2, SlidersHorizontal, MoreVertical, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/api/client";
 import type { VoiceFile, BreezeblueVoice } from "@/types";
@@ -23,15 +23,37 @@ interface VoicePickerProps {
   onDelete?: (voice: VoiceFile) => void;
 }
 
-type Tab = "mine" | "female" | "male" | "emotion" | "library" | "favorites";
+type Tab = "library" | "mine" | "preset" | "favorites";
+
+/** 推荐音色（从 310 个中文音色中人工挑选的四个方向：暖声男/优雅男/元气女/市井老者） */
+const RECOMMENDED_IDS = ["voc_534z3zu7d53k", "voc_wk37myhn43qy", "voc_un8qby3rnhn6", "voc_xx6h6fxy2c26"];
+
+/** 试试快捷词，点击直接填入搜索 */
+const TRY_CHIPS = ["温柔", "磁性", "旁白", "播客", "元气", "治愈"];
+
+/** 头像渐变色板（按性别选色板、按 id 选具体颜色） */
+const GRADIENTS_FEMALE = ["from-rose-400 to-orange-300", "from-fuchsia-400 to-pink-300", "from-pink-400 to-rose-300", "from-purple-400 to-fuchsia-300"];
+const GRADIENTS_MALE = ["from-sky-400 to-indigo-300", "from-teal-400 to-cyan-300", "from-indigo-400 to-blue-300", "from-cyan-400 to-sky-300"];
+const GRADIENTS_NEUTRAL = ["from-gray-400 to-gray-300", "from-slate-400 to-gray-300"];
+
+function avatarGradient(id: string, gender?: string) {
+  const pool = gender === "female" ? GRADIENTS_FEMALE : gender === "male" ? GRADIENTS_MALE : GRADIENTS_NEUTRAL;
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return pool[h % pool.length];
+}
 
 export function VoicePicker({
   open, onClose, currentPath, voiceFiles, presetVoices,
   onSelect, onPreview, playingName, onRename, onDelete,
 }: VoicePickerProps) {
-  const [tab, setTab] = useState<Tab>("mine");
+  const [tab, setTab] = useState<Tab>("library");
   const [search, setSearch] = useState("");
   const [favoritePaths, setFavoritePaths] = useState<string[]>([]);
+  const [showFilters, setShowFilters] = useState(false);
+  const [menuPath, setMenuPath] = useState<string | null>(null); // ⋮ 菜单展开的行
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
   // ── 音色库（BreezeBlue）状态 ──
   const [bbVoices, setBbVoices] = useState<BreezeblueVoice[]>([]);
   const [bbLoading, setBbLoading] = useState(false);
@@ -68,15 +90,18 @@ export function VoicePicker({
     preview_name: v.filename,
   })), [bbVoices]);
 
+  const presetAll = useMemo(
+    () => [...presetVoices.female, ...presetVoices.male, ...presetVoices.emotion],
+    [presetVoices]
+  );
   const allVoices = useMemo(() => {
-    const voices = [...voiceFiles, ...presetVoices.female, ...presetVoices.male, ...presetVoices.emotion, ...bbAsVoiceFiles];
+    const voices = [...voiceFiles, ...presetAll, ...bbAsVoiceFiles];
     return voices.filter((voice, index, list) => list.findIndex(item => item.path === voice.path) === index);
-  }, [voiceFiles, presetVoices, bbAsVoiceFiles]);
+  }, [voiceFiles, presetAll, bbAsVoiceFiles]);
   const favoriteVoices = useMemo(
     () => favoritePaths.map(path => allVoices.find(voice => voice.path === path)).filter((voice): voice is VoiceFile => Boolean(voice)),
     [favoritePaths, allVoices]
   );
-  const mineCount = voiceFiles.length;
 
   const toggleFavorite = (voice: VoiceFile) => {
     setFavoritePaths(current => {
@@ -91,19 +116,16 @@ export function VoicePicker({
     });
   };
 
-  // 打开弹窗时始终默认选中"我的音色"
+  // 打开弹窗默认「音色库」并清空搜索（筛选保留）
   useEffect(() => {
     if (open) {
-      setTab("mine");
+      setTab("library");
       setSearch("");
+      setMenuPath(null);
+      ensureBbLoaded();
     }
-  }, [open]);
-
-  // 切到音色库 tab 时懒加载全量数据（api client 内部有模块级缓存）
-  useEffect(() => {
-    if (open && tab === "library") ensureBbLoaded();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, tab]);
+  }, [open]);
 
   // 音色库筛选与分页
   const bbFiltered = useMemo(() => {
@@ -123,6 +145,11 @@ export function VoicePicker({
     });
   }, [bbVoices, search, bbCat, bbGender, bbAge]);
   const bbVisible = useMemo(() => bbFiltered.slice(0, bbLimit), [bbFiltered, bbLimit]);
+  const recommended = useMemo(
+    () => RECOMMENDED_IDS.map(id => bbVoices.find(v => v.id === id)).filter((v): v is BreezeblueVoice => Boolean(v)),
+    [bbVoices]
+  );
+  const bbBrowsing = search.trim() === "" && !bbCat && !bbGender && !bbAge; // 无搜索无筛选时展示推荐区
 
   const bbFacets = useMemo(() => {
     const cats = new Map<string, { code: string; name: string; count: number }>();
@@ -153,263 +180,376 @@ export function VoicePicker({
   const allInTab: VoiceFile[] = useMemo(() => {
     let list: VoiceFile[] = [];
     if (tab === "mine") list = voiceFiles;
-    else if (tab === "female") list = presetVoices.female;
-    else if (tab === "male") list = presetVoices.male;
-    else if (tab === "emotion") list = presetVoices.emotion;
-    else list = favoriteVoices;
+    else if (tab === "preset") list = presetAll;
+    else if (tab === "favorites") list = favoriteVoices;
 
     if (!search.trim()) return list;
     const q = search.toLowerCase();
     return list.filter(f => f.name.toLowerCase().includes(q));
-  }, [tab, search, voiceFiles, presetVoices, favoriteVoices]);
+  }, [tab, search, voiceFiles, presetAll, favoriteVoices]);
 
-  const tabs: { key: Tab; label: string; icon: any; count: number; color: string }[] = [
-    { key: "mine", label: "我的音色", icon: UploadIcon, count: mineCount, color: "indigo" },
-    { key: "female", label: "预设 · 女声", icon: Heart, count: presetVoices.female.length, color: "pink" },
-    { key: "male", label: "预设 · 男声", icon: User, count: presetVoices.male.length, color: "blue" },
-    { key: "emotion", label: "情感参考", icon: Layers, count: presetVoices.emotion.length, color: "amber" },
-    { key: "library", label: "音色库", icon: Library, count: bbVoices.length || 310, color: "teal" },
-    { key: "favorites", label: "收藏", icon: Heart, count: favoriteVoices.length, color: "rose" },
+  // 点击外部关闭 ⋮ 菜单
+  useEffect(() => {
+    if (!menuPath) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuPath(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menuPath]);
+
+  const tabs: { key: Tab; label: string; count: number }[] = [
+    { key: "library", label: "音色库", count: bbVoices.length || 310 },
+    { key: "mine", label: "我的音色", count: voiceFiles.length },
+    { key: "preset", label: "预设音色", count: presetAll.length },
+    { key: "favorites", label: "收藏音色", count: favoriteVoices.length },
   ];
 
   if (!open) return null;
 
+  /** ⋮ 菜单内容（仅"我的音色"有管理操作） */
+  const renderRowMenu = (f: VoiceFile) => {
+    if (tab !== "mine" || menuPath !== f.path) return null;
+    return (
+      <div ref={menuRef} className="absolute right-2 top-9 z-10 w-28 bg-white rounded-lg shadow-lg border border-gray-100 py-1">
+        <button
+          onClick={e => { e.stopPropagation(); setMenuPath(null); onRename?.(f); }}
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+        >
+          <Pencil className="w-3 h-3" />重命名
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); setMenuPath(null); onDelete?.(f); }}
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-500 hover:bg-red-50"
+        >
+          <Trash2 className="w-3 h-3" />删除音色
+        </button>
+      </div>
+    );
+  };
+
+  /** 通用行渲染：bb 传 BreezeblueVoice，其他传 VoiceFile */
+  const renderRow = (opts: {
+    key: string;
+    path: string; name: string;
+    avatarId: string; gender?: string;
+    title: string;
+    desc: string;
+    metaTags: string[]; extraTag?: string; // extraTag 显示为 +N 那种
+    previewKey: string;
+    favoriteOf: VoiceFile;
+    showMenu?: boolean;
+    selected?: boolean;
+  }) => {
+    const { key, path, name, avatarId, gender, title, desc, metaTags, extraTag, previewKey, favoriteOf, showMenu, selected } = opts;
+    const fav = favoritePaths.includes(path);
+    const isPlaying = playingName === previewKey;
+    return (
+      <div
+        key={key}
+        onClick={() => { if (!selected) { onSelect(path, name); onClose(); } }}
+        className={cn(
+          "group relative flex items-center gap-3 px-4 py-3 rounded-xl cursor-pointer transition-colors",
+          selected ? "bg-indigo-50/70" : "hover:bg-gray-50"
+        )}
+      >
+        {/* 头像：渐变底 + 首字；hover/播放时变为试听按钮 */}
+        <button
+          onClick={e => { e.stopPropagation(); onPreview(previewKey); }}
+          title={isPlaying ? "停止试听" : "试听"}
+          aria-label={`试听 ${name}`}
+          className="relative w-10 h-10 rounded-full shrink-0 overflow-hidden"
+        >
+          <span className={cn(
+            "absolute inset-0 bg-gradient-to-br flex items-center justify-center text-white text-sm font-medium transition-opacity",
+            avatarGradient(avatarId, gender),
+            isPlaying ? "opacity-0" : "group-hover:opacity-0"
+          )}>
+            {name.slice(0, 1)}
+          </span>
+          <span className={cn(
+            "absolute inset-0 flex items-center justify-center bg-gray-900/70 text-white transition-opacity",
+            isPlaying ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          )}>
+            {isPlaying ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+          </span>
+        </button>
+
+        {/* 名称 + 描述 */}
+        <div className="flex-1 min-w-0">
+          <p className={cn("text-sm truncate", selected ? "font-medium text-indigo-700" : "text-gray-800")}>{title}</p>
+          {desc && <p className="text-xs text-gray-400 truncate mt-0.5">{desc}</p>}
+        </div>
+
+        {/* 右侧元信息标签 */}
+        <div className="hidden md:flex items-center gap-1.5 shrink-0">
+          {metaTags.filter(Boolean).slice(0, 2).map(t => (
+            <span key={t} className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-0.5">{t}</span>
+          ))}
+          {extraTag && <span className="text-xs text-gray-400">+{extraTag}</span>}
+        </div>
+
+        {/* 选择 / 已选 */}
+        <button
+          onClick={e => {
+            e.stopPropagation();
+            if (selected) return;
+            onSelect(path, name); onClose();
+          }}
+          className={cn(
+            "shrink-0 h-8 px-4 rounded-full text-xs font-medium transition-colors",
+            selected
+              ? "bg-indigo-600 text-white"
+              : "bg-gray-900 text-white hover:bg-gray-700"
+          )}
+        >
+          {selected ? "已选" : "选择"}
+        </button>
+
+        {/* 收藏 */}
+        <button
+          onClick={e => { e.stopPropagation(); toggleFavorite(favoriteOf); }}
+          className={cn(
+            "p-1.5 rounded-full transition-colors shrink-0",
+            fav ? "text-amber-400 hover:text-amber-500" : "text-gray-300 hover:text-amber-400"
+          )}
+          title={fav ? "移出收藏" : "收藏音色"}
+          aria-label={fav ? `移出收藏 ${name}` : `收藏 ${name}`}
+        >
+          <Star className={cn("w-4 h-4", fav && "fill-current")} />
+        </button>
+
+        {/* 更多操作 */}
+        {showMenu && (
+          <button
+            onClick={e => { e.stopPropagation(); setMenuPath(menuPath === path ? null : path); }}
+            className="p-1.5 rounded-full text-gray-300 hover:text-gray-600 hover:bg-gray-100 transition-colors shrink-0"
+            title="更多操作"
+            aria-label={`更多操作 ${name}`}
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+        )}
+        {showMenu && renderRowMenu(favoriteOf)}
+      </div>
+    );
+  };
+
+  const bbRow = (v: BreezeblueVoice) => {
+    const tags = [v.gender_zh && v.age_zh ? `${v.gender_zh} · ${v.age_zh}` : v.category_zh, v.tones_zh[0]].filter(Boolean) as string[];
+    return renderRow({
+      key: v.id,
+      path: v.path,
+      name: v.name,
+      avatarId: v.id,
+      gender: v.gender,
+      title: v.name,
+      desc: v.description,
+      metaTags: tags,
+      extraTag: v.tones_zh.length > 1 ? String(v.tones_zh.length - 1) : undefined,
+      previewKey: v.filename,
+      favoriteOf: { name: v.name, path: v.path, size_kb: 0, source: "preset", preview_name: v.filename },
+      selected: currentPath === v.path,
+    });
+  };
+
+  const fileRow = (f: VoiceFile, groupLabel?: string) => {
+    const previewName = f.preview_name || f.name;
+    return renderRow({
+      key: f.path,
+      path: f.path,
+      name: f.name,
+      avatarId: f.path,
+      title: f.name,
+      desc: f.size_kb ? `${f.size_kb}KB` : "",
+      metaTags: groupLabel ? [groupLabel] : [],
+      previewKey: previewName,
+      favoriteOf: f,
+      showMenu: tab === "mine",
+      selected: currentPath === f.path,
+    });
+  };
+
+  const presetGroupLabel = (f: VoiceFile) =>
+    presetVoices.female.includes(f) ? "预设 · 女声" : presetVoices.male.includes(f) ? "预设 · 男声" : "情感参考";
+
+  const listEmptyText =
+    tab === "favorites" ? "还没有收藏音色，点击音色右侧的星标添加"
+    : tab === "mine" ? "还没有自定义音色，点击下方上传或录制"
+    : "没有找到匹配的音色";
+
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={onClose}>
       <div
-        className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[82vh] flex flex-col"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 max-h-[85vh] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
       >
-        {/* 头部 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-          <h3 className="text-base font-semibold text-gray-800">选择音色</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-4 h-4" />
+        {/* 标题栏 */}
+        <div className="flex items-center justify-between px-6 pt-5 pb-1">
+          <h3 className="text-lg font-semibold text-gray-900">音色选择</h3>
+          <button onClick={onClose} className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100">
+            <X className="w-4.5 h-4.5" />
           </button>
         </div>
 
-        {/* Tab 切换 */}
-        <div className="flex gap-1 px-4 pt-3 border-b border-gray-100">
+        {/* Tab（下划线式） */}
+        <div className="flex gap-6 px-6 border-b border-gray-100">
           {tabs.map(t => (
             <button
               key={t.key}
-              onClick={() => setTab(t.key)}
+              onClick={() => { setTab(t.key); setMenuPath(null); }}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap",
+                "pb-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
                 tab === t.key
-                  ? "border-indigo-500 text-indigo-600"
+                  ? "border-gray-900 text-gray-900"
                   : "border-transparent text-gray-400 hover:text-gray-600"
               )}
             >
-              <t.icon className="w-3.5 h-3.5" />
               {t.label}
-              <span className="text-xs text-gray-400">({t.count})</span>
+              <span className="ml-1 text-xs text-gray-300">{t.count > 0 ? t.count : ""}</span>
             </button>
           ))}
         </div>
 
-        {/* 搜索框 */}
-        <div className="px-4 py-2 border-b border-gray-100">
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder={tab === "library" ? "搜索名称 / 描述 / 标签…" : "搜索音色名称..."}
-              className="w-full h-10 pl-9 pr-3 rounded-lg border border-gray-200 bg-gray-50 text-sm focus:border-indigo-400 focus:bg-white focus:outline-none"
-              autoFocus
-            />
+        {/* 搜索 + 筛选 */}
+        <div className="px-6 pt-3 pb-3 border-b border-gray-50">
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-300" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => { setSearch(e.target.value); setBbLimit(30); }}
+                placeholder={tab === "library" ? "搜索音色库" : "搜索音色名称"}
+                className="w-full h-10 pl-9 pr-3 rounded-full border border-gray-200 bg-white text-sm focus:border-indigo-400 focus:outline-none"
+              />
+            </div>
+            {tab === "library" && (
+              <button
+                onClick={() => setShowFilters(s => !s)}
+                className={cn(
+                  "flex items-center gap-1.5 h-10 px-4 rounded-full text-sm font-medium transition-colors shrink-0",
+                  showFilters || bbCat || bbGender || bbAge
+                    ? "bg-indigo-50 text-indigo-600"
+                    : "text-gray-500 hover:bg-gray-50"
+                )}
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                筛选
+              </button>
+            )}
           </div>
-          {/* 音色库筛选栏 */}
-          {tab === "library" && (
-            <div className="flex items-center gap-2 mt-2">
+
+          {/* 筛选展开区（音色库） */}
+          {tab === "library" && showFilters && (
+            <div className="flex flex-wrap items-center gap-2 mt-2.5">
               <select
                 value={bbCat} onChange={e => { setBbCat(e.target.value); setBbLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-gray-50 px-2 focus:border-indigo-400 focus:bg-white focus:outline-none"
+                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
               >
                 <option value="">全部分类</option>
                 {bbFacets.cats.map(c => <option key={c.code} value={c.code}>{c.name} ({c.count})</option>)}
               </select>
               <select
                 value={bbGender} onChange={e => { setBbGender(e.target.value); setBbLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-gray-50 px-2 focus:border-indigo-400 focus:bg-white focus:outline-none"
+                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
               >
                 <option value="">全部性别</option>
                 {bbFacets.genders.map(g => <option key={g.code} value={g.code}>{g.name} ({g.count})</option>)}
               </select>
               <select
                 value={bbAge} onChange={e => { setBbAge(e.target.value); setBbLimit(30); }}
-                className="h-8 text-xs rounded-lg border border-gray-200 bg-gray-50 px-2 focus:border-indigo-400 focus:bg-white focus:outline-none"
+                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
               >
                 <option value="">全部年龄段</option>
                 {bbFacets.ages.map(a => <option key={a.code} value={a.code}>{a.name} ({a.count})</option>)}
               </select>
-              <span className="ml-auto text-xs text-gray-400">{bbFiltered.length} 个</span>
+              {(bbCat || bbGender || bbAge) && (
+                <button
+                  onClick={() => { setBbCat(""); setBbGender(""); setBbAge(""); }}
+                  className="text-xs text-gray-400 hover:text-gray-600 px-2"
+                >
+                  清除筛选
+                </button>
+              )}
+              <span className="ml-auto text-xs text-gray-400">{bbFiltered.length} 个音色</span>
+            </div>
+          )}
+
+          {/* 试试快捷词（音色库、无筛选时展示） */}
+          {tab === "library" && !showFilters && (
+            <div className="flex flex-wrap items-center gap-2 mt-2.5">
+              <span className="text-xs text-gray-400">试试：</span>
+              {TRY_CHIPS.map(chip => (
+                <button
+                  key={chip}
+                  onClick={() => { setSearch(chip); setBbLimit(30); }}
+                  className={cn(
+                    "text-xs px-2.5 py-1 rounded-full border transition-colors",
+                    search === chip
+                      ? "border-indigo-300 bg-indigo-50 text-indigo-600"
+                      : "border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50"
+                  )}
+                >
+                  {chip}
+                </button>
+              ))}
             </div>
           )}
         </div>
 
-        {/* 音色列表 */}
-        <div className="flex-1 overflow-y-auto scrollbar-thin p-2" onScroll={ensureBbLoaded}>
+        {/* 列表 */}
+        <div
+          className="flex-1 overflow-y-auto scrollbar-thin px-3 py-2"
+          onScroll={tab === "library" ? ensureBbLoaded : undefined}
+          onClick={() => setMenuPath(null)}
+        >
           {tab === "library" ? (
-            /* ── 音色库：卡片式列表 ── */
+            /* ── 音色库 ── */
             bbLoading ? (
-              <div className="text-center py-12"><p className="text-xs text-gray-400">音色库加载中…</p></div>
+              <div className="text-center py-14"><p className="text-xs text-gray-400">音色库加载中…</p></div>
             ) : bbError ? (
-              <div className="text-center py-12">
+              <div className="text-center py-14">
                 <p className="text-xs text-red-400">{bbError}</p>
                 <button onClick={() => { setBbError(null); loadBbVoices(); }} className="mt-2 text-xs text-indigo-500 hover:text-indigo-600">重试</button>
               </div>
-            ) : bbVisible.length === 0 ? (
-              <div className="text-center py-12"><p className="text-xs text-gray-400">没有找到匹配的音色</p></div>
             ) : (
-              <div className="flex flex-col gap-2">
-                {bbVisible.map(v => {
-                  const isSelected = currentPath === v.path;
-                  const isPlaying = playingName === v.filename;
-                  const fav = favoritePaths.includes(v.path);
-                  return (
-                    <div
-                      key={v.id}
-                      onClick={() => { onSelect(v.path, v.name); onClose(); }}
-                      className={cn(
-                        "flex items-start gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors group border",
-                        isSelected ? "bg-indigo-50 border-indigo-200" : "border-transparent hover:bg-gray-50"
-                      )}
-                    >
-                      <button
-                        onClick={e => { e.stopPropagation(); onPreview(v.filename); }}
-                        className={cn(
-                          "w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors mt-0.5",
-                          isPlaying ? "bg-red-100 text-red-600" : "bg-indigo-50 text-indigo-400 group-hover:bg-indigo-100 group-hover:text-indigo-600"
-                        )}
-                        title="试听"
-                        aria-label={`试听 ${v.name}`}
-                      >
-                        {isPlaying ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-baseline gap-2">
-                          <span className={cn("text-sm truncate", isSelected ? "font-medium text-indigo-700" : "text-gray-700")}>{v.name}</span>
-                          <span className="text-xs text-gray-400 shrink-0">
-                            {v.category_zh}{v.gender_zh ? ` · ${v.gender_zh}` : ""}{v.age_zh ? ` · ${v.age_zh}` : ""}
-                            {v.duration_s ? ` · ${v.duration_s}s` : ""}
-                          </span>
-                        </div>
-                        <p className="text-xs text-gray-500 line-clamp-2 leading-relaxed mt-0.5">{v.description}</p>
-                        {(v.tones_zh.length > 0) && (
-                          <div className="flex flex-wrap gap-1 mt-1">
-                            {v.tones_zh.slice(0, 4).map(t => (
-                              <span key={t} className="text-[0.6875rem] px-1.5 py-0.5 rounded bg-teal-50 text-teal-600">{t}</span>
-                            ))}
-                            {v.tones_zh.length > 4 && (
-                              <span className="text-[0.6875rem] text-gray-400 self-center">+{v.tones_zh.length - 4}</span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <button
-                        onClick={e => { e.stopPropagation(); toggleFavorite({ name: v.name, path: v.path, size_kb: 0, source: "preset" }); }}
-                        className={cn(
-                          "p-1 rounded transition-colors shrink-0",
-                          fav ? "text-rose-500 hover:text-rose-600 hover:bg-rose-50" : "text-gray-300 hover:text-rose-500 hover:bg-rose-50"
-                        )}
-                        title={fav ? "移出收藏" : "收藏音色"}
-                        aria-label={fav ? `移出收藏 ${v.name}` : `收藏 ${v.name}`}
-                      >
-                        <Heart className={cn("w-4 h-4", fav && "fill-current")} />
-                      </button>
-                      {isSelected && <span className="text-[0.6875rem] text-indigo-500 font-medium shrink-0 self-center">已选中</span>}
-                    </div>
-                  );
-                })}
-                {bbFiltered.length > bbVisible.length && (
-                  <button
-                    onClick={() => setBbLimit(n => n + 30)}
-                    className="w-full py-2 text-xs text-indigo-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                  >
-                    加载更多（已显示 {bbVisible.length} / {bbFiltered.length}）
-                  </button>
+              <>
+                {/* 推荐音色：仅在无搜索无筛选时展示 */}
+                {bbBrowsing && recommended.length > 0 && (
+                  <>
+                    <p className="text-xs text-gray-400 px-4 pt-1 pb-1.5">推荐音色</p>
+                    <div className="mb-3">{recommended.map(bbRow)}</div>
+                  </>
                 )}
-              </div>
+                <p className="text-xs text-gray-400 px-4 pb-1.5">
+                  {bbBrowsing ? `全部音色（${bbFiltered.length}）` : `搜索结果（${bbFiltered.length}）`}
+                </p>
+                {bbVisible.length === 0 ? (
+                  <div className="text-center py-12"><p className="text-xs text-gray-400">没有找到匹配的音色</p></div>
+                ) : (
+                  <>
+                    {bbVisible.map(bbRow)}
+                    {bbFiltered.length > bbVisible.length && (
+                      <button
+                        onClick={() => setBbLimit(n => n + 30)}
+                        className="w-full py-2.5 mt-1 text-xs text-gray-500 hover:text-indigo-600 hover:bg-indigo-50/60 rounded-xl transition-colors"
+                      >
+                        加载更多（已显示 {bbVisible.length} / {bbFiltered.length}）
+                      </button>
+                    )}
+                  </>
+                )}
+              </>
             )
           ) : allInTab.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-xs text-gray-400">
-                {tab === "favorites" ? "还没有收藏音色，点击音色右侧的收藏按钮添加" : tab === "mine" ? "还没有自定义音色，点击下方上传或录制" : "没有找到匹配的音色"}
-              </p>
-            </div>
+            <div className="text-center py-14"><p className="text-xs text-gray-400">{listEmptyText}</p></div>
           ) : (
-            allInTab.map(f => {
-              const isSelected = currentPath === f.path;
-              const previewName = f.preview_name || f.name;
-              const isPlaying = playingName === previewName;
-              return (
-                <div
-                  key={f.path}
-                  onClick={() => { onSelect(f.path, f.name); onClose(); }}
-                  className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-lg cursor-pointer transition-colors group",
-                    isSelected ? "bg-indigo-50 border border-indigo-200" : "hover:bg-gray-50 border border-transparent"
-                  )}
-                >
-                  {/* 试听按钮 */}
-                  <button
-                    onClick={e => { e.stopPropagation(); onPreview(previewName); }}
-                    className={cn(
-                      "w-6 h-6 rounded-full flex items-center justify-center shrink-0 transition-colors",
-                      isPlaying
-                        ? "bg-red-100 text-red-600"
-                        : "bg-gray-100 text-gray-400 group-hover:bg-indigo-100 group-hover:text-indigo-600"
-                    )}
-                  >
-                    {isPlaying ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3 ml-0.5" />}
-                  </button>
-
-                  <div className="flex-1 min-w-0">
-                    <p className={cn("text-sm truncate", isSelected ? "font-medium text-indigo-700" : "text-gray-700")}>
-                      {f.name}
-                    </p>
-                    <p className="text-xs text-gray-400">{f.size_kb ? `${f.size_kb}KB` : ""}</p>
-                  </div>
-
-                  <span className={cn(
-                    "text-[0.6875rem] px-1.5 py-0.5 rounded shrink-0",
-                    tab === "mine" ? "bg-indigo-50 text-indigo-600" : "bg-gray-100 text-gray-500"
-                  )}>
-                    {tab === "mine" ? "我的音色" : tab === "favorites" ? (f.source === "custom" ? "我的音色" : "预设") : "预设"}
-                  </span>
-                  <button
-                    onClick={e => { e.stopPropagation(); toggleFavorite(f); }}
-                    className={cn(
-                      "p-1 rounded transition-colors shrink-0",
-                      favoritePaths.includes(f.path) ? "text-rose-500 hover:text-rose-600 hover:bg-rose-50" : "text-gray-300 hover:text-rose-500 hover:bg-rose-50"
-                    )}
-                    title={favoritePaths.includes(f.path) ? "移出收藏" : "收藏音色"}
-                    aria-label={favoritePaths.includes(f.path) ? `移出收藏 ${f.name}` : `收藏 ${f.name}`}
-                  >
-                    <Heart className={cn("w-4 h-4", favoritePaths.includes(f.path) && "fill-current")} />
-                  </button>
-                  {tab === "mine" && (
-                    <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={e => { e.stopPropagation(); onRename?.(f); }} className="p-1 text-gray-400 hover:text-indigo-600" title="重命名">
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={e => { e.stopPropagation(); onDelete?.(f); }} className="p-1 text-gray-400 hover:text-red-600" title="删除音色">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
-                  {isSelected && (
-                    <span className="text-[0.6875rem] text-indigo-500 font-medium shrink-0">已选中</span>
-                  )}
-                </div>
-              );
-            })
+            allInTab.map(f => fileRow(f, tab === "preset" ? presetGroupLabel(f) : undefined))
           )}
         </div>
       </div>
     </div>
   );
 }
+
