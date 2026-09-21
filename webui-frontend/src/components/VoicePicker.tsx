@@ -23,9 +23,9 @@ interface VoicePickerProps {
   onDelete?: (voice: VoiceFile) => void;
 }
 
-type Tab = "library" | "mine" | "preset" | "favorites";
+type Tab = "library" | "mine" | "favorites";
 
-/** 推荐音色（从 310 个中文音色中人工挑选的四个方向：暖声男/优雅男/元气女/市井老者） */
+/** 推荐音色（从音色库中人工挑选的四个方向：暖声男/优雅男/元气女/市井老者） */
 const RECOMMENDED_IDS = ["voc_534z3zu7d53k", "voc_wk37myhn43qy", "voc_un8qby3rnhn6", "voc_xx6h6fxy2c26"];
 
 /** 试试快捷词，点击直接填入搜索 */
@@ -43,6 +43,24 @@ function avatarGradient(id: string, gender?: string) {
   return pool[h % pool.length];
 }
 
+/** 音色库统一视图模型：BreezeBlue + 内置预设合并后的行数据 */
+interface LibVoice {
+  key: string;
+  path: string;
+  name: string;
+  gender: string;
+  desc: string;
+  isBb: boolean;
+  sourceLabel: string;   // 来源标签（音色库 / 预设 · 女声 / 预设 · 男声 / 情感参考）
+  category: string;      // 分类 code（预设无分类，为空）
+  categoryLabel: string;
+  age: string;
+  metaTags: string[];    // 行右侧展示的标签
+  extraTag?: string;     // 「+N」
+  previewKey: string;
+  voiceFile: VoiceFile;  // 收藏/选用用
+}
+
 export function VoicePicker({
   open, onClose, currentPath, voiceFiles, presetVoices,
   onSelect, onPreview, playingName, onRename, onDelete,
@@ -54,14 +72,15 @@ export function VoicePicker({
   const [menuPath, setMenuPath] = useState<string | null>(null); // ⋮ 菜单展开的行
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  // ── 音色库（BreezeBlue）状态 ──
+  // ── 音色库状态 ──
   const [bbVoices, setBbVoices] = useState<BreezeblueVoice[]>([]);
   const [bbLoading, setBbLoading] = useState(false);
   const [bbError, setBbError] = useState<string | null>(null);
-  const [bbCat, setBbCat] = useState("");
-  const [bbGender, setBbGender] = useState("");
-  const [bbAge, setBbAge] = useState("");
-  const [bbLimit, setBbLimit] = useState(30);
+  const [libSource, setLibSource] = useState(""); // "" | "breezeblue" | "preset"
+  const [libCat, setLibCat] = useState("");
+  const [libGender, setLibGender] = useState("");
+  const [libAge, setLibAge] = useState("");
+  const [libLimit, setLibLimit] = useState(30);
 
   const loadBbVoices = () => {
     if (bbLoading || bbVoices.length > 0) return;
@@ -81,23 +100,60 @@ export function VoicePicker({
     api.listVoiceFavorites().then(result => setFavoritePaths(result.paths)).catch(() => setFavoritePaths([]));
   }, [open]);
 
-  // 音色库条目映射为 VoiceFile（供收藏 tab 复用）
-  const bbAsVoiceFiles = useMemo<VoiceFile[]>(() => bbVoices.map(v => ({
-    name: v.name,
-    path: v.path,
-    size_kb: 0,
-    source: "preset" as const,
-    preview_name: v.filename,
-  })), [bbVoices]);
-
   const presetAll = useMemo(
     () => [...presetVoices.female, ...presetVoices.male, ...presetVoices.emotion],
     [presetVoices]
   );
+
+  // ── 统一音色库：BreezeBlue（310）+ 内置预设（65）合并 ──
+  const libVoices = useMemo<LibVoice[]>(() => {
+    const bbList: LibVoice[] = bbVoices.map(v => {
+      const meta0 = v.gender_zh && v.age_zh ? `${v.gender_zh} · ${v.age_zh}` : v.category_zh;
+      return {
+        key: `bb-${v.id}`,
+        path: v.path,
+        name: v.name,
+        gender: v.gender,
+        desc: v.description,
+        isBb: true,
+        sourceLabel: "音色库",
+        category: v.category,
+        categoryLabel: v.category_zh,
+        age: v.age,
+        metaTags: [meta0, v.tones_zh[0]].filter(Boolean) as string[],
+        extraTag: v.tones_zh.length > 1 ? String(v.tones_zh.length - 1) : undefined,
+        previewKey: v.filename,
+        voiceFile: { name: v.name, path: v.path, size_kb: 0, source: "preset" as const, preview_name: v.filename },
+      };
+    });
+    const presetList: LibVoice[] = presetAll.map(f => {
+      const isFemale = presetVoices.female.includes(f);
+      const isMale = presetVoices.male.includes(f);
+      const label = isFemale ? "预设 · 女声" : isMale ? "预设 · 男声" : "情感参考";
+      const displayName = f.name.replace(/\.(mp3|wav|flac|m4a|ogg)$/i, "");
+      return {
+        key: `p-${f.path}`,
+        path: f.path,
+        name: displayName,
+        gender: isFemale ? "female" : isMale ? "male" : "",
+        desc: f.size_kb ? `内置预设参考音频 · ${f.size_kb}KB` : "内置预设参考音频",
+        isBb: false,
+        sourceLabel: label,
+        category: "",
+        categoryLabel: label,
+        age: "",
+        metaTags: [label],
+        previewKey: f.preview_name || f.name,
+        voiceFile: f,
+      };
+    });
+    return [...bbList, ...presetList];
+  }, [bbVoices, presetAll, presetVoices]);
+
   const allVoices = useMemo(() => {
-    const voices = [...voiceFiles, ...presetAll, ...bbAsVoiceFiles];
+    const voices = [...voiceFiles, ...libVoices.map(v => v.voiceFile)];
     return voices.filter((voice, index, list) => list.findIndex(item => item.path === voice.path) === index);
-  }, [voiceFiles, presetAll, bbAsVoiceFiles]);
+  }, [voiceFiles, libVoices]);
   const favoriteVoices = useMemo(
     () => favoritePaths.map(path => allVoices.find(voice => voice.path === path)).filter((voice): voice is VoiceFile => Boolean(voice)),
     [favoritePaths, allVoices]
@@ -127,45 +183,48 @@ export function VoicePicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // 音色库筛选与分页
-  const bbFiltered = useMemo(() => {
+  // ── 音色库筛选与分页（作用于合并后的统一列表） ──
+  const libFiltered = useMemo(() => {
     const kw = search.trim().toLowerCase();
-    return bbVoices.filter(v => {
-      if (bbCat && v.category !== bbCat) return false;
-      if (bbGender && v.gender !== bbGender) return false;
-      if (bbAge && v.age !== bbAge) return false;
+    return libVoices.filter(v => {
+      if (libSource === "breezeblue" && !v.isBb) return false;
+      if (libSource === "preset" && v.isBb) return false;
+      if (libCat && v.category !== libCat) return false;
+      if (libGender && v.gender !== libGender) return false;
+      if (libAge && v.age !== libAge) return false;
       if (!kw) return true;
       return (
         v.name.toLowerCase().includes(kw) ||
-        v.description.toLowerCase().includes(kw) ||
-        v.tones_zh.some(t => t.toLowerCase().includes(kw)) ||
-        v.tones.some(t => t.toLowerCase().includes(kw)) ||
-        v.category_zh.toLowerCase().includes(kw)
+        v.desc.toLowerCase().includes(kw) ||
+        v.categoryLabel.toLowerCase().includes(kw) ||
+        v.sourceLabel.toLowerCase().includes(kw) ||
+        v.metaTags.some(t => t.toLowerCase().includes(kw))
       );
     });
-  }, [bbVoices, search, bbCat, bbGender, bbAge]);
-  const bbVisible = useMemo(() => bbFiltered.slice(0, bbLimit), [bbFiltered, bbLimit]);
-  const recommended = useMemo(
-    () => RECOMMENDED_IDS.map(id => bbVoices.find(v => v.id === id)).filter((v): v is BreezeblueVoice => Boolean(v)),
-    [bbVoices]
-  );
-  const bbBrowsing = search.trim() === "" && !bbCat && !bbGender && !bbAge; // 无搜索无筛选时展示推荐区
+  }, [libVoices, search, libSource, libCat, libGender, libAge]);
+  const libVisible = useMemo(() => libFiltered.slice(0, libLimit), [libFiltered, libLimit]);
+  const libBrowsing = search.trim() === "" && !libSource && !libCat && !libGender && !libAge;
 
-  const bbFacets = useMemo(() => {
+  const recommended = useMemo(
+    () => libVoices.filter(v => v.isBb && RECOMMENDED_IDS.includes(v.key.slice(3))),
+    [libVoices]
+  );
+
+  const libFacets = useMemo(() => {
     const cats = new Map<string, { code: string; name: string; count: number }>();
     const genders = new Map<string, { code: string; name: string; count: number }>();
     const ages = new Map<string, { code: string; name: string; count: number }>();
-    for (const v of bbVoices) {
+    for (const v of libVoices) {
       if (v.category) {
-        const c = cats.get(v.category) ?? { code: v.category, name: v.category_zh, count: 0 };
+        const c = cats.get(v.category) ?? { code: v.category, name: v.categoryLabel, count: 0 };
         c.count++; cats.set(v.category, c);
       }
       if (v.gender) {
-        const g = genders.get(v.gender) ?? { code: v.gender, name: v.gender_zh, count: 0 };
+        const g = genders.get(v.gender) ?? { code: v.gender, name: v.gender === "female" ? "女" : "男", count: 0 };
         g.count++; genders.set(v.gender, g);
       }
       if (v.age) {
-        const a = ages.get(v.age) ?? { code: v.age, name: v.age_zh, count: 0 };
+        const a = ages.get(v.age) ?? { code: v.age, name: v.age === "child" ? "儿童" : v.age === "young" ? "青年" : v.age === "middle_aged" ? "中年" : "老年", count: 0 };
         a.count++; ages.set(v.age, a);
       }
     }
@@ -175,18 +234,17 @@ export function VoicePicker({
       genders: [...genders.values()].sort(byCount),
       ages: [...ages.values()].sort(byCount),
     };
-  }, [bbVoices]);
+  }, [libVoices]);
 
   const allInTab: VoiceFile[] = useMemo(() => {
     let list: VoiceFile[] = [];
     if (tab === "mine") list = voiceFiles;
-    else if (tab === "preset") list = presetAll;
     else if (tab === "favorites") list = favoriteVoices;
 
     if (!search.trim()) return list;
     const q = search.toLowerCase();
     return list.filter(f => f.name.toLowerCase().includes(q));
-  }, [tab, search, voiceFiles, presetAll, favoriteVoices]);
+  }, [tab, search, voiceFiles, favoriteVoices]);
 
   // 点击外部关闭 ⋮ 菜单
   useEffect(() => {
@@ -199,9 +257,8 @@ export function VoicePicker({
   }, [menuPath]);
 
   const tabs: { key: Tab; label: string; count: number }[] = [
-    { key: "library", label: "音色库", count: bbVoices.length || 310 },
+    { key: "library", label: "音色库", count: libVoices.length },
     { key: "mine", label: "我的音色", count: voiceFiles.length },
-    { key: "preset", label: "预设音色", count: presetAll.length },
     { key: "favorites", label: "收藏音色", count: favoriteVoices.length },
   ];
 
@@ -228,14 +285,14 @@ export function VoicePicker({
     );
   };
 
-  /** 通用行渲染：bb 传 BreezeblueVoice，其他传 VoiceFile */
+  /** 通用行渲染 */
   const renderRow = (opts: {
     key: string;
     path: string; name: string;
     avatarId: string; gender?: string;
     title: string;
     desc: string;
-    metaTags: string[]; extraTag?: string; // extraTag 显示为 +N 那种
+    metaTags: string[]; extraTag?: string;
     previewKey: string;
     favoriteOf: VoiceFile;
     showMenu?: boolean;
@@ -284,7 +341,12 @@ export function VoicePicker({
         {/* 右侧元信息标签 */}
         <div className="hidden md:flex items-center gap-1.5 shrink-0">
           {metaTags.filter(Boolean).slice(0, 2).map(t => (
-            <span key={t} className="text-xs text-gray-500 bg-gray-100 rounded px-2 py-0.5">{t}</span>
+            <span key={t} className={cn(
+              "text-xs rounded px-2 py-0.5",
+              t === "音色库" || t.startsWith("预设") || t === "情感参考"
+                ? "bg-amber-50 text-amber-600"
+                : "bg-gray-100 text-gray-500"
+            )}>{t}</span>
           ))}
           {extraTag && <span className="text-xs text-gray-400">+{extraTag}</span>}
         </div>
@@ -335,43 +397,34 @@ export function VoicePicker({
     );
   };
 
-  const bbRow = (v: BreezeblueVoice) => {
-    const tags = [v.gender_zh && v.age_zh ? `${v.gender_zh} · ${v.age_zh}` : v.category_zh, v.tones_zh[0]].filter(Boolean) as string[];
-    return renderRow({
-      key: v.id,
-      path: v.path,
-      name: v.name,
-      avatarId: v.id,
-      gender: v.gender,
-      title: v.name,
-      desc: v.description,
-      metaTags: tags,
-      extraTag: v.tones_zh.length > 1 ? String(v.tones_zh.length - 1) : undefined,
-      previewKey: v.filename,
-      favoriteOf: { name: v.name, path: v.path, size_kb: 0, source: "preset", preview_name: v.filename },
-      selected: currentPath === v.path,
-    });
-  };
+  const libRow = (v: LibVoice) => renderRow({
+    key: v.key,
+    path: v.path,
+    name: v.name,
+    avatarId: v.key,
+    gender: v.gender,
+    title: v.name,
+    desc: v.desc,
+    metaTags: v.metaTags,
+    extraTag: v.extraTag,
+    previewKey: v.previewKey,
+    favoriteOf: v.voiceFile,
+    selected: currentPath === v.path,
+  });
 
-  const fileRow = (f: VoiceFile, groupLabel?: string) => {
-    const previewName = f.preview_name || f.name;
-    return renderRow({
-      key: f.path,
-      path: f.path,
-      name: f.name,
-      avatarId: f.path,
-      title: f.name,
-      desc: f.size_kb ? `${f.size_kb}KB` : "",
-      metaTags: groupLabel ? [groupLabel] : [],
-      previewKey: previewName,
-      favoriteOf: f,
-      showMenu: tab === "mine",
-      selected: currentPath === f.path,
-    });
-  };
-
-  const presetGroupLabel = (f: VoiceFile) =>
-    presetVoices.female.includes(f) ? "预设 · 女声" : presetVoices.male.includes(f) ? "预设 · 男声" : "情感参考";
+  const fileRow = (f: VoiceFile) => renderRow({
+    key: f.path,
+    path: f.path,
+    name: f.name,
+    avatarId: f.path,
+    title: f.name,
+    desc: f.size_kb ? `${f.size_kb}KB` : "",
+    metaTags: [],
+    previewKey: f.preview_name || f.name,
+    favoriteOf: f,
+    showMenu: tab === "mine",
+    selected: currentPath === f.path,
+  });
 
   const listEmptyText =
     tab === "favorites" ? "还没有收藏音色，点击音色右侧的星标添加"
@@ -388,7 +441,7 @@ export function VoicePicker({
         <div className="flex items-center justify-between px-6 pt-5 pb-1">
           <h3 className="text-lg font-semibold text-gray-900">音色选择</h3>
           <button onClick={onClose} className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100">
-            <X className="w-4.5 h-4.5" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
@@ -419,7 +472,7 @@ export function VoicePicker({
               <input
                 type="text"
                 value={search}
-                onChange={e => { setSearch(e.target.value); setBbLimit(30); }}
+                onChange={e => { setSearch(e.target.value); setLibLimit(30); }}
                 placeholder={tab === "library" ? "搜索音色库" : "搜索音色名称"}
                 className="w-full h-10 pl-9 pr-3 rounded-full border border-gray-200 bg-white text-sm focus:border-indigo-400 focus:outline-none"
               />
@@ -429,7 +482,7 @@ export function VoicePicker({
                 onClick={() => setShowFilters(s => !s)}
                 className={cn(
                   "flex items-center gap-1.5 h-10 px-4 rounded-full text-sm font-medium transition-colors shrink-0",
-                  showFilters || bbCat || bbGender || bbAge
+                  showFilters || libSource || libCat || libGender || libAge
                     ? "bg-indigo-50 text-indigo-600"
                     : "text-gray-500 hover:bg-gray-50"
                 )}
@@ -444,35 +497,43 @@ export function VoicePicker({
           {tab === "library" && showFilters && (
             <div className="flex flex-wrap items-center gap-2 mt-2.5">
               <select
-                value={bbCat} onChange={e => { setBbCat(e.target.value); setBbLimit(30); }}
+                value={libSource} onChange={e => { setLibSource(e.target.value); setLibLimit(30); }}
+                className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
+              >
+                <option value="">全部来源</option>
+                <option value="breezeblue">BreezeBlue 精选</option>
+                <option value="preset">内置预设</option>
+              </select>
+              <select
+                value={libCat} onChange={e => { setLibCat(e.target.value); setLibLimit(30); }}
                 className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
               >
                 <option value="">全部分类</option>
-                {bbFacets.cats.map(c => <option key={c.code} value={c.code}>{c.name} ({c.count})</option>)}
+                {libFacets.cats.map(c => <option key={c.code} value={c.code}>{c.name} ({c.count})</option>)}
               </select>
               <select
-                value={bbGender} onChange={e => { setBbGender(e.target.value); setBbLimit(30); }}
+                value={libGender} onChange={e => { setLibGender(e.target.value); setLibLimit(30); }}
                 className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
               >
                 <option value="">全部性别</option>
-                {bbFacets.genders.map(g => <option key={g.code} value={g.code}>{g.name} ({g.count})</option>)}
+                {libFacets.genders.map(g => <option key={g.code} value={g.code}>{g.name} ({g.count})</option>)}
               </select>
               <select
-                value={bbAge} onChange={e => { setBbAge(e.target.value); setBbLimit(30); }}
+                value={libAge} onChange={e => { setLibAge(e.target.value); setLibLimit(30); }}
                 className="h-8 text-xs rounded-lg border border-gray-200 bg-white px-2 focus:border-indigo-400 focus:outline-none"
               >
                 <option value="">全部年龄段</option>
-                {bbFacets.ages.map(a => <option key={a.code} value={a.code}>{a.name} ({a.count})</option>)}
+                {libFacets.ages.map(a => <option key={a.code} value={a.code}>{a.name} ({a.count})</option>)}
               </select>
-              {(bbCat || bbGender || bbAge) && (
+              {(libSource || libCat || libGender || libAge) && (
                 <button
-                  onClick={() => { setBbCat(""); setBbGender(""); setBbAge(""); }}
+                  onClick={() => { setLibSource(""); setLibCat(""); setLibGender(""); setLibAge(""); }}
                   className="text-xs text-gray-400 hover:text-gray-600 px-2"
                 >
                   清除筛选
                 </button>
               )}
-              <span className="ml-auto text-xs text-gray-400">{bbFiltered.length} 个音色</span>
+              <span className="ml-auto text-xs text-gray-400">{libFiltered.length} 个音色</span>
             </div>
           )}
 
@@ -483,7 +544,7 @@ export function VoicePicker({
               {TRY_CHIPS.map(chip => (
                 <button
                   key={chip}
-                  onClick={() => { setSearch(chip); setBbLimit(30); }}
+                  onClick={() => { setSearch(chip); setLibLimit(30); }}
                   className={cn(
                     "text-xs px-2.5 py-1 rounded-full border transition-colors",
                     search === chip
@@ -505,7 +566,7 @@ export function VoicePicker({
           onClick={() => setMenuPath(null)}
         >
           {tab === "library" ? (
-            /* ── 音色库 ── */
+            /* ── 音色库（BreezeBlue + 内置预设合并） ── */
             bbLoading ? (
               <div className="text-center py-14"><p className="text-xs text-gray-400">音色库加载中…</p></div>
             ) : bbError ? (
@@ -516,26 +577,26 @@ export function VoicePicker({
             ) : (
               <>
                 {/* 推荐音色：仅在无搜索无筛选时展示 */}
-                {bbBrowsing && recommended.length > 0 && (
+                {libBrowsing && recommended.length > 0 && (
                   <>
                     <p className="text-xs text-gray-400 px-4 pt-1 pb-1.5">推荐音色</p>
-                    <div className="mb-3">{recommended.map(bbRow)}</div>
+                    <div className="mb-3">{recommended.map(libRow)}</div>
                   </>
                 )}
                 <p className="text-xs text-gray-400 px-4 pb-1.5">
-                  {bbBrowsing ? `全部音色（${bbFiltered.length}）` : `搜索结果（${bbFiltered.length}）`}
+                  {libBrowsing ? `全部音色（${libFiltered.length}）` : `搜索结果（${libFiltered.length}）`}
                 </p>
-                {bbVisible.length === 0 ? (
+                {libVisible.length === 0 ? (
                   <div className="text-center py-12"><p className="text-xs text-gray-400">没有找到匹配的音色</p></div>
                 ) : (
                   <>
-                    {bbVisible.map(bbRow)}
-                    {bbFiltered.length > bbVisible.length && (
+                    {libVisible.map(libRow)}
+                    {libFiltered.length > libVisible.length && (
                       <button
-                        onClick={() => setBbLimit(n => n + 30)}
+                        onClick={() => setLibLimit(n => n + 30)}
                         className="w-full py-2.5 mt-1 text-xs text-gray-500 hover:text-indigo-600 hover:bg-indigo-50/60 rounded-xl transition-colors"
                       >
-                        加载更多（已显示 {bbVisible.length} / {bbFiltered.length}）
+                        加载更多（已显示 {libVisible.length} / {libFiltered.length}）
                       </button>
                     )}
                   </>
@@ -545,11 +606,10 @@ export function VoicePicker({
           ) : allInTab.length === 0 ? (
             <div className="text-center py-14"><p className="text-xs text-gray-400">{listEmptyText}</p></div>
           ) : (
-            allInTab.map(f => fileRow(f, tab === "preset" ? presetGroupLabel(f) : undefined))
+            allInTab.map(fileRow)
           )}
         </div>
       </div>
     </div>
   );
 }
-
