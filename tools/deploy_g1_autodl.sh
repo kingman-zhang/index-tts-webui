@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # G1 真机回归部署脚本（AutoDL 实例，在服务器上执行）
 # 用法: bash tools/deploy_g1_autodl.sh [--skip-frontend]
-# 前置: 仓库位于 ~/index-tts-webui（远程 kingman-zhang/index-tts-webui，分支 feat-single）
+# 前置: 仓库位于 ~/index-tts-webui（远程 kingman-zhang/index-tts-webui）
+# 分支: 默认 main（生产分支）；可用 BRANCH=feat-single 覆盖
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$HOME/index-tts-webui}"
-BRANCH="feat-single"
+BRANCH="${BRANCH:-main}"
 SKIP_FRONTEND=0
 [[ "${1:-}" == "--skip-frontend" ]] && SKIP_FRONTEND=1
 
