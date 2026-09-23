@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 
 from ..config import (
+    DATA_DIR,
     PODCAST_DEFAULT_SILENCE,
     PODCAST_GEN_PARAMS,
     TTS_STATUS_POLL,
@@ -48,6 +49,21 @@ async def get_config():
             "silence": dict(PODCAST_DEFAULT_SILENCE),
             "params": dict(PODCAST_GEN_PARAMS),
         },
+    }
+
+
+@router.get("/api/health")
+async def backend_health():
+    """后端自身存活探针（容器 healthcheck 用）。
+
+    与 /api/tts/health 的区别：不探测本地 tts-server——云端引擎部署
+    （TTS_ENGINE_PREFERRED=indextts_302ai 等）没有本地 GPU 服务，
+    探 TTS_URL 会恒 503 导致容器永远 unhealthy。
+    """
+    return {
+        "status": "ok",
+        "data_dir": str(DATA_DIR),
+        "data_dir_exists": DATA_DIR.exists(),
     }
 
 

@@ -38,7 +38,7 @@ vim webui-backend/.env
 ```bash
 docker compose up -d --build
 docker compose ps                 # 两个容器 healthy/running
-curl -s http://127.0.0.1:8088/api/tts/health    # 反代链路通
+curl -s http://127.0.0.1:8088/api/health        # 后端自身探针（容器 healthcheck 用的就是这个）
 curl -s http://127.0.0.1:8088/api/breezeblue/voices?page_size=1 | head -c 200  # 音色库数据在
 ```
 

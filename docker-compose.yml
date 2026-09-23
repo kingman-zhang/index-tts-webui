@@ -24,8 +24,9 @@ services:
     expose:
       - "3001"
     healthcheck:
-      # 用 Python 而非 curl：不依赖基础镜像是否装了 curl（urlopen 对 4xx/5xx/拒连都会非零退出）
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:3001/api/tts/health', timeout=3)\" || exit 1"]
+      # 探 /api/health（后端自身存活）：/api/tts/health 是代理本地 tts-server
+      # 的探针，云端引擎部署（服务器无 GPU TTS）恒 503，不能用作容器探活
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:3001/api/health', timeout=3)\" || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
