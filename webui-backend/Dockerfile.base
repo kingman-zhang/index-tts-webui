@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Debian12 bookworm：替换deb822格式源文件为清华源
+RUN sed -i 's@deb.debian.org@mirrors.tuna.tsinghua.edu.cn@g' /etc/apt/sources.list.d/debian.sources
+
+# 安装 ffmpeg curl
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt || pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+
+# 构建命令：docker build -f Dockerfile.base -t podcast-base:with-deps .
