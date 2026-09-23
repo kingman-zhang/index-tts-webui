@@ -1,0 +1,42 @@
+# podcast-webui 生产部署（docker compose）
+# 用法：
+#   首次:  cp webui-backend/.env.example webui-backend/.env && 填 Key
+#          docker compose up -d --build
+#   升级:  git pull && docker compose up -d --build   （数据全在挂载卷，重建不丢）
+#   日志:  docker compose logs -f backend
+# 对外端口通过 .env 的 PODCAST_WEB_PORT 调整（默认 8088）；
+# backend 仅在 compose 内网可达，不对外暴露。
+services:
+  backend:
+    build: ./webui-backend
+    image: podcast-backend:latest
+    container_name: podcast-backend
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3001"
+    volumes:
+      # 数据卷：项目存档/会员/队列状态/breezeblue 音色库（165MB）全在这里
+      - ./webui-backend/data:/app/data
+      - ./webui-backend/logs:/app/logs
+      # .env 挂载而非烘焙进镜像；改配置后 docker compose restart backend 生效
+      - ./webui-backend/.env:/app/.env:ro
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3001/api/tts/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  web:
+    build: ./webui-frontend
+    image: podcast-web:latest
+    container_name: podcast-web
+    restart: unless-stopped
+    ports:
+      - "${PODCAST_WEB_PORT:-8088}:80"
+    depends_on:
+      backend:
+        condition: service_healthy

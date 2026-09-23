@@ -1,0 +1,9 @@
+# 数据与密钥绝不进镜像（挂载卷提供）
+data/
+logs/
+.env
+tests/
+__pycache__/
+*.pyc
+.venv/
+*.md
