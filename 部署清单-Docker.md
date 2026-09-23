@@ -65,7 +65,33 @@ docker tag podcast-backend:latest podcast-backend:backup   # 每次 build 前先
 
 `tools/deploy_g1_autodl.sh`（nohup + dev server 方式）保留可回退，但两者**不能同时跑**：会抢 3001 端口。切 Docker 前先停旧进程（`pkill -f webui-backend/server.py`；dev server 按 Ctrl-C）。数据目录是同一份（`webui-backend/data`），两种方式互通。
 
-## 5. 构建说明
+## 5. 基础镜像工作流（podcast-base:with-deps）
+
+backend 的 Dockerfile 已改为 `FROM podcast-base:with-deps`（自建基础镜像，装好 ffmpeg + 全部 pip 依赖，避免每次部署重拉）。**基础镜像必须满足**：
+
+```bash
+# 构建/更新基础镜像（依赖变了才需要重做）
+docker build -t podcast-base:with-deps - <<'EOF'
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir \
+      "fastapi>=0.110.0" "uvicorn[standard]>=0.29.0" "httpx>=0.27.0" \
+      "pydantic>=2.6.0" "python-multipart>=0.0.9" "python-docx>=1.1.0" "pypdf>=4.0.0"
+EOF
+
+# 自检三项（缺一 backend 起不来/判 unhealthy）
+docker run --rm podcast-base:with-deps sh -c \
+  "which curl; ffmpeg -version | head -1; python -c 'import fastapi, uvicorn, httpx; print(\"deps OK\")'"
+```
+
+| 要求 | 原因 |
+|---|---|
+| `fastapi/uvicorn/httpx/pydantic/python-multipart/python-docx/pypdf` 齐全 | 业务 Dockerfile 不再装依赖，缺哪个启动即 ModuleNotFoundError |
+| `ffmpeg` | 播客段级变速、响度归一、art 通道 mp3 转码 |
+| `curl`（或用新版 compose 的 python healthcheck） | healthcheck 探活；新 compose 已改为 python urllib，不依赖 curl |
+
+## 6. 构建说明
 
 - backend 镜像：`python:3.11-slim` + ffmpeg + requirements.txt，依赖层缓存（改代码不重装依赖）；pip 主源失败自动落清华镜像
 - web 镜像：node:20 `npm ci && vite build`（产物 ~340KB，gzip 99KB）→ nginx:alpine

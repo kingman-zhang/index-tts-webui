@@ -24,7 +24,8 @@ services:
     expose:
       - "3001"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:3001/api/tts/health >/dev/null || exit 1"]
+      # 用 Python 而非 curl：不依赖基础镜像是否装了 curl（urlopen 对 4xx/5xx/拒连都会非零退出）
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:3001/api/tts/health', timeout=3)\" || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
