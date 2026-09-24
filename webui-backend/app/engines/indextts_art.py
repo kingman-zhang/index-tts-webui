@@ -9,7 +9,8 @@
       （分片控制见 chunker.py，分片次数多会增加计费时长边界的冗余）。
   请求体字段：8 个情绪滑杆 + emo_control_method + prompt_simple(base64 data URI)
   + prompt_text（参考音频转写；合成文本经在线调用页面对应字段传入，
-  以 tools/autodl_body.json 模板为准——字段名随工作流版本可能变化）。
+  以 autodl_body.json 模板为准（随包位于 app/engines/，仓库根 tools/ 有同步副本）——
+  字段名随工作流版本可能变化）。
 
 情绪控制结论（2026-09-18 深夜实测修正，覆盖当日早间"平台不支持情绪"的误判）：
   **"使用情感向量控制"档是可用的**，前提：
@@ -77,9 +78,7 @@ class IndexttsArtEngine:
     ):
         self.token = token or os.environ.get("AUTODL_API_TOKEN", "")
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
-        self.body_template = body_template or json.loads(
-            (Path(__file__).resolve().parents[3] / "tools" / "autodl_body.json").read_text(encoding="utf-8")
-        )
+        self.body_template = body_template or json.loads(self._load_body_template().read_text(encoding="utf-8"))
         self.submit_url = submit_url
         self.result_url = result_url
         self.poll_interval = poll_interval
@@ -91,6 +90,21 @@ class IndexttsArtEngine:
     async def health(self) -> bool:
         """有 Token 即视为可调度（平台侧调度，无实例概念）；真正可用性在合成时验证。"""
         return bool(self.token)
+
+    @staticmethod
+    def _load_body_template() -> Path:
+        """定位请求体模板：优先包内副本（Docker 镜像只拷贝 app/，仓库根的
+        tools/ 不在镜像里），回退仓库根 tools/（本地开发布局）。
+        两处内容需保持一致——修改模板时同步 app/engines/autodl_body.json。"""
+        pkg_local = Path(__file__).resolve().parent / "autodl_body.json"
+        if pkg_local.exists():
+            return pkg_local
+        repo_tools = Path(__file__).resolve().parents[3] / "tools" / "autodl_body.json"
+        if repo_tools.exists():
+            return repo_tools
+        raise FileNotFoundError(
+            "autodl_body.json 模板缺失：应随包位于 app/engines/autodl_body.json"
+        )
 
     def _audio_data_uri(self, path: str) -> str:
         """带缓存的 data URI 编码（避免每段重复 base64 整个参考音频）。

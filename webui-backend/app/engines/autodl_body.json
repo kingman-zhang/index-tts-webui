@@ -1,0 +1,14 @@
+{
+  "emo_afraid": 0,
+  "emo_angry": 0,
+  "emo_calm": 0,
+  "emo_control_method": "与音色参考音频相同",
+  "emo_disgusted": 0,
+  "emo_happy": 0,
+  "emo_melancholic": 0,
+  "emo_random": false,
+  "emo_sad": 0,
+  "emo_surprised": "0",
+  "prompt_simple": "{{AUDIO}}",
+  "prompt_text": "{{TEXT}}"
+}
