@@ -22,13 +22,29 @@ def test_year_range_keeps_existing_year_rule():
     assert _normalize_reading_text("从1550年开始，到1850年结束") == "从一五五零年开始，到一八五零年结束"
 
 
-def test_foreign_name_middle_dot_does_not_create_hyphen_pause():
+def test_foreign_name_separators_are_normalized_upstream():
+    """人名分隔号改在 backend 合成前统一归一化（webui-backend/app/name_punct.py）。
+
+    这里原先断言的是「给上游 front.py 打补丁，把 "·" 换成空串」。两个问题：
+      1. `index-tts-main` 是上游副本、不受本仓库版本管理，补丁会在同步上游时
+         静默丢失（本测试曾因此长期失败）；
+      2. 改 front.py 只覆盖本地引擎，管不到 autodl.art / 302.ai 云端
+         —— 而线上默认引擎就是它们。
+    现在统一落在引擎无关的 webui-backend 侧：只认 `·` 的 front.py 会把其它变体
+    （`・`U+30FB 等）原样放进词表，在分词时变成 <unk>，模型于是吐怪音。
+    详见 app/name_punct.py 顶部注释与 tests/test_name_punct.py。
+    """
     from pathlib import Path
 
-    front_source = Path(__file__).parents[2] / "index-tts-main/indextts/utils/front.py"
-    source = front_source.read_text(encoding="utf-8")
-    assert '"·": "",' in source
-    assert '"·": "-",' not in source
+    root = Path(__file__).parents[1]
+    source = (root / "webui-backend/app/name_punct.py").read_text(encoding="utf-8")
+    for codepoint in ("\\u30fb", "\\u00b7", "\\u2022", "\\u2027", "\\uff65"):
+        assert codepoint in source, f"name_punct 未覆盖分隔符 {codepoint}"
+
+    queue_worker = (root / "webui-backend/app/queue_worker.py").read_text(encoding="utf-8")
+    assert "name_punct.apply_name_separator_rules" in queue_worker, (
+        "归一化模块存在但没接进合成前处理（queue_worker）"
+    )
 
 
 def test_podcast_sanitizer_keeps_chinese_middle_dot_for_downstream_name_handling():

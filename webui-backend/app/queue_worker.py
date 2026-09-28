@@ -10,7 +10,7 @@ import httpx
 from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
-from . import number_norm
+from . import name_punct, number_norm
 from .stores import apply_glossary, load_glossary
 from . import queue_state as qs
 from .membership import service as member_svc
@@ -191,6 +191,12 @@ async def _execute_task(task_id: str) -> None:
             terms = load_glossary(task.get("member_id"))
             if terms:
                 synth_lines = apply_glossary(task["lines"], terms)
+        # 人名分隔号（中点）归一化：把 `・`/`•`/`‧` 等变体收敛到同一形态。
+        # 只认 `·` 的 front.py 会把这些变体原样放进词表 → 变 unk → 模型吐怪音
+        # （2026-09-28 token 级定位）。默认启用，NAME_PUNCT_NORMALIZE=0 关闭。
+        # 详见 app/name_punct.py。
+        if name_punct.ENABLED:
+            synth_lines = name_punct.apply_name_separator_rules(synth_lines)
         # 数字读法归一化：只补文本前端 TN 的缺口（长号码被按数值读等），
         # 默认关闭；NUM_NORMALIZE=1 启用。详见 app/number_norm.py 与 NUMBER_NORMALIZATION.md。
         if number_norm.ENABLED:
