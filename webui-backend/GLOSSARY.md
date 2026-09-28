@@ -121,15 +121,42 @@ await run_mono_task(task, lines=synth_lines)         # 播客同理
    已完成任务文件。
 
 ## 七、数据文件
-
 ```
 data/
-├── glossary.json                    全局库（超管）
+├── glossary.json                    全局库（超管）**已纳入 git 管理**
 └── glossary_users/
     └── u_xxxxxxxxxxxx.json          用户库（按 user_id 分文件，原子写入）
 ```
 
 用户库文件名会过滤非法字符，杜绝路径穿越；损坏的 JSON 会退化为空表而不影响启动。
+
+### 跨环境分发（2026-09-28 确立）
+
+**唯一真源是 `webui-backend/data/glossary.json`**，它已列入 `.gitignore` 白名单
+（`data/` 的其余内容——用户数据、产物、大资产——仍整体忽略，见仓库根 `.gitignore` 的注释）。
+因此：
+
+| 做了什么事 | 生效范围 |
+|---|---|
+| 本地改 `data/glossary.json`（或 CLI `add`）→ commit → push | 服务器 `git pull` 后自动生效 |
+| 服务器上临时 `glossary_admin.py add` | 只在那台机器生效，且会让 git 工作区变脏 —— **不推荐** |
+
+**约定：词表只在开发机维护，服务器只读**。需要在服务器上试词，改完请回写到开发机再 push。
+
+**为什么**：2026-09-28 的事故——词表快照曾以 `tools/glossary_global.json` 的形式入库，
+但它只是导出副本，**代码从不读它**，必须手工 `import` 才生效。用户改了那个「看得见的文件」，
+而真源 `data/glossary.json` 缺失在服务器上，于是「词条配了却不生效」且毫无提示。
+现在快照文件已删除，只保留一个真源，并在启动时自检：
+
+```
+[startup] 全局术语表 130 条：...          # 正常
+[startup] 全局术语表缺失或为空：...        # warning，术语替换不会生效
+```
+
+排查单条词为什么不生效，用 `tools/diagnose_text.py`（见该脚本头部说明）——
+它会打出原文的**逐字符码位**、命中了哪些词条、以及最终送进引擎的文本。
+最常见的失败原因是**码位不匹配**：词条里的 `・`(U+30FB) 与输入里的 `·`(U+00B7)
+肉眼完全一样，`str.replace` 却是精确匹配。
 
 ## 八、测试
 

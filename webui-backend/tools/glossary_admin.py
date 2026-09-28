@@ -77,6 +77,11 @@ def _show(terms: list) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="术语表超管 CLI（全局库）")
+    # app.config 在导入时已用 parse_known_args 消费了 --data-dir（真正决定 DATA_DIR），
+    # 但它不把该参数从 argv 移除；这里必须补一个同名参数接收，否则
+    # `--data-dir X list` 会被当成「cmd=X」而报 invalid choice（2026-09-28 修）。
+    parser.add_argument("--data-dir", default=None,
+                        help="数据目录（生效方是 app.config，此处仅为接收）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("list", help="列出全局库")

@@ -2,7 +2,15 @@ node_modules/
 dist/
 *.local
 .DS_Store
-data/
+# data/ 里混着三类东西：随代码分发的通用配置、用户数据、运行时产物与大资产。
+# 默认整目录忽略；**只放行通用配置**，让服务器 git pull 后即可生效。
+# 2026-09-28：服务器上 data/glossary.json 缺失导致全局术语表静默失效
+# （词条配了却不生效），故放行全局词表。既有先例：preset-voices/manifest.json
+# 早已被跟踪（force-add）。
+webui-backend/data/*
+!webui-backend/data/glossary.json
+# 仓库根的 data/ 是另一份运行时目录，继续整体忽略
+/data/
 __pycache__/
 *.pyc
 .venv/

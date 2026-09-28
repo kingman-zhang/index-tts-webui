@@ -39,6 +39,16 @@ else
   echo "!! 停顿切分单测未通过："; cat /tmp/mono_pauses_test.log; exit 1
 fi
 
+log "3.5/6 校验随代码分发的通用配置"
+cd "$REPO_DIR/webui-backend"
+if [[ -f data/glossary.json ]]; then
+  echo "  全局术语表: $(python3 -c "import json;print(len(json.load(open('data/glossary.json'))))") 条"
+else
+  echo "!! data/glossary.json 缺失 —— 所有术语替换都不会生效"
+  echo "   该文件随 git 分发（.gitignore 白名单）；请确认 git pull 成功且版本含本次改动"
+  exit 1
+fi
+
 log "4/6 重启 webui-backend (:3001)"
 if pgrep -f "webui-backend/server.py" >/dev/null 2>&1; then
   echo "发现旧进程，停止..."

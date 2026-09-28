@@ -9,10 +9,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import queue_state as qs
-from .config import TTS_URL, args, http_client, logger
+from .config import GLOSSARY_PATH, TTS_URL, args, http_client, logger
 from .queue_worker import process_queue, resume_polling
 from .queue_state import load_persisted_tasks
 from .routes import all_routers
+from .stores import load_global_glossary
 
 app = FastAPI(title="Podcast WebUI Backend", version="1.0.0")
 app.add_middleware(
@@ -34,6 +35,20 @@ async def shutdown():
 @app.on_event("startup")
 async def on_startup():
     """启动时恢复队列：先从磁盘加载持久化任务，再从 TTS 同步状态。"""
+    # 0. 全局术语表自检（2026-09-28）
+    # 背景：术语表缺失时 load_glossary() 静默返回空列表，表现为「词条配了却不生效」，
+    # 用户在日志里看不到任何线索。真源 data/glossary.json 已纳入 git（见 .gitignore
+    # 白名单），服务器上缺失时 git pull 即可恢复。
+    _global_terms = load_global_glossary()
+    if not _global_terms:
+        logger.warning(
+            "[startup] 全局术语表缺失或为空：%s —— 所有术语替换都不会生效。"
+            "该文件已随代码入库，服务器上执行 git pull 即可恢复。",
+            GLOSSARY_PATH,
+        )
+    else:
+        logger.info("[startup] 全局术语表 %d 条：%s", len(_global_terms), GLOSSARY_PATH)
+
     # 1. 从磁盘加载持久化的队列任务
     load_persisted_tasks()
 
