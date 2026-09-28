@@ -50,8 +50,13 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
 from app import config as app_config  # noqa: E402  （读 --data-dir，必须在 stores 之前）
-from app import name_punct, number_norm  # noqa: E402
-from app.stores import apply_glossary, load_global_glossary, load_glossary  # noqa: E402
+from app import name_punct, number_norm, stores  # noqa: E402
+from app.stores import (  # noqa: E402
+    apply_glossary,
+    expand_separator_variants,
+    load_global_glossary,
+    load_glossary_for_synthesis,
+)
 
 # ── 字符分类辅助 ────────────────────────────────────────────────────────
 CJK_RANGES = (
@@ -130,16 +135,20 @@ def section(title: str) -> None:
 # ── 环境 ────────────────────────────────────────────────────────────────
 def show_env() -> dict:
     terms = load_global_glossary()
+    synth_terms = load_glossary_for_synthesis(None)
     section("环境")
     print(f"DATA_DIR          : {app_config.DATA_DIR.resolve()}")
     print(f"全局词表（真源）  : {app_config.GLOSSARY_PATH.resolve()}"
           f"  {'存在' if app_config.GLOSSARY_PATH.exists() else '!! 不存在'}")
     print(f"用户词表目录      : {app_config.GLOSSARY_USERS_DIR.resolve()}")
     print(f"全局词条数        : {len(terms)}")
+    print(f"合成生效条数      : {len(synth_terms)}"
+          f"（中点变体展开 {'开' if stores.GLOSSARY_SEP_VARIANTS else '关'}"
+          f"，单条上限 {stores.MAX_SEP_VARIANTS}）")
     print(f"人名分隔号归一化  : {'开' if name_punct.ENABLED else '关'}"
           f"（目标形态 {name_punct.TARGET}）")
     print(f"数字读法归一化    : {'开' if number_norm.ENABLED else '关'}")
-    return {"terms": len(terms)}
+    return {"terms": len(terms), "synth_terms": len(synth_terms)}
 
 
 # ── 字符巡检 ────────────────────────────────────────────────────────────
@@ -286,7 +295,9 @@ def symbol_risks(sp, text: str) -> list:
 # ── 词表巡检 ────────────────────────────────────────────────────────────
 def audit_glossary() -> None:
     terms = load_global_glossary()
-    section(f"词表巡检（全局库 {len(terms)} 条）")
+    synth = load_glossary_for_synthesis(None)
+    tail = f" → 合成时展开为 {len(synth)} 条" if len(synth) != len(terms) else ""
+    section(f"词表巡检（全局库 {len(terms)} 条{tail}）")
 
     fragile, empty_rep, dup = [], [], {}
     for t in terms:
@@ -299,21 +310,39 @@ def audit_glossary() -> None:
         if odd:
             fragile.append((original, [(c, f"U+{ord(c):04X}", char_label(c)) for c in odd]))
 
-    print(f"\n[码位敏感的条目] {len(fragile)} 条 —— 只对下面这种精确写法生效：")
-    if not fragile:
+    def only_separators(chars) -> bool:
+        return all(c in name_punct.NAME_SEPARATORS for c, _code, _name in chars)
+
+    covered = [(o, cs) for o, cs in fragile if only_separators(cs)]
+    risky = [(o, cs) for o, cs in fragile if not only_separators(cs)]
+
+    if stores.GLOSSARY_SEP_VARIANTS:
+        print(f"\n[中点类条目] {len(covered)} 条 —— 合成时自动展开成全部码位变体，无需担心原文写法：")
+        if not covered:
+            print("  （无）")
+        for original, _chars in covered:
+            n = len(stores.separator_variants(original))
+            print(f"  {original!r} → 自动覆盖 {n + 1} 种写法")
+    else:
+        print(f"\n[中点类条目] {len(covered)} 条 —— **变体展开已关闭**（GLOSSARY_SEP_VARIANTS=0）：")
+        if not covered:
+            print("  （无）")
+        for original, chars in covered:
+            detail = "  ".join(f"{c!r}({code})" for c, code, _name in chars)
+            print(f"  {original!r}   {detail}  —— 原文换一种中点即静默失效")
+
+    print(f"\n[其它码位敏感的条目] {len(risky)} 条 —— 只对下面这种精确写法生效：")
+    if not risky:
         print("  （无）")
-    for original, chars in fragile:
+    for original, chars in risky:
         detail = "  ".join(f"{c!r}({code} {name})" for c, code, name in chars)
         print(f"  {original!r}")
         print(f"      {detail}")
-        # 列出还能写成什么样，提醒用户改输入源或补词条
-        alts = [c for c, _code, _name in chars if c in name_punct.NAME_SEPARATORS]
-        if alts:
-            others = [c for c in name_punct.NAME_SEPARATORS if c not in alts]
-            print(f"      !! 若原文用了别的中点（如 {' '.join(others[:5])}），本词条静默失效")
-    print("\n提示：词条 key 与用户输入必须**码位完全一致**。从公众号 / 网页 / Word")
-    print("      粘贴过来的文本常把 `・`(U+30FB) 变成 `·`(U+00B7)，肉眼无法分辨。")
-    print("      用本工具诊断原文即可看出实际码位。")
+
+    if fragile:
+        print("\n提示：词条 key 与用户输入必须**码位完全一致**。从公众号 / 网页 / Word")
+        print("      粘贴过来的文本常把 `・`(U+30FB) 变成 `·`(U+00B7)，肉眼无法分辨。")
+        print("      中点类已自动展开（见上）；其它特殊字符请补词条或用诊断命令核对原文。")
 
     if empty_rep:
         print(f"\n[空替换 = 停用该词] {len(empty_rep)} 条：{'、'.join(empty_rep)}")
@@ -366,7 +395,8 @@ def main() -> int:
         ap.print_help()
         return 1
 
-    terms = load_global_glossary()
+    # 用合成路径的词表（含中点变体展开），与真实合成保持一致
+    terms = load_glossary_for_synthesis(None)
     sp = None if args.no_unk else load_sp()
     if sp is None and not args.no_unk:
         print("\n（未找到 data/models/bpe.model，跳过 unk 检查；见 MEMORY 里的获取方式）")

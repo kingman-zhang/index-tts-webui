@@ -7,10 +7,14 @@ import os
 import re
 import uuid
 from datetime import datetime
+from itertools import product
 from pathlib import Path
 from typing import Optional
 
-from .config import GLOSSARY_PATH, GLOSSARY_USERS_DIR, PROJECTS_DIR
+# 注意 import 顺序：config 必须排在 name_punct 之前 —— name_punct 在模块级读取
+# .env（NAME_PUNCT_TARGET / NAME_PUNCT_NORMALIZE），而 .env 是由 config 载入的。
+from .config import GLOSSARY_PATH, GLOSSARY_USERS_DIR, PROJECTS_DIR, logger
+from . import name_punct
 from .models import ProjectModel
 
 
@@ -151,9 +155,110 @@ def merge_glossary(global_terms: list, user_terms: list,
 
 
 def load_glossary(user_id: Optional[str] = None, *, with_source: bool = False) -> list:
-    """合并后的生效词表。user_id 为空（未登录）时等于全局库。"""
+    """合并后的生效词表。user_id 为空（未登录）时等于全局库。
+
+    **这是「管理视角」**：逐条如实返回词条，不做变体展开 —— 前端「我的词条」
+    面板与超管后台要看到的就是用户真正写下的那些行。合成请用
+    `load_glossary_for_synthesis()`。
+    """
     return merge_glossary(
         load_global_glossary(), load_user_glossary(user_id), with_source=with_source
+    )
+
+
+# ─── 词条 key 的「中点等价类」展开 ───────────────────────────
+# 问题：中译外国人名的间隔号有 10 个 Unicode 变体（见 name_punct.NAME_SEPARATORS），
+# 而词条匹配是逐字符精确的。用户按某一种写法配了词条，原文换成另一种写法就
+# **静默失效**。实例（2026-09-28）：词条 `9・11→九幺幺`（U+30FB），原文写成
+# `9·11`（U+00B7）时不命中，而 `9·11` 两侧是数字、name_punct 也不介入，
+# 于是原样送进引擎变成 unk 怪音。
+#
+# 解法：合成前把含分隔号的 key 就地展开成全部变体 —— 一条词条覆盖所有写法。
+# 只在内存展开，**不落盘、不改真源**，管理界面看到的仍是用户写的那一条。
+#
+# 顺序语义不受影响：展开紧跟在原条目之后（apply_glossary 是按序 str.replace），
+# 且已被显式定义的 key（无论来自全局还是用户库）优先保留、不被变体覆盖。
+
+# 缺省开启：与 name_punct 同理，修的是「同一视觉符号不同码位导致静默失效」的确证缺陷。
+GLOSSARY_SEP_VARIANTS = os.environ.get("GLOSSARY_SEP_VARIANTS", "1").strip().lower() not in (
+    "", "0", "false", "no", "off",
+)
+
+# 单条词条的变体数上限：n 个分隔号 → 10^n。超限则跳过该条并告警，
+# 避免 `A・B・C` 这种 key 直接炸成 100 条。
+def _env_positive_int(name: str, default: int) -> int:
+    """读正整数环境变量；非法值回落默认，不让手滑的 .env 把服务打挂。"""
+    try:
+        return max(1, int(os.environ.get(name, "") or default))
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_SEP_VARIANTS = _env_positive_int("GLOSSARY_SEP_VARIANTS_MAX", 64)
+
+
+def separator_variants(key: str, *, limit: int | None = None) -> list:
+    """列出 key 的全部中点变体（**不含 key 自身**）；无分隔号或超出上限时返回空。"""
+    positions = [i for i, ch in enumerate(key) if ch in name_punct.NAME_SEPARATORS]
+    if not positions:
+        return []
+    cap = MAX_SEP_VARIANTS if limit is None else limit
+    if len(name_punct.NAME_SEPARATORS) ** len(positions) > cap:
+        logger.warning(
+            "词条 %r 含 %d 个分隔号，变体数超上限 %d，已跳过展开（原文需与词条码位一致）",
+            key, len(positions), cap,
+        )
+        return []
+    out = []
+    for combo in product(name_punct.NAME_SEPARATORS, repeat=len(positions)):
+        chars = list(key)
+        for pos, ch in zip(positions, combo):
+            chars[pos] = ch
+        cand = "".join(chars)
+        if cand != key:
+            out.append(cand)
+    return out
+
+
+def expand_separator_variants(terms: list, *, limit: int | None = None) -> list:
+    """把含中点的词条展开成全部码位变体，返回新列表（不修改入参）。
+
+    - 变体条目紧跟原条目，保持相对顺序（apply_glossary 顺序敏感）
+    - 已被词表里显式定义的 key 不被覆盖（用户手写的那条优先）
+    - 空 replacement（停用）、key == replacement 的条目跳过
+    """
+    if not terms or not GLOSSARY_SEP_VARIANTS:
+        return terms
+
+    seen = {str(t.get("original") or "") for t in terms if isinstance(t, dict)}
+    out: list = []
+    for t in terms:
+        out.append(t)
+        if not isinstance(t, dict):
+            continue
+        original = str(t.get("original") or "")
+        replacement = t.get("replacement")
+        if not original or not replacement or replacement == original:
+            continue
+        for cand in separator_variants(original, limit=limit):
+            if cand in seen:
+                continue
+            seen.add(cand)
+            item = {"original": cand, "replacement": replacement}
+            if "source" in t:
+                item["source"] = t["source"]
+            out.append(item)
+    return out
+
+
+def load_glossary_for_synthesis(user_id: Optional[str] = None, *,
+                                with_source: bool = False) -> list:
+    """**合成/预览视角**的生效词表 = 合并 + 中点等价类展开。
+
+    与 load_glossary 的唯一区别是含中点的词条被展开成全部码位变体。
+    """
+    return expand_separator_variants(
+        load_glossary(user_id, with_source=with_source)
     )
 
 

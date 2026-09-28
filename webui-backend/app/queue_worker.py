@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
 from . import name_punct, number_norm
-from .stores import apply_glossary, load_glossary
+from .stores import apply_glossary, load_glossary_for_synthesis
 from . import queue_state as qs
 from .membership import service as member_svc
 
@@ -186,9 +186,11 @@ async def _execute_task(task_id: str) -> None:
         # 术语替换只作用于「送去合成的那一份文本」，不回写 task["lines"]（2026-09-28）：
         # 任务详情、重试扣费、磁盘存档一律保持用户原文，替换仅是合成细节。
         # 词表 = 全局库（超管）+ 该用户自定义库（同名优先）；未登录仅用全局库。
+        # 用 _for_synthesis 版本：含中点分隔号的词条会展开成全部码位变体，
+        # 避免「原文里的中点换了写法 → 词条静默失效」（2026-09-28）。
         synth_lines = task["lines"]
         if task.get("glossary_enabled", True):
-            terms = load_glossary(task.get("member_id"))
+            terms = load_glossary_for_synthesis(task.get("member_id"))
             if terms:
                 synth_lines = apply_glossary(task["lines"], terms)
         # 人名分隔号（中点）归一化：把 `・`/`•`/`‧` 等变体收敛到同一形态。

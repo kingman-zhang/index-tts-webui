@@ -31,7 +31,7 @@ from ..membership.routes import require_admin
 from ..models import GlossaryTerm
 from ..stores import (
     load_global_glossary,
-    load_glossary,
+    load_glossary_for_synthesis,
     load_user_glossary,
     merge_glossary,
     save_global_glossary,
@@ -118,11 +118,14 @@ async def delete_glossary_term(original: str, user: dict = Depends(get_current_u
 @router.post("/api/glossary/apply")
 async def apply_glossary(request: Request,
                          user: Optional[dict] = Depends(get_optional_user)):
-    """对文本应用当前用户的生效词表，返回替换后的文本。"""
+    """对文本应用当前用户的生效词表，返回替换后的文本。
+
+    用 _for_synthesis 版本，保证预览结果与真实合成一致（含中点变体展开）。
+    """
     body = await request.json()
     text = body.get("text", "")
     uid = (user or {}).get("user_id")
-    for t in load_glossary(uid):
+    for t in load_glossary_for_synthesis(uid):
         text = text.replace(t["original"], t["replacement"])
     return {"text": text}
 

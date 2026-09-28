@@ -155,15 +155,58 @@ data/
 
 排查单条词为什么不生效，用 `tools/diagnose_text.py`（见该脚本头部说明）——
 它会打出原文的**逐字符码位**、命中了哪些词条、以及最终送进引擎的文本。
-最常见的失败原因是**码位不匹配**：词条里的 `・`(U+30FB) 与输入里的 `·`(U+00B7)
-肉眼完全一样，`str.replace` 却是精确匹配。
 
-## 八、测试
+## 八、词条 key 的码位等价展开（2026-09-28）
+
+最常见的失败原因是**码位不匹配**：词条里的 `・`(U+30FB) 与输入里的 `·`(U+00B7)
+肉眼完全一样，`str.replace` 却是精确匹配。中译外国人名的间隔号一共有
+**10 个 Unicode 变体**（清单见 `app/name_punct.py:NAME_SEPARATORS`），
+用户不可能每次都对上。
+
+所以合成前会把**含分隔号的词条自动展开成全部写法**：
+
+```
+data/glossary.json 里写的一条：        9・11 → 九幺幺        （U+30FB）
+合成时实际生效的 10 条：              9·11 / 9・11 / 9‧11 / 9･11 / 9•11 / …
+                                       全部 → 九幺幺
+```
+
+**两个视角，别混用：**
+
+| 函数 | 用途 | 是否展开 |
+|---|---|---|
+| `stores.load_glossary()` | 管理界面、前端「我的词条」、超管后台 | ❌ 逐条如实返回 |
+| `stores.load_glossary_for_synthesis()` | **合成**（`queue_worker`）、**预览**（`POST /api/glossary/apply`）、`diagnose_text.py` | ✅ 展开 |
+
+展开只在**内存**里做，不落盘、不改真源 —— 用户在界面上看到的仍是他自己写的那一条。
+
+**边界（都是刻意的）：**
+
+1. 只展开 `NAME_SEPARATORS` 里那 10 个**中点类**字符。半角 `-` **不展开**：
+   `2020-2025` 这类范围写法比人名分隔号常见得多，自动展开风险大于收益。
+2. 单条词条的变体数上限 `GLOSSARY_SEP_VARIANTS_MAX`（默认 64）。n 个中点 → 10^n，
+   `A・B・C` 会算出 100 条，超限就跳过该条并打 warning（原文需与词条码位一致）。
+3. **已被显式定义的 key 优先**：词表里若同时手写了 `9・11` 和 `9·11`，
+   展开不会覆盖后者 —— 手写的那条说了算。
+4. 用户库覆盖全局库时，**变体跟着用户的值走**（先合并、后展开）。
+5. 空 `replacement`（全局库语义 = 替换为空串/删除）**不展开** ——
+   否则 `9・11` 的变体会把文中所有 `9·11` 整段删掉。
+
+**验证：**
+
+```bash
+python tools/diagnose_text.py --env                    # 「合成生效条数」应大于「全局词条数」
+python tools/diagnose_text.py --audit                  # 中点类条目会显示「自动覆盖 N 种写法」
+python tests/test_glossary_sep_variants.py             # 23 项
+```
+
+## 九、测试
 
 ```bash
 cd webui-backend
-python tests/test_glossary_layers.py   # 存储层/合并规则/合成副本（23 项）
-python tests/test_glossary_api.py      # HTTP 层鉴权与视图（30 项）
+python tests/test_glossary_layers.py        # 存储层/合并规则/合成副本（23 项）
+python tests/test_glossary_api.py           # HTTP 层鉴权与视图（30 项）
+python tests/test_glossary_sep_variants.py  # 词条 key 中点变体展开（23 项）
 ```
 
 两者都在临时数据目录中运行，不触碰真实 `data/`。
