@@ -83,7 +83,7 @@ _port_pids() {
     ss -ltnp 2>/dev/null | grep ':3001 ' | grep -oE 'pid=[0-9]+' | cut -d= -f2 || true
     return
   fi
-  pgrep -f "server\.py" || true
+  pgrep -f "python3 server\.py --port 3001" || true
 }
 
 PIDS=$(_port_pids)
@@ -100,7 +100,9 @@ if [[ -n "$PIDS" ]]; then
 else
   echo "（无进程占用 3001）"
 fi
-pkill -f "server\.py" || true
+# 兜底清残留：只认本脚本自己的启动签名（`python3 server.py --port 3001`）。
+# 不要写成 pkill -f "server\.py" —— 同机上 tts-server 也跑 server.py，会被一起带走。
+pkill -f "python3 server\.py --port 3001" || true
 sleep 1
 
 mkdir -p logs
@@ -139,16 +141,23 @@ print("  磁盘 HEAD      :", sys.argv[1])
 print("  进程 HEAD      :", v.get("git_head"))
 print("  进程启动时刻   :", v.get("process_started_at"))
 print("  未加载的新改动 :", v.get("stale_sources") or "（无）")
+print("  数据目录       :", v.get("data_dir"), "存在" if v.get("data_dir_exists") else "!! 不存在")
+print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 assert v.get("git_head") == sys.argv[1], (
     "!! 进程 HEAD 与磁盘 HEAD 不一致 —— 进程跑的是旧代码，重启未生效")
-assert not (v.get("stale_sources") or []), (
-    "!! 下列源文件在进程启动后才被改动，进程里仍是旧版本: %s" % v["stale_sources"])
+assert v.get("glossary_exists"), (
+    "!! 进程读到的数据目录里没有 glossary.json —— 数据目录指错了，所有词条静默失效")
 assert tp.get("name_punct_enabled") is not False, (
     "!! 人名分隔号归一化被关闭（.env NAME_PUNCT_NORMALIZE=0）—— 中点会进词表变 unk")
+# stale_sources 放最后断言：它只监视 4 个文本链路文件（name_punct / number_norm /
+# stores / queue_worker），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
+# 的顺序下它必然为空；若非空，说明确有文件在这次启动之后被写过，是真问题。
+assert not (v.get("stale_sources") or []), (
+    "!! 下列源文件在进程启动后才被改动，进程里仍是旧版本: %s" % v["stale_sources"])
 ' "$DISK_HEAD" || { echo "!! 部署后自检未通过，见上"; exit 1; }
 
 echo "  文本链路试算（仓库根 tools/diagnose_text.py）:"

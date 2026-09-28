@@ -30,6 +30,7 @@ mtime、以及 git HEAD 一起吐出来。判据只有一条：
 from __future__ import annotations
 
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -41,7 +42,11 @@ from . import config as _config  # noqa: F401  仅为了触发 .env 加载，保
 logger = _config.logger
 
 # 进程启动时刻：模块被 import 的那一刻，即进程读走源码的时刻。
-PROCESS_STARTED_AT = datetime.now().isoformat(timespec="seconds")
+# 两份表示：浮点秒用于**精确比较**，ISO 字符串只用于展示。
+# 不要拿 ISO(timespec="seconds") 去比 mtime —— 秒级截断会把「同一秒内先改文件再启动」
+# 判成相等（漏报），也会让读者误以为存在误报。比较必须用浮点。
+PROCESS_STARTED_TS = time.time()
+PROCESS_STARTED_AT = datetime.fromtimestamp(PROCESS_STARTED_TS).isoformat(timespec="seconds")
 
 # 仓库根：webui-backend/app/build_info.py → parents[2]
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -78,15 +83,36 @@ GIT_HEAD, GIT_SUBJECT = _git_head()
 
 
 def source_mtimes() -> dict[str, str | None]:
-    """被监视源文件的 mtime（ISO 秒）；文件不存在记 None。"""
+    """被监视源文件的 mtime（ISO 秒，仅展示用）；文件不存在记 None。
+
+    别名 `source_mtimes_ts()` 返回同样的 map 但值是浮点秒，供精确比较使用。
+    """
     out: dict[str, str | None] = {}
+    for rel, ts in source_mtimes_ts().items():
+        out[rel] = None if ts is None else datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+    return out
+
+
+def source_mtimes_ts() -> dict[str, float | None]:
+    """被监视源文件的 mtime（浮点秒）；文件不存在记 None。"""
+    out: dict[str, float | None] = {}
     for rel in WATCHED:
-        path = REPO_ROOT / "webui-backend" / rel
         try:
-            out[rel] = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+            out[rel] = (REPO_ROOT / "webui-backend" / rel).stat().st_mtime
         except OSError:
             out[rel] = None
     return out
+
+
+def stale_sources() -> list[str]:
+    """在**进程启动之后**才被写过的源文件 —— 即进程内存里仍是旧版本的那些。
+
+    用浮点 mtime 与 PROCESS_STARTED_TS 精确比较，不留秒级模糊地带。
+    """
+    return [
+        rel for rel, ts in source_mtimes_ts().items()
+        if ts is not None and ts > PROCESS_STARTED_TS
+    ]
 
 
 def _data_dir() -> dict:
@@ -123,12 +149,7 @@ def _text_switches() -> dict:
 
 
 def snapshot() -> dict:
-    """给 /api/version 的完整快照。"""
-    mtimes = source_mtimes()
-    stale = [
-        rel for rel, ts in mtimes.items()
-        if ts and ts > PROCESS_STARTED_AT
-    ]
+    """给 /api/version 与启动日志的完整快照。"""
     return {
         "git_head": GIT_HEAD,
         "git_subject": GIT_SUBJECT,
@@ -139,8 +160,9 @@ def snapshot() -> dict:
         # 改为相对 backend 根，这里打印实际值便于核对。
         **_data_dir(),
         "process_started_at": PROCESS_STARTED_AT,
-        "source_mtimes": mtimes,
+        "process_started_ts": PROCESS_STARTED_TS,
+        "source_mtimes": source_mtimes(),
         # 非空 ⇒ 这些文件在进程启动之后被改过，进程里跑的是旧代码
-        "stale_sources": stale,
+        "stale_sources": stale_sources(),
         "text_pipeline": _text_switches(),
     }
