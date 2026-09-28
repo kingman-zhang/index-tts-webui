@@ -9,7 +9,7 @@ COPY app ./app
 COPY server.py .
 
 # .env 挂载到 /app/.env（config.py 按 Path(__file__).parents[1]/.env 寻址）
-# data 卷挂载到 /app/data（DATA_DIR 默认 ./data，相对 WORKDIR）
+# data 卷挂载到 /app/data（DATA_DIR 缺省 = backend 根下的 data，即 /app/data）
 EXPOSE 3001
 
 CMD ["python", "server.py"]

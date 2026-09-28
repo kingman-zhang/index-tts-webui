@@ -37,12 +37,23 @@ _ENV_LOADED_COUNT = _load_dotenv()
 
 # ─── 启动参数 ───────────────────────────────────────────────
 
+# DATA_DIR 缺省值**相对本文件**而非 cwd（2026-09-28）。
+# 原缺省是 "./data"（cwd 相对）：从仓库根跑 `python webui-backend/server.py`，
+# 或在别的目录用绝对路径启动，都会静默指到另一份 data/ —— 症状是「词条明明配了
+# 却不生效」「诊断工具报 0 条」而日志里没有任何线索。改成相对 backend 根之后，
+# 只有「显式给了 --data-dir / DATA_DIR」和「从这个目录启动」两种情形会命中，
+# 二者本来就一致；其余的模糊情形一律收敛到正确的那份。
+# 所有既有调用方式解析结果不变：cd webui-backend && python server.py、
+# 容器内 WORKDIR=/app + 挂载 /app/data，新旧缺省算出同一个目录。
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_DATA_DIR = str(BACKEND_ROOT / "data")
+
 parser = argparse.ArgumentParser(description="Podcast WebUI Backend")
 parser.add_argument("--tts-url", default=os.environ.get("TTS_URL", "http://localhost:8000"),
                     help="TTS 服务端地址")
 parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"), help="监听地址")
 parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "3001")), help="监听端口")
-parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", "./data"),
+parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", _DEFAULT_DATA_DIR),
                     help="项目数据存储目录")
 args, _ = parser.parse_known_args()
 

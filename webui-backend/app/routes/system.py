@@ -13,6 +13,7 @@ from ..config import (
     TTS_URL,
     http_client,
 )
+from .. import build_info
 from ..membership import service as member_svc
 
 router = APIRouter()
@@ -77,3 +78,26 @@ async def tts_health():
         raise HTTPException(503, f"无法连接 TTS 服务: {TTS_URL}")
     except Exception as e:
         raise HTTPException(502, f"TTS 服务异常: {e}")
+
+
+@router.get("/api/version")
+async def version():
+    """运行实例自检：这个进程在跑哪份代码、文本链路的开关是什么。
+
+    为什么需要：`git log` 看的是磁盘上的仓库，而这个进程是**启动时**把源码读进
+    内存的 —— `git pull` 之后不重启，改动一行都不生效，且界面上完全看不出来。
+    详见 app/build_info.py。
+
+    判据：
+      - `stale_sources` 非空        ⇒ 这里点名的文件在进程启动后才被改过，进程跑的是旧代码
+      - `git_head` 与 `git rev-parse --short HEAD` 不一致 ⇒ 同上
+      - `process_started_at`        ⇒ 进程启动时刻（与源文件 mtime 直接可比）
+
+    部署后核对（在服务器上）：
+
+        curl -s localhost:3001/api/version
+        git rev-parse --short HEAD        # 两个 sha 必须一致
+
+    纯自检端点，不参与业务，容器 healthcheck 不依赖它。
+    """
+    return build_info.snapshot()

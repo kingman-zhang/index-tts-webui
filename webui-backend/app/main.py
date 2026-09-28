@@ -9,11 +9,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import queue_state as qs
+# import 顺序有语义，别动：config 会加载 .env，而 name_punct / number_norm 的
+# 开关是**模块级**读 os.environ 的（.env 未加载就会落到缺省值，
+# 表现为「.env 里明明写了 NAME_PUNCT_NORMALIZE=0 却不生效」）。
+# build_info 自己就把 config 放在首位，这里跟着同一顺序。
 from .config import GLOSSARY_PATH, TTS_URL, args, http_client, logger
+from . import build_info
 from .queue_worker import process_queue, resume_polling
 from .queue_state import load_persisted_tasks
 from .routes import all_routers
-from .stores import load_global_glossary
 
 app = FastAPI(title="Podcast WebUI Backend", version="1.0.0")
 app.add_middleware(
@@ -35,19 +39,39 @@ async def shutdown():
 @app.on_event("startup")
 async def on_startup():
     """启动时恢复队列：先从磁盘加载持久化任务，再从 TTS 同步状态。"""
-    # 0. 全局术语表自检（2026-09-28）
-    # 背景：术语表缺失时 load_glossary() 静默返回空列表，表现为「词条配了却不生效」，
-    # 用户在日志里看不到任何线索。真源 data/glossary.json 已纳入 git（见 .gitignore
-    # 白名单），服务器上缺失时 git pull 即可恢复。
-    _global_terms = load_global_glossary()
-    if not _global_terms:
+    # 0. 运行实例自检（2026-09-28）
+    # 背景：同一个下午踩了两次「看不见」的坑 ——
+    #   ① 术语表缺失时 load_glossary() 静默返回空列表，表现为「词条配了却不生效」；
+    #   ② 代码 pull 了但进程没重启，跑的是内存里的旧模块 —— 磁盘上怎么查都对，
+    #      离线复现链路也正确，就是线上没变化。
+    # 故启动时把「这个进程是谁」一次性打全：git HEAD / 启动时刻 / 数据目录 /
+    # 三件前处理开关。这些符号只有新代码才有，日志里出现即证明加载的是哪一版。
+    # 同一份快照也挂在 GET /api/version（见 app/build_info.py 与 routes/system.py）。
+    _boot = build_info.snapshot()
+    _tp = _boot.get("text_pipeline") or {}
+    logger.info(
+        "[startup] 运行实例 git=%s 启动于 %s 数据目录=%s",
+        _boot.get("git_head") or "?", _boot["process_started_at"], _boot.get("data_dir"),
+    )
+    logger.info(
+        "[startup] 文本前处理：术语表 %s 条（合成展开 %s）"
+        " / 人名分隔号 %s(%s) / 数字读法 %s",
+        _tp.get("glossary_terms"), _tp.get("glossary_terms_for_synthesis"),
+        "开" if _tp.get("name_punct_enabled") else "关", _tp.get("name_punct_target"),
+        "开" if _tp.get("number_norm_enabled") else "关",
+    )
+    if _boot.get("stale_sources"):
+        logger.warning(
+            "[startup] !! 以下源文件在进程启动之后被改动，进程内仍是旧版本：%s"
+            " —— 需重启 backend", _boot["stale_sources"],
+        )
+    if not _tp.get("glossary_terms"):
         logger.warning(
             "[startup] 全局术语表缺失或为空：%s —— 所有术语替换都不会生效。"
-            "该文件已随代码入库，服务器上执行 git pull 即可恢复。",
+            "该文件已随代码入库，服务器上执行 git pull 即可恢复；"
+            "若数据目录指错了也会这样，核对上一行的「数据目录」。",
             GLOSSARY_PATH,
         )
-    else:
-        logger.info("[startup] 全局术语表 %d 条：%s", len(_global_terms), GLOSSARY_PATH)
 
     # 1. 从磁盘加载持久化的队列任务
     load_persisted_tasks()

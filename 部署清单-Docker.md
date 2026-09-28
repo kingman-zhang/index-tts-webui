@@ -63,7 +63,34 @@ docker tag podcast-backend:latest podcast-backend:backup   # 每次 build 前先
 
 ## 4. 与旧脚本部署的关系
 
-`tools/deploy_g1_autodl.sh`（nohup + dev server 方式）保留可回退，但两者**不能同时跑**：会抢 3001 端口。切 Docker 前先停旧进程（`pkill -f webui-backend/server.py`；dev server 按 Ctrl-C）。数据目录是同一份（`webui-backend/data`），两种方式互通。
+`tools/deploy_g1_autodl.sh`（nohup + dev server 方式）保留可回退，但两者**不能同时跑**：会抢 3001 端口。
+
+切 Docker 前先停旧进程——**按端口找，别按命令行字符串匹配**：
+
+```bash
+lsof -ti tcp:3001 | xargs -r kill        # 正确：启动方式不同，cmdline 不一样
+# pkill -f webui-backend/server.py       # 错误：脚本是 `cd webui-backend && python3 server.py`，
+#                                        #       cmdline 里没有 "webui-backend/" 前缀，匹配不到 ⇒ 漏杀
+```
+
+数据目录是同一份（`webui-backend/data`），两种方式互通。
+
+**升级后必须核对「进程跑的是哪份代码」**（`git pull` 只改磁盘，不重启等于没改）：
+
+```bash
+# 裸进程：直接比 HEAD
+curl -s localhost:3001/api/version | python3 -c 'import json,sys;print(json.load(sys.stdin)["git_head"])'
+git rev-parse --short HEAD                  # 两个必须一致
+
+# 容器：镜像里没有 .git，所以 git_head 会是 null —— 改比「镜像构建时间 vs 容器启动时间」
+docker inspect -f '{{.Created}}' podcast-backend:latest
+docker inspect -f '{{.State.StartedAt}}' podcast-backend
+# 容器启动时间 < 镜像构建时间 ⇒ 还在跑旧镜像，执行 docker compose up -d --build
+```
+
+`/api/version` 还会回 `stale_sources`：裸进程部署下非空表示这些源文件在进程启动之后
+才被改动，即**进程里仍是旧代码**，必须重启。另回 `data_dir` / `glossary_exists` /
+`name_punct_enabled` 等开关，可用来一次性排除「数据目录指错」和「.env 开关没生效」。
 
 ## 5. 基础镜像工作流（podcast-base:with-deps）
 

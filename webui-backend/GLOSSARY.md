@@ -153,8 +153,9 @@ data/
 [startup] 全局术语表缺失或为空：...        # warning，术语替换不会生效
 ```
 
-排查单条词为什么不生效，用 `tools/diagnose_text.py`（见该脚本头部说明）——
-它会打出原文的**逐字符码位**、命中了哪些词条、以及最终送进引擎的文本。
+排查单条词为什么不生效，用 `tools/diagnose_text.py`（在**仓库根目录**执行，
+见该脚本头部说明）—— 它会打出原文的**逐字符码位**、命中了哪些词条、
+以及最终送进引擎的文本。
 
 ## 八、词条 key 的码位等价展开（2026-09-28）
 
@@ -192,12 +193,12 @@ data/glossary.json 里写的一条：        9・11 → 九幺幺        （U+30
 5. 空 `replacement`（全局库语义 = 替换为空串/删除）**不展开** ——
    否则 `9・11` 的变体会把文中所有 `9·11` 整段删掉。
 
-**验证：**
+**验证**（在**仓库根目录**执行；诊断脚本按设计不跟随 cwd）：
 
 ```bash
-python tools/diagnose_text.py --env                    # 「合成生效条数」应大于「全局词条数」
-python tools/diagnose_text.py --audit                  # 中点类条目会显示「自动覆盖 N 种写法」
-python tests/test_glossary_sep_variants.py             # 23 项
+python3 tools/diagnose_text.py --env                     # 「合成生效条数」应大于「全局词条数」
+python3 tools/diagnose_text.py --audit                   # 中点类条目会显示「自动覆盖 N 种写法」
+cd webui-backend && python3 tests/test_glossary_sep_variants.py   # 23 项
 ```
 
 ## 九、测试

@@ -11,23 +11,27 @@ TTS 读错字的投诉里，绝大多数不是「模型不行」，而是**送�
 同一个视觉符号（中点、破折号、引号、空格）可能有多个 Unicode 码位，
 `str.replace` 是精确匹配 —— 码位差一个，词条就静默失效。
 
-用法（在 webui-backend 目录下）：
+用法（在**仓库根目录**执行，cwd 不影响结果）：
 
     # 诊断一句话（最常用）
-    python tools/diagnose_text.py "那年发生了9・11事件"
+    python3 tools/diagnose_text.py "那年发生了9・11事件"
 
     # 从文件读（每行按一句诊断；建议一次别超过 50 行）
-    python tools/diagnose_text.py --file script.txt
+    python3 tools/diagnose_text.py --file script.txt
 
     # 只巡检词表本身（找码位脆弱的词条、空替换、重复项）
-    python tools/diagnose_text.py --audit
+    python3 tools/diagnose_text.py --audit
 
     # 只打印环境（在服务器上确认词表版本时用）
-    python tools/diagnose_text.py --env
+    python3 tools/diagnose_text.py --env
 
 数据目录非默认时（与 glossary_admin.py 一致）：
 
-    python tools/diagnose_text.py --data-dir /path/to/data --env
+    python3 tools/diagnose_text.py --data-dir /path/to/data --env
+
+> 本脚本从仓库根 tools/ 运行（与 diagnose_pinyin.py / probe_line_pipeline.py 同一层）。
+> 默认 DATA_DIR 固定指向 `webui-backend/data`，**不跟随 cwd** —— 否则在仓库根执行时
+> 会去读 `./data`（仓库根那个 data 是另一套东西），报告「词表不存在」，把人带偏。
 
 判定「会变成 unk」需要 bpe.model（data/models/bpe.model，可从 modelscope 获取，
 见 MEMORY）。缺失时该节自动跳过，其余功能不受影响。
@@ -46,8 +50,15 @@ from collections import Counter
 from pathlib import Path
 
 # 让 `import app` 生效（tools/ 与 webui-backend/ 同级）
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parent.parent / "webui-backend"
 sys.path.insert(0, str(BACKEND_ROOT))
+
+# DATA_DIR 钉在 webui-backend/data，不跟随 cwd。
+# app.config 的缺省值自 2026-09-28 起已是「相对 backend 根」（原先 "./data" 是
+# 相对 cwd 的），所以这行严格来说是冗余的；保留它是因为本脚本从仓库根调用时
+# 一旦有人把 config 的缺省改回去，静默读到**仓库根的 data/**（另一套东西）会
+# 报「全局词表不存在」—— 一个会把人带偏的假警报。显式 --data-dir 仍优先。
+os.environ.setdefault("DATA_DIR", str(BACKEND_ROOT / "data"))
 
 from app import config as app_config  # noqa: E402  （读 --data-dir，必须在 stores 之前）
 from app import name_punct, number_norm, stores  # noqa: E402
