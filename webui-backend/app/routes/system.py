@@ -45,6 +45,8 @@ async def get_config():
         # 积分定价（前端预估扣费用；均为静态配置，零探测成本）
         "member_enforce": member_svc.ENFORCE,
         "member_points_per_1000_chars": member_svc.POINTS_PER_1000_CHARS,
+        # 单次合成最低收费：前端只有拿到它才能算出与后端一致的地板价
+        "member_min_charge": member_svc.MIN_CHARGE,
         # 双人播客默认静音/生成参数（.env: PODCAST_SILENCE_* / PODCAST_GEN_PARAMS）
         "podcast_defaults": {
             "silence": dict(PODCAST_DEFAULT_SILENCE),

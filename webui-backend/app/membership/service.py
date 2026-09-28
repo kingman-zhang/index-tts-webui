@@ -3,7 +3,8 @@
 配置（环境变量或 .env，均可缺省）：
   MEMBER_REG_BONUS              注册赠送积分，默认 100；0 表示关闭
   MEMBER_CHECKIN_BONUS          每日签到积分，默认 5；0 表示关闭
-  MEMBER_POINTS_PER_1000_CHARS  合成扣费：每 1000 字符扣积分，默认 10；0 表示关闭按量扣费
+  MEMBER_POINTS_PER_1000_CHARS  合成扣费单价：每 1000 字符扣积分，默认 10；0 = 关闭按量扣费
+  MEMBER_MIN_CHARGE             单次合成最低收费（积分），默认 5；0 = 不设地板
   MEMBER_TOKEN_TTL_DAYS         会话有效期（天），默认 30
   MEMBER_ENFORCE                1 = 未登录/积分不足时拒绝提交合成任务；默认 0（仅登录用户记账，不强制）
   MEMBER_REQUIRE_LOGIN          1 = 合成提交必须登录（不扣费）；与 MEMBER_ENFORCE 相互独立
@@ -12,7 +13,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import secrets
@@ -30,6 +30,7 @@ from . import mailer
 REG_BONUS = int(os.environ.get("MEMBER_REG_BONUS", "100"))
 CHECKIN_BONUS = int(os.environ.get("MEMBER_CHECKIN_BONUS", "5"))
 POINTS_PER_1000_CHARS = int(os.environ.get("MEMBER_POINTS_PER_1000_CHARS", "10"))
+MIN_CHARGE = int(os.environ.get("MEMBER_MIN_CHARGE", "5"))
 TOKEN_TTL_DAYS = int(os.environ.get("MEMBER_TOKEN_TTL_DAYS", "30"))
 ENFORCE = os.environ.get("MEMBER_ENFORCE", "0") == "1"
 REQUIRE_LOGIN = os.environ.get("MEMBER_REQUIRE_LOGIN", "0") == "1"
@@ -37,6 +38,9 @@ ADMIN_TOKEN = os.environ.get("MEMBER_ADMIN_TOKEN", "") or None
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fa5]{2,24}$")
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+# 行内停顿标记（[pause:0.5] / [pause: 1]），只控制插静音、不计入计费字数。
+# 与前端 types/index.ts 的 stripPauseTokens 同一形态。
+PAUSE_TOKEN_RE = re.compile(r"\[pause:\s*[\d.]+\s*\]")
 MAX_POINT_LOGS_PER_USER = 500  # 每用户流水上限（防无限增长），超限丢最旧的
 
 # 邮箱验证码策略
@@ -452,17 +456,51 @@ def checkin_status(user: dict) -> dict:
 
 # ─── 合成任务扣费钩子（MEMBER_ENFORCE / 记账模式） ──────────
 
-def estimate_task_cost(lines: list) -> int:
-    """按任务总字数估算积分成本。POINTS_PER_1000_CHARS=0 表示不计费。"""
-    if POINTS_PER_1000_CHARS <= 0:
-        return 0
+def count_billable_chars(lines: list) -> int:
+    """计费字数：剥掉行内 [pause:N] 后按字符数累加（与前端预估同口径）。
+
+    [pause:N] 只控制合成时插多长静音，不是要念的正文；计入字数会让用户为
+    停顿标记付费，且秒数写得越长字面越长、付费越多。MonoEditor 编辑器里
+    显示的字数一直是这样剥掉后统计的，这里对齐它。
+    """
     chars = 0
     for line in lines or []:
         if isinstance(line, dict):
-            chars += len((line.get("text") or "").strip())
+            text = line.get("text") or ""
         elif isinstance(line, str):
-            chars += len(line.strip())
-    return math.ceil(chars / 1000) * POINTS_PER_1000_CHARS
+            text = line
+        else:
+            continue
+        chars += len(PAUSE_TOKEN_RE.sub("", text).strip())
+    return chars
+
+
+def estimate_task_cost(lines: list) -> int:
+    """按实际字数线性计费，向上取整到 1 积分，最低 MIN_CHARGE。
+
+        cost = max(MIN_CHARGE, ceil(chars * POINTS_PER_1000_CHARS / 1000))
+
+    口径变更史（2026-09-28）：
+      旧式 = ceil(chars / 1000) * 单价 —— 整千向上取整，不足 1000 字也按一
+      整千收费（500 字与 1000 字同价），且 1000→1001 字直接翻倍。对短文本
+      是 10 倍量级的溢价，也把「签到送 5 积分」这类小额赠送变成了摆设。
+      改为线性后 **1000 字及以上的价格与旧口径完全一致**（收入中性），只有
+      短任务变便宜。
+
+    为什么保留 MIN_CHARGE：成本主要由**合成段数**（引擎调用次数）决定，而
+    不随字数线性 —— 一段 20 字要 1 次调用，20 字拆成 4 段要 4 次，第三方
+    引擎每次还有上传/导入固定开销。地板用来兜住这类短而碎的任务。
+
+    POINTS_PER_1000_CHARS=0 表示不计费；空文本返回 0。
+    """
+    if POINTS_PER_1000_CHARS <= 0:
+        return 0
+    chars = count_billable_chars(lines)
+    if chars <= 0:
+        return 0
+    # 整数运算向上取整，避开浮点：ceil(chars * P / 1000)
+    exact = -(-chars * POINTS_PER_1000_CHARS // 1000)
+    return max(MIN_CHARGE, exact)
 
 
 def charge_for_task(user: dict, lines: list, task_id: str) -> dict:

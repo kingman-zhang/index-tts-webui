@@ -50,6 +50,7 @@ export const api = {
       tts_info: { model_loaded: boolean; device: string; fp16: boolean } | null;
       member_enforce: boolean;
       member_points_per_1000_chars: number;
+      member_min_charge: number;
     }>(`${BASE}/config`);
   },
 

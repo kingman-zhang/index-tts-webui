@@ -244,6 +244,30 @@ export const MONO_EMOTION_MARKERS: Record<string, string> = Object.fromEntries(
  */
 export const MONO_SCOPE_END = "【/】";
 
+/** 剥掉行内停顿标记 [pause:N]。 */
+export function stripPauseTokens(text: string): string {
+  return text.replace(/\[pause:\s*[\d.]+\s*\]/g, "");
+}
+
+/** 计费字数：剥离 [pause:N] 后的字符数。
+ *
+ * 停顿标记只控制合成时插多长静音、不是要念的正文，因此不计费——与后端
+ * `membership/service.py: count_billable_chars()` 同一口径，改动需两边同步。
+ * 情绪标记【label】/【/】已在 textToMonoLines / textToPodcastSegments 阶段
+ * 剥离，不进 text，故这里无需再处理。
+ */
+export function billableChars(texts: string[]): number {
+  return texts.reduce((n, t) => n + stripPauseTokens(t).trim().length, 0);
+}
+
+/** 预估一次合成的积分扣费，与后端 `estimate_task_cost()` 同式：
+ *  `max(最低收费, ceil(字数 × 每千字单价 / 1000))`。
+ *  per1000 为 0（未启用按量计费）时返回 0，表示不显示预估。 */
+export function estimatePoints(chars: number, per1000: number, minCharge: number): number {
+  if (per1000 <= 0 || chars <= 0) return 0;
+  return Math.max(minCharge, Math.ceil((chars * per1000) / 1000));
+}
+
 export interface MonoParsedLine {
   text: string;
   /** null=跟随音色 */

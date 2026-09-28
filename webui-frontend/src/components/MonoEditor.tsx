@@ -28,6 +28,7 @@ import {
   MONO_SCOPE_END,
   textToMonoLines,
   textToPodcastSegments,
+  billableChars,
 } from "@/types";
 import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
@@ -503,12 +504,11 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
 
   const parsed = textToMonoLines(text);
   const podcastSegs = speakers ? textToPodcastSegments(text) : null;
-  const totalChars = podcastSegs
-    ? podcastSegs.reduce((acc, s) => acc + s.text.length, 0)
-    : parsed.reduce(
-        (acc, l) => acc + l.text.replace(/\[pause:\s*[\d.]+\s*\]/g, "").length,
-        0
-      );
+  // 与计费口径一致：剥离 [pause:N] 后统计（此前播客分支漏剥，显示的
+  // 字数会比实际扣费字数多出停顿标记的长度）
+  const totalChars = billableChars(
+    podcastSegs ? podcastSegs.map(s => s.text) : parsed.map(l => l.text)
+  );
   const segCount = podcastSegs ? podcastSegs.length : parsed.length;
   const isEmpty = text.trim().length === 0;
   const speakerNames = speakers

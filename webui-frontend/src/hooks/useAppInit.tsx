@@ -15,6 +15,7 @@ export function useAppInit() {
   const [ttsInfo, setTtsInfo] = useState<{ model_loaded: boolean } | null>(null);
   const [memberEnforce, setMemberEnforce] = useState(false);
   const [memberPer1000, setMemberPer1000] = useState(0);
+  const [memberMinCharge, setMemberMinCharge] = useState(0);
 
   // 音色列表：初始 + 30s 轮询（不涉及 TTS 探测）
   useEffect(() => {
@@ -38,6 +39,7 @@ export function useAppInit() {
         setTtsInfo(cfg.tts_info ?? null);
         setMemberEnforce(!!cfg.member_enforce);
         setMemberPer1000(cfg.member_points_per_1000_chars ?? 0);
+        setMemberMinCharge(cfg.member_min_charge ?? 0);
       } catch { setTtsOnline(null); }
     };
     probe();
@@ -49,7 +51,7 @@ export function useAppInit() {
     try { const v = await api.listVoices(); setVoiceFiles(v.voices); } catch {}
   }, []);
 
-  return { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000, reloadVoices };
+  return { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000, memberMinCharge, reloadVoices };
 }
 
 /** 轻量 toast：2.5s 自动消失 */

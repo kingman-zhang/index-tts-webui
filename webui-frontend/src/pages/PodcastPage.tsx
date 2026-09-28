@@ -9,7 +9,7 @@ import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
   defaultProject, defaultEmotion, defaultParams, defaultSilence,
   textToPodcastSegments, podcastScriptIssues, podcastLinesToScript,
-  dialogTextToScript, emotionFromLabel,
+  dialogTextToScript, emotionFromLabel, billableChars, estimatePoints,
   type PodcastProject, type PodcastLine, type SpeakerConfig,
 } from "../types";
 import { useAuth, refreshUser } from "@/lib/auth";
@@ -65,7 +65,7 @@ export default function PodcastPage() {
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [projectList, setProjectList] = useState<ProjectSwitcherItem[]>([]);
 
-  const { voiceFiles, ttsOnline, ttsInfo, reloadVoices, memberEnforce, memberPer1000 } = useAppInit();
+  const { voiceFiles, ttsOnline, ttsInfo, reloadVoices, memberEnforce, memberPer1000, memberMinCharge } = useAppInit();
   const { user } = useAuth();
   const { toast, showToast } = useToast();
 
@@ -194,10 +194,11 @@ export default function PodcastPage() {
   const activeSpeakers = Array.from(new Set(
     parsed.map(s => s.speaker).filter((s): s is "A" | "B" => s !== null)
   ));
-  // 积分预估（与后端 estimate_task_cost 同口径：行文本长度求和后按 1000 字向上取整）
-  const totalChars = parsed.reduce((n, s) => n + s.text.trim().length, 0);
-  const pointsCost = memberEnforce && memberPer1000 > 0
-    ? Math.ceil(totalChars / 1000) * memberPer1000
+  // 积分预估：与后端 estimate_task_cost 同式（剥离 [pause:N] 后按实际字数
+  // 线性计费、向上取整到 1 积分，并有最低收费地板）
+  const totalChars = billableChars(parsed.map(s => s.text));
+  const pointsCost = memberEnforce
+    ? estimatePoints(totalChars, memberPer1000, memberMinCharge)
     : 0;
   const balance = user?.points ?? null;
   const pointsInsufficient = pointsCost > 0 && balance != null && pointsCost > balance;

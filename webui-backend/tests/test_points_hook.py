@@ -4,9 +4,12 @@
 覆盖：未登录拒绝、预扣、余额不足 402、失败退款、编辑多退少补、取消退款、退款幂等。
 TTS 指向本机必然拒绝连接的端口 → 任务提交后立即失败 → 触发退款路径。
 
-时序说明：预扣断言必须在 worker 抢跑失败退款之前完成，故用
-qs.current_task_id = "blocker" 让 process_queue 空转，任务保持 queued；
-失败退款用独立任务在解除阻断后测。
+时序说明：预扣断言必须在 worker 抢跑失败退款之前完成，故把
+`routes.queue` 模块里的 `process_queue` 换成 no-op（提交处调用的是该模块
+的全局名），任务保持 queued；失败退款用独立任务在解除阻断后测。
+**2026-09-28 修正**：原手法 `qs.current_task_id = "blocker"` 已失效——调度器
+改多用户并发后只在 `current_task_id is None` 时赋值，不再据此阻断，任务照跑、
+立刻失败退款，导致本段 10 项断言全部落空（表现为"预扣后余额 100"）。
 """
 
 from __future__ import annotations
@@ -32,10 +35,27 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 from app import queue_state as qs  # noqa: E402
+from app.routes import queue as queue_routes  # noqa: E402
 from app.membership import service  # noqa: E402
 
 client = TestClient(app)
 auth_cache: dict = {}
+
+
+async def _noop_process_queue():
+    """阻断 worker：队列任务停在 queued，便于断言预扣瞬间的余额。"""
+    return None
+
+
+_ORIG_PROCESS_QUEUE = queue_routes.process_queue
+
+
+def block_worker():
+    queue_routes.process_queue = _noop_process_queue
+
+
+def unblock_worker():
+    queue_routes.process_queue = _ORIG_PROCESS_QUEUE
 
 
 def check(name: str, cond: bool, extra: str = ""):
@@ -62,10 +82,13 @@ def submit(payload: dict, headers: dict):
     }, headers=headers)
 
 
-def wait_terminal(task_id: str, timeout: float = 15.0) -> dict:
+def wait_terminal(task_id: str, auth: dict, timeout: float = 15.0) -> dict:
+    """轮询任务到终态。必须带 auth——ENFORCE=1 下数据隔离生效，匿名 GET 单个
+    任务拿不到内容（早先漏传 headers，断言读到空对象而"假通过"）。"""
+    task: dict = {}
     deadline = time.time() + timeout
     while time.time() < deadline:
-        task = client.get(f"/api/queue/{task_id}").json()
+        task = client.get(f"/api/queue/{task_id}", headers=auth).json()
         if task.get("status") not in ("queued", "running", "syncing"):
             return task
         time.sleep(0.2)
@@ -87,13 +110,13 @@ def main():
     check("ENFORCE=1 未登录提交 401", r.status_code == 401, r.text)
 
     print("── 预扣 / 不足 / 编辑调差（阻断 worker） ──")
-    qs.current_task_id = "blocker"
+    block_worker()
     try:
         r = submit({"project_name": "t1", "kind": "mono", "lines": make_lines(5000)}, auth)
         check("登录提交成功", r.status_code == 200, r.text)
         t1 = r.json()["task_id"]
         check("预扣后余额 50", balance(token) == 50, str(balance(token)))
-        task = client.get(f"/api/queue/{t1}").json()
+        task = client.get(f"/api/queue/{t1}", headers=auth).json()
         check("任务标记 member_id", task.get("member_id") == body["user"]["user_id"])
         check("任务记录预扣额", task.get("points_charged") == 50, str(task.get("points_charged")))
 
@@ -119,13 +142,13 @@ def main():
         check("排队中取消成功", r.status_code == 200, r.text)
         check("取消退款后回 100", balance(token) == 100, str(balance(token)))
     finally:
-        qs.current_task_id = None
+        unblock_worker()
 
     print("── 失败自动退款（解除阻断，TTS 连接失败 → FAILED → 退款） ──")
     r = submit({"project_name": "t4", "kind": "mono", "lines": make_lines(3000)}, auth)
     t4 = r.json()["task_id"]
     # 注意：worker 会立刻抢跑并失败退款，这里不断言中间余额（存在竞态），只看终态
-    task = wait_terminal(t4)
+    task = wait_terminal(t4, auth)
     check("任务失败终态", task.get("status") == "failed", str(task.get("status")))
     check("退款后余额回 100", balance(token) == 100, str(balance(token)))
     logs = client.get("/api/points/logs", headers=auth).json()["logs"]

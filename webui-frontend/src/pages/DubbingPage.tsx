@@ -8,7 +8,7 @@ import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
   defaultProjectName, defaultParams, defaultSilence,
-  textToMonoLines, monoLinesToText,
+  textToMonoLines, monoLinesToText, billableChars, estimatePoints,
 } from "../types";
 import {
   loadProjects, saveProject, removeProject, type MonoProjectSnapshot,
@@ -64,7 +64,7 @@ export default function DubbingPage() {
   const [monoSpeed, setMonoSpeed] = useState<number>(initial.speed);
   const [monoText, setMonoText] = useState<string>(initial.text);
 
-  const { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000 } = useAppInit();
+  const { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000, memberMinCharge } = useAppInit();
   const { toast, showToast } = useToast();
   const { user } = useAuth();
 
@@ -109,10 +109,11 @@ export default function DubbingPage() {
   };
 
   const parsed = textToMonoLines(monoText);
-  // 积分预估（与后端 estimate_task_cost 同口径：行文本 trim 后按 1000 字向上取整）
-  const totalChars = parsed.reduce((n, l) => n + l.text.trim().length, 0);
-  const pointsCost = memberEnforce && memberPer1000 > 0
-    ? Math.ceil(totalChars / 1000) * memberPer1000
+  // 积分预估：与后端 estimate_task_cost 同式（剥离 [pause:N] 后按实际字数
+  // 线性计费、向上取整到 1 积分，并有最低收费地板）
+  const totalChars = billableChars(parsed.map(l => l.text));
+  const pointsCost = memberEnforce
+    ? estimatePoints(totalChars, memberPer1000, memberMinCharge)
     : 0;
   const balance = user?.points ?? null;
   const pointsInsufficient = pointsCost > 0 && balance != null && pointsCost > balance;
