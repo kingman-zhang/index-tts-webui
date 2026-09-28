@@ -217,10 +217,16 @@ def _flatten_podcast_segments(lines: list[dict], engine_name: str, silence: dict
     return entries
 
 
-async def run_podcast_task(task: dict) -> None:
-    """执行双人播客任务：分段 → 并发合成 → 段级变速/归一 → 按序拼接 → 落盘。"""
+async def run_podcast_task(task: dict, lines: list | None = None) -> None:
+    """执行双人播客任务：分段 → 并发合成 → 段级变速/归一 → 按序拼接 → 落盘。
+
+    lines：送进合成的文本（queue_worker 传术语替换后的副本）。缺省读
+    task["lines"]；无论哪种来源，本函数都不改写 task["lines"]——任务详情与
+    存档保持用户原文。
+    """
     task_id = task["id"]
-    lines = task.get("lines") or []
+    if lines is None:
+        lines = task.get("lines") or []
     params = task.get("params") or {}
     silence = task.get("silence") or {}
     voices_cfg = task.get("voices") or {}

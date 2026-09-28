@@ -274,16 +274,21 @@ def _resolve_local_voice(voice_path: str) -> str:
     return voice_path  # 找不到就原样返回，让引擎给出明确报错
 
 
-async def run_mono_task(task: dict) -> None:
+async def run_mono_task(task: dict, lines: list | None = None) -> None:
     """执行配音任务：分段 → 并发合成（第三方 API）/串行（自建）→ 拼接 → 落盘。
 
     并发说明：TTS_CONCURRENCY（默认 3）只作用于第三方 API 引擎；自建 GPU
     引擎恒为串行。失败段自动重试一次（只重试失败段，不整任务重来）；
     重试仍失败时抛出首个原始异常（保留 httpx 错误类型供 queue_worker
     正确归类 INTERRUPTED/FAILED）。
+
+    lines：送进合成的文本（queue_worker 传术语替换后的副本）。缺省读
+    task["lines"]；无论哪种来源，本函数都不改写 task["lines"]——任务详情与
+    存档保持用户原文。
     """
     task_id = task["id"]
-    lines = task.get("lines") or []
+    if lines is None:
+        lines = task.get("lines") or []
     params = task.get("params") or {}
     speaker_speeds = params.get("speaker_speeds") or {}
     speed = float(speaker_speeds.get("A") or params.get("speed") or 1.0)

@@ -10,7 +10,8 @@ import httpx
 from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
-from .stores import load_glossary
+from . import number_norm
+from .stores import apply_glossary, load_glossary
 from . import queue_state as qs
 from .membership import service as member_svc
 
@@ -182,27 +183,32 @@ async def _execute_task(task_id: str) -> None:
     task = qs.queue_tasks[task_id]
     try:
         validate_queue_lines(task.get("lines", []))
-        # 应用术语替换（播客与配音模式共用；req_data["lines"] 与 task["lines"] 是同一列表）
+        # 术语替换只作用于「送去合成的那一份文本」，不回写 task["lines"]（2026-09-28）：
+        # 任务详情、重试扣费、磁盘存档一律保持用户原文，替换仅是合成细节。
+        # 词表 = 全局库（超管）+ 该用户自定义库（同名优先）；未登录仅用全局库。
+        synth_lines = task["lines"]
         if task.get("glossary_enabled", True):
-            terms = load_glossary()
+            terms = load_glossary(task.get("member_id"))
             if terms:
-                for line in task["lines"]:
-                    for t in terms:
-                        line["text"] = line["text"].replace(t["original"], t["replacement"])
+                synth_lines = apply_glossary(task["lines"], terms)
+        # 数字读法归一化：只补文本前端 TN 的缺口（长号码被按数值读等），
+        # 默认关闭；NUM_NORMALIZE=1 启用。详见 app/number_norm.py 与 NUMBER_NORMALIZATION.md。
+        if number_norm.ENABLED:
+            synth_lines = number_norm.apply_number_rules(synth_lines)
 
         # 配音/播客模式：不进 tts-server 播客引擎，走引擎适配层在 backend 进程内合成
         # （TTS_ENGINE_PREFERRED 指向云引擎时无需本地 tts-server 在线）
         if task.get("kind") == "mono":
             from .mono_runner import run_mono_task
-            await run_mono_task(task)
+            await run_mono_task(task, lines=synth_lines)
             return
         if task.get("kind") == "podcast":
             from .podcast_runner import run_podcast_task
-            await run_podcast_task(task)
+            await run_podcast_task(task, lines=synth_lines)
             return
 
         req_data = {
-            "lines": task["lines"],
+            "lines": synth_lines,
             "voices": task["voices"],
             "silence": task["silence"],
             "params": task["params"],

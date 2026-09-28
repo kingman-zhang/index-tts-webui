@@ -6,12 +6,17 @@
 """
 
 import asyncio
+import os
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# 本测试断言「未配置时默认 3」，需先断开 .env（可能设了 TTS_CONCURRENCY=5）
+# 的干扰。真实环境变量优先于 .env，故在 import app.* 之前钉住即可。
+os.environ["TTS_CONCURRENCY"] = "3"
 
 from app import mono_runner  # noqa: E402
 from app.engines.base import SegmentRequest, VoiceRef  # noqa: E402

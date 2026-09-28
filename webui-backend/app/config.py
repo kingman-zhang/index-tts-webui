@@ -71,8 +71,12 @@ FAVORITES_PATH = DATA_DIR / "favorite-voices.json"
 # 预设音色目录
 PRESET_VOICES_DIR = DATA_DIR / "preset-voices"
 
-# 术语词汇表
+# 术语词汇表（全局库：超管维护，对所有用户生效）
 GLOSSARY_PATH = DATA_DIR / "glossary.json"
+
+# 用户自定义术语库目录（按 user_id 分文件；用户同名条目优先于全局库）
+GLOSSARY_USERS_DIR = DATA_DIR / "glossary_users"
+GLOSSARY_USERS_DIR.mkdir(parents=True, exist_ok=True)
 
 # 音色预设
 VOICE_PRESETS_DIR = DATA_DIR / "voice-presets"

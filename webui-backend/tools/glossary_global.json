@@ -1,0 +1,522 @@
+[
+  {
+    "original": "AI",
+    "replacement": "A I"
+  },
+  {
+    "original": "说服",
+    "replacement": "说福"
+  },
+  {
+    "original": "9・11",
+    "replacement": "九幺幺"
+  },
+  {
+    "original": "鳏夫",
+    "replacement": "官夫"
+  },
+  {
+    "original": "掷骰子",
+    "replacement": "至头子"
+  },
+  {
+    "original": "重头",
+    "replacement": "崇头"
+  },
+  {
+    "original": "游说",
+    "replacement": "游睡"
+  },
+  {
+    "original": "提防",
+    "replacement": "低防"
+  },
+  {
+    "original": "给予",
+    "replacement": "己雨"
+  },
+  {
+    "original": "参与",
+    "replacement": "参玉"
+  },
+  {
+    "original": "与会",
+    "replacement": "玉会"
+  },
+  {
+    "original": "勉强",
+    "replacement": "勉抢"
+  },
+  {
+    "original": "强迫",
+    "replacement": "抢迫"
+  },
+  {
+    "original": "倔强",
+    "replacement": "倔匠"
+  },
+  {
+    "original": "劲敌",
+    "replacement": "敬敌"
+  },
+  {
+    "original": "薄弱",
+    "replacement": "伯弱"
+  },
+  {
+    "original": "剥削",
+    "replacement": "拨靴"
+  },
+  {
+    "original": "堵塞",
+    "replacement": "堵色"
+  },
+  {
+    "original": "鲜为人知",
+    "replacement": "显为人知"
+  },
+  {
+    "original": "恐吓",
+    "replacement": "恐贺"
+  },
+  {
+    "original": "埋怨",
+    "replacement": "蛮怨"
+  },
+  {
+    "original": "尽管",
+    "replacement": "紧管"
+  },
+  {
+    "original": "尽量",
+    "replacement": "紧量"
+  },
+  {
+    "original": "露面",
+    "replacement": "漏面"
+  },
+  {
+    "original": "露馅",
+    "replacement": "漏馅"
+  },
+  {
+    "original": "露马脚",
+    "replacement": "漏马脚"
+  },
+  {
+    "original": "中奖",
+    "replacement": "重奖"
+  },
+  {
+    "original": "中意",
+    "replacement": "重意"
+  },
+  {
+    "original": "称心",
+    "replacement": "趁心"
+  },
+  {
+    "original": "称职",
+    "replacement": "趁职"
+  },
+  {
+    "original": "创伤",
+    "replacement": "窗伤"
+  },
+  {
+    "original": "重创",
+    "replacement": "重窗"
+  },
+  {
+    "original": "上当",
+    "replacement": "上荡"
+  },
+  {
+    "original": "当作",
+    "replacement": "荡作"
+  },
+  {
+    "original": "间隔",
+    "replacement": "见隔"
+  },
+  {
+    "original": "间断",
+    "replacement": "见断"
+  },
+  {
+    "original": "间谍",
+    "replacement": "见谍"
+  },
+  {
+    "original": "看守",
+    "replacement": "刊守"
+  },
+  {
+    "original": "看管",
+    "replacement": "刊管"
+  },
+  {
+    "original": "笼罩",
+    "replacement": "垄罩"
+  },
+  {
+    "original": "笼络",
+    "replacement": "垄络"
+  },
+  {
+    "original": "翘首",
+    "replacement": "桥首"
+  },
+  {
+    "original": "似的",
+    "replacement": "是的"
+  },
+  {
+    "original": "半身不遂",
+    "replacement": "半身不随"
+  },
+  {
+    "original": "呕吐",
+    "replacement": "呕兔"
+  },
+  {
+    "original": "呜咽",
+    "replacement": "呜夜"
+  },
+  {
+    "original": "哽咽",
+    "replacement": "哽夜"
+  },
+  {
+    "original": "佣金",
+    "replacement": "用金"
+  },
+  {
+    "original": "粘稠",
+    "replacement": "年稠"
+  },
+  {
+    "original": "症结",
+    "replacement": "争结"
+  },
+  {
+    "original": "正月",
+    "replacement": "争月"
+  },
+  {
+    "original": "应酬",
+    "replacement": "硬酬"
+  },
+  {
+    "original": "应聘",
+    "replacement": "硬聘"
+  },
+  {
+    "original": "应届",
+    "replacement": "英届"
+  },
+  {
+    "original": "载重",
+    "replacement": "再重"
+  },
+  {
+    "original": "记载",
+    "replacement": "记宰"
+  },
+  {
+    "original": "折本",
+    "replacement": "蛇本"
+  },
+  {
+    "original": "宝藏",
+    "replacement": "宝葬"
+  },
+  {
+    "original": "果脯",
+    "replacement": "果府"
+  },
+  {
+    "original": "号啕",
+    "replacement": "豪啕"
+  },
+  {
+    "original": "和面",
+    "replacement": "活面"
+  },
+  {
+    "original": "教书",
+    "replacement": "交书"
+  },
+  {
+    "original": "丧事",
+    "replacement": "桑事"
+  },
+  {
+    "original": "刹车",
+    "replacement": "沙车"
+  },
+  {
+    "original": "扇风",
+    "replacement": "山风"
+  },
+  {
+    "original": "拓片",
+    "replacement": "踏片"
+  },
+  {
+    "original": "遗赠",
+    "replacement": "位赠"
+  },
+  {
+    "original": "择菜",
+    "replacement": "宅菜"
+  },
+  {
+    "original": "牛仔",
+    "replacement": "牛宰"
+  },
+  {
+    "original": "处理",
+    "replacement": "楚理"
+  },
+  {
+    "original": "的确",
+    "replacement": "敌确"
+  },
+  {
+    "original": "厌恶",
+    "replacement": "厌勿"
+  },
+  {
+    "original": "分量",
+    "replacement": "份量"
+  },
+  {
+    "original": "磨坊",
+    "replacement": "磨房"
+  },
+  {
+    "original": "冠军",
+    "replacement": "贯军"
+  },
+  {
+    "original": "会计",
+    "replacement": "快计"
+  },
+  {
+    "original": "几乎",
+    "replacement": "机乎"
+  },
+  {
+    "original": "校对",
+    "replacement": "叫对"
+  },
+  {
+    "original": "结实",
+    "replacement": "街实"
+  },
+  {
+    "original": "空白",
+    "replacement": "控白"
+  },
+  {
+    "original": "落枕",
+    "replacement": "涝枕"
+  },
+  {
+    "original": "反省",
+    "replacement": "反醒"
+  },
+  {
+    "original": "标识",
+    "replacement": "标致"
+  },
+  {
+    "original": "通红",
+    "replacement": "痛红"
+  },
+  {
+    "original": "旋风",
+    "replacement": "炫风"
+  },
+  {
+    "original": "畜牧",
+    "replacement": "蓄牧"
+  },
+  {
+    "original": "折腾",
+    "replacement": "遮腾"
+  },
+  {
+    "original": "重复",
+    "replacement": "虫复"
+  },
+  {
+    "original": "着装",
+    "replacement": "酌装"
+  },
+  {
+    "original": "悄然",
+    "replacement": "巧然"
+  },
+  {
+    "original": "散文",
+    "replacement": "伞文"
+  },
+  {
+    "original": "宿舍",
+    "replacement": "宿社"
+  },
+  {
+    "original": "盛饭",
+    "replacement": "成饭"
+  },
+  {
+    "original": "扁舟",
+    "replacement": "偏舟"
+  },
+  {
+    "original": "钥匙",
+    "replacement": "要匙"
+  },
+  {
+    "original": "绿林",
+    "replacement": "路林"
+  },
+  {
+    "original": "踏实",
+    "replacement": "塌实"
+  },
+  {
+    "original": "系鞋带",
+    "replacement": "记鞋带"
+  },
+  {
+    "original": "时髦",
+    "replacement": "时毛"
+  },
+  {
+    "original": "逮捕",
+    "replacement": "代捕"
+  },
+  {
+    "original": "召开",
+    "replacement": "兆开"
+  },
+  {
+    "original": "恪守",
+    "replacement": "客守"
+  },
+  {
+    "original": "古刹",
+    "replacement": "古岔"
+  },
+  {
+    "original": "谄媚",
+    "replacement": "产媚"
+  },
+  {
+    "original": "讪笑",
+    "replacement": "善笑"
+  },
+  {
+    "original": "刻薄",
+    "replacement": "刻伯"
+  },
+  {
+    "original": "菲薄",
+    "replacement": "匪伯"
+  },
+  {
+    "original": "边塞",
+    "replacement": "边赛"
+  },
+  {
+    "original": "要塞",
+    "replacement": "要赛"
+  },
+  {
+    "original": "累赘",
+    "replacement": "雷赘"
+  },
+  {
+    "original": "擂台",
+    "replacement": "泪台"
+  },
+  {
+    "original": "露脸",
+    "replacement": "漏脸"
+  },
+  {
+    "original": "作践",
+    "replacement": "坐践"
+  },
+  {
+    "original": "秘鲁",
+    "replacement": "必鲁"
+  },
+  {
+    "original": "六安",
+    "replacement": "路安"
+  },
+  {
+    "original": "蚌埠",
+    "replacement": "蹦布"
+  },
+  {
+    "original": "台州",
+    "replacement": "胎州"
+  },
+  {
+    "original": "丽水",
+    "replacement": "离水"
+  },
+  {
+    "original": "蒙古",
+    "replacement": "猛古"
+  },
+  {
+    "original": "厦门",
+    "replacement": "夏门"
+  },
+  {
+    "original": "燕京",
+    "replacement": "烟京"
+  },
+  {
+    "original": "龟裂",
+    "replacement": "军裂"
+  },
+  {
+    "original": "吐蕃",
+    "replacement": "吐波"
+  },
+  {
+    "original": "可汗",
+    "replacement": "克寒"
+  },
+  {
+    "original": "单于",
+    "replacement": "蝉于"
+  },
+  {
+    "original": "华山",
+    "replacement": "化山"
+  },
+  {
+    "original": "会稽",
+    "replacement": "快基"
+  },
+  {
+    "original": "番禺",
+    "replacement": "潘禺"
+  },
+  {
+    "original": "尉迟",
+    "replacement": "玉迟"
+  },
+  {
+    "original": "骠骑",
+    "replacement": "票骑"
+  }
+]
