@@ -47,9 +47,20 @@ curl -s http://127.0.0.1:8088/api/breezeblue/voices?page_size=1 | head -c 200  #
 ## 3. 日常运维
 
 ```bash
-# 升级（数据卷不受影响）
+# 升级（数据卷不受影响）—— 推荐用脚本：它会重建镜像、等 healthy、再做部署后自检
+bash tools/deploy_g1_autodl.sh
+
+# 等价的手工方式（脚本的 Docker 路径内部就是这两步）
 git pull && docker compose up -d --build
 
+# ⚠️ Docker 部署下不要随手加 --skip-frontend：前端也是镜像（podcast-web）。
+#    只有确定前端无改动时才用，否则页面还是旧构建、后端却已更新。
+```
+
+> 判定「这次要不要重前端」：`git log --name-only <旧HEAD>..<新HEAD> | grep webui-frontend`。
+> 有输出 ⇒ 必须 `docker compose up -d --build`（两个服务），不能只重建 backend。
+
+```bash
 # 日志
 docker compose logs -f backend    # 后端
 docker compose logs -f web        # nginx
@@ -61,9 +72,13 @@ docker compose restart backend
 docker tag podcast-backend:latest podcast-backend:backup   # 每次 build 前先打备份 tag
 ```
 
-## 4. 与旧脚本部署的关系
+## 4. 与裸进程部署的关系
 
-`tools/deploy_g1_autodl.sh`（nohup + dev server 方式）保留可回退，但两者**不能同时跑**：会抢 3001 端口。
+`tools/deploy_g1_autodl.sh` **会自动识别部署形态**：检测到容器 `podcast-backend` 在跑就走
+Docker 路径（`git pull` → `docker compose up -d --build` → 自检），否则走裸进程路径
+（nohup 重启 `server.py`）。两条路的「生效」条件不同，走错一条就是「脚本跑完了、代码一行没变」。
+
+两种形态**不能同时跑**（会抢 3001 端口）。
 
 切 Docker 前先停旧进程——**按端口找，别按命令行字符串匹配**：
 
@@ -82,11 +97,24 @@ lsof -ti tcp:3001 | xargs -r kill        # 正确：启动方式不同，cmdline
 curl -s localhost:3001/api/version | python3 -c 'import json,sys;print(json.load(sys.stdin)["git_head"])'
 git rev-parse --short HEAD                  # 两个必须一致
 
-# 容器：镜像里没有 .git，所以 git_head 会是 null —— 改比「镜像构建时间 vs 容器启动时间」
-docker inspect -f '{{.Created}}' podcast-backend:latest
-docker inspect -f '{{.State.StartedAt}}' podcast-backend
-# 容器启动时间 < 镜像构建时间 ⇒ 还在跑旧镜像，执行 docker compose up -d --build
+# 容器：镜像里没有 .git，git_head 恒为 null，不能据此判断「没部署成功」。
+# 改比「镜像构建时间 vs HEAD 提交时间」——容器一定在镜像之后启动，比 StartedAt 没用：
+# 只重建容器不重建镜像时 StartedAt 也会变新，会假通过。
+python3 - <<'PY'
+import subprocess, re, datetime as d
+img = subprocess.run(["docker","inspect","-f","{{.Created}}","podcast-backend:latest"],
+                     capture_output=True, text=True).stdout.strip()
+head = subprocess.run(["git","log","-1","--format=%cI"], capture_output=True, text=True).stdout.strip()
+f = lambda s: int(d.datetime.fromisoformat(re.sub(r"\.\d+", "", s).replace("Z","+00:00")).timestamp())
+print(f"镜像构建 {img}  vs  HEAD 提交 {head}")
+print("✓ 镜像是新的" if f(img) >= f(head) else "✗ 镜像比 HEAD 旧 —— 重建没生效，仍是旧代码")
+PY
 ```
+
+`docker exec podcast-backend python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3001/api/version').read().decode())"`
+还能拿到容器内的 `/api/version`（backend 不对外暴露，只能从容器内探）。判据三条：
+① 镜像构建时间 ≥ HEAD 提交时间；② 该端点返回 200 且含 `text_pipeline`（旧镜像是 404，端点本身
+就是新代码才有的符号）；③ `glossary_terms` > 0 且 `glossary_exists` 为真。
 
 `/api/version` 还会回 `stale_sources`：裸进程部署下非空表示这些源文件在进程启动之后
 才被改动，即**进程里仍是旧代码**，必须重启。另回 `data_dir` / `glossary_exists` /

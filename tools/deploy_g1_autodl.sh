@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# G1 真机回归部署脚本（AutoDL 实例，在服务器上执行）
+# G1 真机回归部署脚本（在服务器上执行）
 # 用法: bash tools/deploy_g1_autodl.sh [--skip-frontend]
 # 前置: 在**仓库内**执行（仓库根默认取本脚本所在目录的上一级）
 # 分支: 默认 main（生产分支）；可用 BRANCH=feat-single 覆盖
+# 形态: 自动识别 —— 检测到容器 podcast-backend 走 Docker 路径（重建镜像），
+#       否则走裸进程路径（重启 server.py）。两条路的「生效」条件不同，详见下方分叉处。
+# 注意: Docker 部署下**不要**随手加 --skip-frontend，前端也是镜像；
+#       前后端都有改动时必须两个镜像一起重建。
 set -euo pipefail
 
 # 仓库根 = 脚本所在目录的上一级（脚本位于 <repo>/tools/）。
@@ -16,21 +20,139 @@ SKIP_FRONTEND=0
 
 log() { echo -e "\n\033[1;32m==> $*\033[0m"; }
 
+# ── Docker 部署路径（2026-09-29 新增）──────────────────────────────────────
+# 背景：容器跑的是**镜像里 COPY 进去的** app/，`git pull` 只改磁盘 ⇒ 不重建镜像
+# 一行都不生效。旧版脚本遇到容器直接 exit 1 —— 判断正确但没解决问题，用户还得
+# 自己记住「git pull && docker compose up -d --build」。现在直接接管。
+# 依据 webui-backend/Dockerfile：只有 `COPY app ./app` + `COPY server.py .`
+# （⇒ 改代码必须 rebuild）；data/ 与 .env 是挂载卷（⇒ 改词表靠宿主机、
+# 改 .env 只需 restart 不需 rebuild）。
+docker_upgrade() {
+  cd "$REPO_DIR"
+  local compose="docker compose"
+  docker compose version >/dev/null 2>&1 || compose="docker-compose"
+
+  log "1/4 拉取最新代码（$BRANCH）"
+  git fetch origin
+  if [[ "$(git rev-parse --abbrev-ref HEAD)" != "$BRANCH" ]]; then git checkout "$BRANCH"; fi
+  git pull --ff-only origin "$BRANCH"
+  echo "HEAD -> $(git log --oneline -1)"
+
+  log "2/4 校验随代码分发的通用配置"
+  if [[ -f webui-backend/data/glossary.json ]]; then
+    echo "  全局术语表: $(python3 -c "import json;print(len(json.load(open('webui-backend/data/glossary.json'))))") 条（宿主机侧；容器以挂载卷读取）"
+  else
+    echo "!! webui-backend/data/glossary.json 缺失 —— 容器内术语表会静默失效"
+    echo "   该文件随 git 分发（.gitignore 白名单）；请确认 git pull 成功且版本含本次改动"
+    exit 1
+  fi
+  if ! docker network inspect software_app-net >/dev/null 2>&1; then
+    echo "!! 外部网络 software_app-net 不存在（docker-compose.yml 声明为 external: true）"
+    echo "   先执行: docker network create software_app-net"
+    exit 1
+  fi
+
+  log "3/4 重建镜像并重启容器"
+  if [[ $SKIP_FRONTEND -eq 1 ]]; then
+    echo "（--skip-frontend：只重建 backend —— 前端也有改动时不要用这个参数）"
+    $compose up -d --build backend
+  else
+    $compose up -d --build
+  fi
+
+  echo "等待容器健康（最多 60s）..."
+  local st="unknown"
+  for _ in $(seq 1 30); do
+    st=$(docker inspect -f '{{.State.Health.Status}}' podcast-backend 2>/dev/null || echo "none")
+    [[ "$st" == "healthy" ]] && break
+    sleep 2
+  done
+  echo "  podcast-backend 健康状态: $st"
+  if [[ "$st" != "healthy" ]]; then
+    echo "!! 容器未达 healthy，日志如下:"
+    docker logs --tail 30 podcast-backend || true
+    exit 1
+  fi
+
+  log "4/4 部署后自检：容器里跑的是哪份代码"
+  # 容器内 /app **没有 .git**（.dockerignore 排除），/api/version 的 git_head
+  # 恒为 null ⇒ 不能像裸进程那样拿它比磁盘 HEAD。改用三条独立证据：
+  #   ① 镜像创建时间晚于本次 HEAD 提交时间（否则 = 没重建）；
+  #   ② /api/version 返回 200 且含 text_pipeline（该端点是新代码才有的符号，
+  #      镜像里若是旧代码会直接 404）；
+  #   ③ 挂载卷里词表条数 > 0。
+  local img img_ts head_ts
+  img=$(docker inspect -f '{{.Created}}' podcast-backend:latest 2>/dev/null || true)
+  # 时间戳解析交给 python3，不用 date(1)：`docker inspect` 给的是 9 位小数秒
+  # （2026-09-29T00:15:03.123456789Z），GNU date 能吞、BSD date 不能，而
+  # Python 3.7–3.10 的 fromisoformat 也拒收 9 位小数。先去掉小数部分再解析。
+  img_ts=$(python3 -c '
+import datetime as d, re, sys
+s = re.sub(r"\.\d+", "", (sys.argv[1] or "").strip()).replace("Z", "+00:00")
+try:
+    print(int(d.datetime.fromisoformat(s).timestamp()))
+except Exception:
+    print(0)
+' "$img")
+  head_ts=$(git log -1 --format=%ct)
+  echo "  镜像创建时间   : $img"
+  echo "  HEAD 提交时间  : $(git log -1 --format=%cI)  ($(git rev-parse --short HEAD))"
+  if [[ "$img_ts" -eq 0 || "$img_ts" -lt "$head_ts" ]]; then
+    echo "!! 镜像比 HEAD 旧 —— 重建没生效，容器仍在跑旧代码"
+    exit 1
+  fi
+
+  local ver
+  ver=$(docker exec podcast-backend python -c \
+    "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3001/api/version',timeout=5).read().decode())" \
+    2>/dev/null || true)
+  if [[ -z "$ver" ]]; then
+    echo "!! 容器内 /api/version 无响应 —— 镜像里是旧代码（该端点本次新增）"
+    docker logs --tail 20 podcast-backend || true
+    exit 1
+  fi
+  printf '%s' "$ver" > /tmp/wb-docker-version.json
+  python3 -c '
+import json,sys
+v = json.load(open(sys.argv[1]))
+tp = v.get("text_pipeline") or {}
+print("  容器内数据目录 :", v.get("data_dir"), "存在" if v.get("data_dir_exists") else "!! 不存在")
+print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
+print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
+print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
+print("  数字读法归一   :", tp.get("number_norm_enabled"))
+print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
+assert v.get("glossary_exists"), "!! 容器读到的数据目录里没有 glossary.json —— 挂载卷指错了，所有词条静默失效"
+assert tp.get("glossary_terms"), "!! 词表条数为 0 —— 术语替换不会生效"
+assert tp.get("name_punct_enabled") is not False, "!! 人名分隔号归一化被关闭 —— 中点会进词表变 unk"
+print("  [ok] 镜像含新代码（/api/version 存在且字段齐全）")
+' /tmp/wb-docker-version.json || { echo "!! 部署后自检未通过，见上"; exit 1; }
+  rm -f /tmp/wb-docker-version.json
+
+  echo
+  echo "注意：容器内 /app 无 .git ⇒ /api/version 的 git_head 恒为 null 属正常，"
+  echo "      不要据此判断「没部署成功」；以上三条证据才是判据。"
+}
+
 log "0/6 环境自检"
 cd "$REPO_DIR"
 REMOTE_URL=$(git remote get-url origin)
 echo "repo=$REPO_DIR remote=$REMOTE_URL branch=$(git rev-parse --abbrev-ref HEAD)"
 if ! git log --oneline -1; then echo "!! git 不可用或仓库异常"; exit 1; fi
 
-# 容器部署的坑：git pull 只改磁盘，运行中的容器还跑着旧镜像里的代码。
-# 本脚本重启的是裸进程 server.py，对容器完全无效 —— 宁可中止，也不要给出
-# "部署成功"的假象（2026-09-28：改了不生效的排查成本极高）。
+# 部署形态分叉：容器 vs 裸进程。两条路的「生效」条件完全不同 ——
+# 容器要重建镜像，裸进程要重启进程。走错一条就是「脚本跑完了、代码一行没变」。
 if command -v docker >/dev/null 2>&1 \
    && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^podcast-backend$'; then
-  echo "!! 检测到容器 podcast-backend 正在运行 —— 本项目是 Docker 部署。"
-  echo "   正确升级方式: git pull && docker compose up -d --build"
-  echo "   本脚本重启裸进程对容器无效，已中止以避免假成功。"
-  exit 1
+  echo "==> 检测到容器 podcast-backend 正在运行 —— 走 Docker 升级路径（重建镜像）"
+  docker_upgrade
+  log "完成（Docker 部署）—— 请在浏览器打开前端做回归（见文末清单）"
+  echo "回归清单:"
+  echo "  1. 打开前端页面（Docker 部署看 docker-compose.yml 里 PODCAST_WEB_PORT，默认 8088）"
+  echo "  2. 新稿子提交一次，确认预估积分按实际字数显示（不再不足千字按整千扣）"
+  echo "  3. 试听含人名中点的句子（如「作家卡仑・墨菲」）确认无怪音"
+  echo "  4. 改一段文字重新提交，确认只按新字数扣费"
+  exit 0
 fi
 
 log "1/6 拉取最新代码（$BRANCH）"
