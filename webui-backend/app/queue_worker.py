@@ -10,9 +10,9 @@ import httpx
 from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
-# import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / number_norm
-# 的开关是**模块级**读 os.environ 的。顺序反了会落到缺省值。
-from . import name_punct, number_norm, year_norm
+# import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / num_value_norm /
+# number_norm 的开关是**模块级**读 os.environ 的。顺序反了会落到缺省值。
+from . import name_punct, num_value_norm, number_norm, year_norm
 from .stores import apply_glossary, load_glossary_for_synthesis
 from . import queue_state as qs
 from .membership import service as member_svc
@@ -206,6 +206,12 @@ async def _execute_task(task_id: str) -> None:
         # 见 app/year_norm.py 顶部的完整说明。
         if year_norm.ENABLED:
             synth_lines = year_norm.apply_year_rules(synth_lines)
+        # 数值读法：单位/量词或幅度词旁边、以及带 % 的阿拉伯数字换汉字。
+        # 阿拉伯数字在 IndexTTS 词表里不存在，进模型就是一个 unk（读法随机），
+        # 而云端 TN 不可依赖 —— 详见 app/num_value_norm.py 顶部。
+        # 必须夹在 year_norm 之后（年份先换掉）、number_norm 之前（两层命中集合不相交）。
+        if num_value_norm.ENABLED:
+            synth_lines = num_value_norm.apply_value_rules(synth_lines)
         # 数字读法归一化：只补文本前端 TN 的缺口（长号码被按数值读等），
         # 默认关闭；NUM_NORMALIZE=1 启用。详见 app/number_norm.py 与 NUMBER_NORMALIZATION.md。
         if number_norm.ENABLED:

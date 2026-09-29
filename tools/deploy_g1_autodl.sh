@@ -114,6 +114,7 @@ print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("gloss
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
+print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 eng = ((v.get("engines") or {}).get("registered")) or []
@@ -132,6 +133,10 @@ assert tp.get("year_norm_enabled") is not False, "!! 年份读法归一化被关
 assert (tp.get("year_norm_min_digits") or 9) <= 3, (
     "!! 年份逐位读的下限不是 3（或字段缺失）—— 跑的是只有四位规则的旧代码，"
     "公元850年 会被读成「八百五十」")
+# num_value_max_digits 是 2026-09-29「数值读法」引入的新符号，同理报**取值域**而非开关：
+# 字段缺失 = 镜像里还没有这层（`230 倍` 会以阿拉伯数字进模型、读成「二三零」）。
+assert (tp.get("num_value_max_digits") or 0) >= 8, (
+    "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 这类会原样进模型变 unk")
 # engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
 # source_mtimes 全为 null ⇒ 探测路径算错了（曾因 REPO_ROOT 取成 `/` 在容器里恒为空，
@@ -294,6 +299,7 @@ print("  数据目录       :", v.get("data_dir"), "存在" if v.get("data_dir_e
 print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
+print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
@@ -320,6 +326,9 @@ assert tp.get("year_norm_enabled") is not False, (
 assert (tp.get("year_norm_min_digits") or 9) <= 3, (
     "!! 年份逐位读的下限不是 3（或字段缺失）—— 跑的是只有四位规则的旧代码，"
     "公元850年 会被读成「八百五十」")
+# 见 Docker 路径同名断言：数值读法这一层在不在，看取值域而不看开关。
+assert (tp.get("num_value_max_digits") or 0) >= 8, (
+    "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 会原样进模型变 unk")
 # stale_sources 放最后断言：它只监视 4 个文本链路文件（name_punct / number_norm /
 # stores / queue_worker），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
 # 的顺序下它必然为空；若非空，说明确有文件在这次启动之后被写过，是真问题。

@@ -68,6 +68,7 @@ REPO_ROOT = BACKEND_ROOT.parent
 WATCHED = (
     "app/name_punct.py",
     "app/year_norm.py",
+    "app/num_value_norm.py",
     "app/number_norm.py",
     "app/stores.py",
     "app/queue_worker.py",
@@ -147,7 +148,7 @@ def _data_dir() -> dict:
 def _text_switches() -> dict:
     """文本预处理各道关的开关与词表规模（延迟 import，保证 .env 已加载）。"""
     try:
-        from . import name_punct, number_norm, stores, year_norm
+        from . import name_punct, num_value_norm, number_norm, stores, year_norm
 
         terms = stores.load_global_glossary()
         synth = stores.load_glossary_for_synthesis(None)
@@ -164,6 +165,11 @@ def _text_switches() -> dict:
             # 而 /api/version 看不出差异，只能去读 git 史。
             # 看到 3 = 三位规则在跑；看到 4 = 还是老的四位版，必须重新部署。
             "year_norm_min_digits": year_norm.MIN_DIGITS,
+            # 数值读法（2026-09-29 新增）：单位/幅度词旁的阿拉伯数字换汉字。
+            # 同上，报取值域而非只报开关：num_value_max_digits 是这一版规则的
+            # 受理位数上限，部署自检断言它 >= 8。
+            "num_value_normalize": num_value_norm.ENABLED,
+            "num_value_max_digits": num_value_norm.MAX_DIGITS,
             "number_norm_enabled": number_norm.ENABLED,
             "glossary_sep_variants": stores.GLOSSARY_SEP_VARIANTS,
             "glossary_sep_variants_max": stores.MAX_SEP_VARIANTS,
