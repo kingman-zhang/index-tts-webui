@@ -56,10 +56,22 @@ async def main() -> int:
     )
 
     try:
-        engine, audio = await registry.synthesize(req)
+        # 选引擎（探活 + 跳过熔断冷却）→ 用它合成，与生产链路一致。
+        # 降级发生在**选择阶段**：`EngineRegistry.synthesize()` 那条「合成中途
+        # 换引擎」的路径已于 2026-09-29 删除 —— 中途换引擎会产出采样率不一致的
+        # 音频（_concat_wavs 有一致性强校验），而且它从未被生产代码调用过。
+        engine = await registry.resolve()
+        audio = await engine.synthesize_segment(req)
         out = pathlib.Path(args.output)
         out.write_bytes(audio)
-        print(f"[OK] engine={engine.name} bytes={len(audio)} -> {out}")
+        cap = engine.capabilities
+        print(
+            f"[OK] engine={engine.name} bytes={len(audio)} -> {out}\n"
+            f"     能力: 单次上限={cap.max_input_chars or '不限'}"
+            f" / 并发={cap.max_concurrency or 'env'}"
+            f" / 语速={cap.supports_speed}"
+            f" / 情绪={cap.supports_emotion}"
+        )
         return 0
     except Exception as e:
         print(f"[FAIL] {e}", file=sys.stderr)

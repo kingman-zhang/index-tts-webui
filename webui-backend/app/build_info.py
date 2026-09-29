@@ -51,7 +51,7 @@ PROCESS_STARTED_AT = datetime.fromtimestamp(PROCESS_STARTED_TS).isoformat(timesp
 # 仓库根：webui-backend/app/build_info.py → parents[2]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# 这些文件决定「文本送出去长什么样」，是排错时最需要核对的一组。
+# 这些文件决定「文本送出去长什么样」与「走哪个引擎」，是排错时最需要核对的一组。
 # 只取 mtime，不做 import，成本可忽略。
 WATCHED = (
     "app/name_punct.py",
@@ -59,6 +59,10 @@ WATCHED = (
     "app/number_norm.py",
     "app/stores.py",
     "app/queue_worker.py",
+    # 引擎层（2026-09-29 拆出）：协议/能力声明、注册表、选择策略
+    "app/engines/base.py",
+    "app/engines/factory.py",
+    "app/engines/selector.py",
 )
 
 
@@ -153,6 +157,22 @@ def _text_switches() -> dict:
         return {"error": str(e)}
 
 
+def _engines() -> dict:
+    """注册了哪些引擎、各自能力、是否在熔断冷却中。
+
+    这几项回答的是「**这次为什么走了这个引擎**」—— 此前完全不可见，
+    只能靠猜（`TTS_ENGINE_PREFERRED` 是否生效、有没有 Key、探活结果如何）。
+    出现 `engines` 字段本身也说明进程加载的是含能力声明的新代码。
+    """
+    try:
+        from .engines.factory import engine_summary
+
+        return {"registered": engine_summary(), "error": None}
+    except Exception as e:  # 自检不能把进程带崩
+        logger.warning("[build_info] engines 读取失败: %s", e)
+        return {"registered": [], "error": str(e)}
+
+
 def snapshot() -> dict:
     """给 /api/version 与启动日志的完整快照。"""
     return {
@@ -170,4 +190,5 @@ def snapshot() -> dict:
         # 非空 ⇒ 这些文件在进程启动之后被改过，进程里跑的是旧代码
         "stale_sources": stale_sources(),
         "text_pipeline": _text_switches(),
+        "engines": _engines(),
     }

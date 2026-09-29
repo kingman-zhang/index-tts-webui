@@ -61,6 +61,24 @@ async def on_startup():
         "开" if _tp.get("year_norm_enabled") else "关",
         "开" if _tp.get("number_norm_enabled") else "关",
     )
+    # 引擎链路（2026-09-29）：注册顺序即优先级，能力由各引擎自己声明。
+    # 「这次为什么走了某个引擎」此前完全不可见，只能靠猜；这一行 + /api/version
+    # 的 engines 字段把它变成可核对的事实。
+    _engines = (_boot.get("engines") or {}).get("registered") or []
+    if _engines:
+        logger.info(
+            "[startup] 引擎优先级 %s",
+            " → ".join(
+                "%s(上限%s/并发%s)" % (
+                    e.get("name"),
+                    e.get("max_input_chars") or "不限",
+                    e.get("max_concurrency") or "env",
+                )
+                for e in _engines
+            ),
+        )
+    else:
+        logger.warning("[startup] 没有任何 TTS 引擎被注册 —— 所有合成都将失败")
     if _boot.get("stale_sources"):
         logger.warning(
             "[startup] !! 以下源文件在进程启动之后被改动，进程内仍是旧版本：%s"

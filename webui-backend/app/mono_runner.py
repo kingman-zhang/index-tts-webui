@@ -13,13 +13,17 @@
 分段规则（与前端配音画布所见即所得一致）：
   - 行内停顿 [pause:秒] / <#> 由 backend 的 split_by_pauses 切分并在拼接时
     插入精确静音，不依赖 tts-server 的行内停顿实现；
-  - autodl.art 引擎先按 2048 字符切满片（chunker.split_for_art），
-    再按停顿切子段（注意：停顿切分会增加 art 的按次提交数）。
+  - 超过引擎单次上限的长文本先按上限切满片，再按停顿切子段
+    （上限来自 engine.capabilities.max_input_chars，**不再按引擎名判断**：
+    此前只有 art 被切，而 302.ai 上限 2000、SiliconFlow 上限 2048，
+    两者超限直接抛错 ⇒ 同一段长文本 art 成功、302.ai 必失败）。
 
-并发规则（2026-09-18）：
-  - 所有行先扁平化为段（_flatten_segments），第三方 API 引擎按
-    TTS_CONCURRENCY（默认 3，钳 1-8）并发合成，自建 GPU 引擎恒串行；
-  - gather 保序 → 拼接顺序与文本顺序一致；失败段自动重试一次。
+并发规则（2026-09-18，2026-09-29 改为读能力声明）：
+  - 所有行先扁平化为段（_flatten_segments），并发度取
+    engine.capabilities.max_concurrency（自建 GPU 实例声明 1，串行；
+    第三方声明 None ⇒ 读 TTS_CONCURRENCY，默认 3，钳 1-8）；
+  - gather 保序 → 拼接顺序与文本顺序一致；失败段自动重试一次，
+    重试后仍失败则把该引擎置入冷却（避免每个新任务重复撞同一个故障引擎）。
 """
 
 from __future__ import annotations
@@ -32,16 +36,15 @@ import wave
 from pathlib import Path
 
 from . import queue_state as qs
-from .config import DATA_DIR, TTS_URL, http_client, logger
+from .config import DATA_DIR, logger
 from .engines import (
     EMO_VECTOR_ORDER,
-    EngineRegistry,
-    Indextts302aiEngine,
-    IndexttsArtEngine,
-    IndexttsLocalEngine,
-    IndexttsSiliconflowEngine,
+    EngineCapabilities,
     SegmentRequest,
     VoiceRef,
+    effective_concurrency,
+    mark_engine_failed,
+    select_engine,
 )
 from .engines.chunker import split_for_art
 
@@ -103,52 +106,10 @@ def split_by_pauses(text: str) -> list[tuple[str, int]]:
     return [(seg_text, gap) for seg_text, gap in pieces]
 
 
-def build_registry() -> EngineRegistry:
-    """配音模式引擎注册表，默认顺序：自建 → 302.ai → SiliconFlow → autodl.art。
-
-    有 Key/Token 才注册对应引擎。TTS_ENGINE_PREFERRED 可调整优先级：
-    逗号分隔的引擎名（indextts_local / indextts_302ai / indextts_siliconflow /
-    indextts_art），列出的引擎按给定顺序排到最前，未列出的保持原相对顺序排在
-    其后；resolve() 依序探活——排最前的不可用时自动落到后续引擎。
-    例：TTS_ENGINE_PREFERRED=indextts_art
-    """
-    import logging
-    import os
-
-    registry = EngineRegistry()
-    registry.register(IndexttsLocalEngine(TTS_URL, http_client))
-    if os.environ.get("INDEXTTS302_API_KEY"):
-        registry.register(
-            Indextts302aiEngine(cache_path=DATA_DIR / "ai302_voices.json")
-        )
-    if os.environ.get("SILICONFLOW_API_KEY"):
-        # 默认国内站（CosyVoice2）；要接国际站 IndexTTS-2 时：
-        #   SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1
-        #   SILICONFLOW_MODEL=IndexTeam/IndexTTS-2
-        #   （换国际站 Key，国内/国际 Key 不互通）
-        registry.register(
-            IndexttsSiliconflowEngine(
-                base_url=os.environ.get("SILICONFLOW_BASE_URL")
-                or "https://api.siliconflow.cn/v1",
-                cache_path=DATA_DIR / "siliconflow_voices.json",
-            )
-        )
-    registry.register(IndexttsArtEngine())  # token 从 AUTODL_API_TOKEN 读取
-
-    preferred = os.environ.get("TTS_ENGINE_PREFERRED", "").strip()
-    if preferred:
-        log = logging.getLogger(__name__)
-        by_name = {e.name: e for e in registry.engines}
-        head: list = []
-        for n in (s.strip() for s in preferred.split(",")):
-            if not n:
-                continue
-            if n in by_name:
-                head.append(by_name.pop(n))
-            else:
-                log.warning("TTS_ENGINE_PREFERRED 含未注册引擎 %r（缺 Key 或名字写错），已忽略", n)
-        registry.engines = head + list(by_name.values())
-    return registry
+# 引擎注册表已迁到 app/engines/factory.py（2026-09-29）：
+# 它必须是**进程级单例** —— 熔断状态要跨任务存活，health TTL 与音色解析缓存
+# 不能每任务重建就作废。本模块是任务级对象，不适合持有它。
+# 选引擎请用 app/engines/selector.select_engine()。
 
 
 def _emotion_label(line: dict) -> str | None:
@@ -171,21 +132,26 @@ class _TaskCancelled(Exception):
     """用户取消（在并发 worker 内抛出，由 run_mono_task 汇总处理）。"""
 
 
-def _flatten_segments(lines: list[dict], engine_name: str) -> list[dict]:
+def _flatten_segments(lines: list[dict], caps: EngineCapabilities) -> list[dict]:
     """把任务行扁平化为合成段列表（并发调度的最小单元）。
 
     每段：{text, emotion, gap_ms, line_idx}。行内停顿/backend 切分、
-    art 满片切分、行尾 silence_after_ms 并入本行最后一段的静音，
+    超长行按引擎单次上限切满片、行尾 silence_after_ms 并入本行最后一段的静音，
     与旧串行版语义一致；顺序即拼接顺序（gather 保序）。
+
+    切片依据是 `caps.max_input_chars`（引擎自己声明的能力），**不再是引擎名**。
+    旧写法 `split_for_art(text) if engine_name == "indextts_art" else [text]`
+    让 302.ai（上限 2000 字）与 SiliconFlow（上限 2048 字）的超长输入直接抛错
+    「请走 chunker」，而上层从来不切 —— 同一段长文本 art 成功、302.ai 必失败。
     """
     entries: list[dict] = []
+    limit = caps.max_input_chars
     for idx, line in enumerate(lines):
         text = (line.get("text") or "").strip()
         if not text:
             continue
         emotion_label = _emotion_label(line)
-        # autodl.art 按次计费且单次 ≤2048 字符：切满片省费用；自建引擎整段交给模型侧分段
-        pieces = split_for_art(text) if engine_name == "indextts_art" else [text]
+        pieces = split_for_art(text, limit) if limit else [text]
         line_entries: list[dict] = []
         for piece in pieces:
             for sub_text, gap_ms in split_by_pauses(piece):
@@ -202,15 +168,9 @@ def _flatten_segments(lines: list[dict], engine_name: str) -> list[dict]:
     return entries
 
 
-def _concurrency(engine_name: str) -> int:
-    """并发度：自建 GPU 引擎恒为 1；第三方 API 读 TTS_CONCURRENCY（默认 3，钳 1-8）。"""
-    if engine_name == "indextts_local":
-        return 1
-    try:
-        n = int(os.environ.get("TTS_CONCURRENCY", "3").strip())
-    except ValueError:
-        n = 3
-    return max(1, min(n, 8))
+# 并发度计算已上收到 engines.effective_concurrency(caps)（2026-09-29）：
+# 原 _concurrency(engine_name) 靠 `engine_name == "indextts_local"` 判断自建引擎串行，
+# 既是引擎名硬编码、又被 podcast_runner 反向 import。现在读能力声明 max_concurrency。
 
 
 def _concat_wavs(chunks: list[bytes], gaps_ms: list[int]) -> tuple[bytes, float]:
@@ -258,8 +218,6 @@ def _resolve_local_voice(voice_path: str) -> str:
     时读不到；art（base64 内联）/SiliconFlow（克隆上传）等引擎都要求本地可读。
     原路径可读时原样返回（保证 302ai 等按路径+大小+mtime 做缓存键的引擎稳定）。
     """
-    import os
-
     p = Path(voice_path)
     if p.is_file():
         return voice_path
@@ -299,15 +257,16 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
         raise ValueError("配音任务没有文本段")
 
     # 任务内固定单一引擎，避免中途故障切换导致音频参数不一致
-    engine = await build_registry().resolve()
+    engine = await select_engine()
+    caps = engine.capabilities
     logger.info("[mono] task=%s engine=%s lines=%d speed=%.2f", task_id, engine.name, len(lines), speed)
     voice = VoiceRef(tts_path=voice_path, local_path=_resolve_local_voice(voice_path), display_name=Path(voice_path).name)
 
-    entries = _flatten_segments(lines, engine.name)
+    entries = _flatten_segments(lines, caps)
     if not entries:
         raise ValueError("所有文本段均为空")
     total = len(entries)
-    conc = _concurrency(engine.name)
+    conc = effective_concurrency(caps)
     logger.info("[mono] task=%s engine=%s entries=%d concurrency=%d", task_id, engine.name, total, conc)
 
     # 行 → 段数映射（用于 current_line：行内全部段完成才计入）
@@ -391,6 +350,11 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
     if errors:
         first = errors[0]
         logger.error("[mono] task=%s %d/%d 段重试后仍失败", task_id, len(errors), total)
+        # 判为引擎级故障的判据刻意收窄：全部失败，或 3 段以上且过半失败。
+        # 单段失败更可能是该段文本自身的问题（引擎拒绝/转写异常），
+        # 把它当引擎故障会让整个引擎白冷却 120 秒 —— 误伤比漏判更贵。
+        if len(errors) == total or (len(errors) >= 3 and len(errors) * 2 >= total):
+            mark_engine_failed(engine.name)
         raise first  # 保留原始异常类型，queue_worker 据此归类 INTERRUPTED/FAILED
 
     chunks: list[bytes] = [r for r in results]

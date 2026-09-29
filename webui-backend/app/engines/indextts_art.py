@@ -37,7 +37,7 @@ from pathlib import Path
 
 import httpx
 
-from .base import SegmentRequest, audio_data_uri
+from .base import EngineCapabilities, SegmentRequest, audio_data_uri
 
 DEFAULT_SUBMIT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/indextts2-v1"
 DEFAULT_RESULT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/result/{task_id}"
@@ -65,6 +65,17 @@ _LABEL_TO_FIELD = {
 
 class IndexttsArtEngine:
     name = "indextts_art"
+    capabilities = EngineCapabilities(
+        display_name="autodl.art 托管 ComfyUI 工作流",
+        # 平台硬上限 2048 字符（按次/按时长计费）
+        max_input_chars=MAX_CHARS_PER_SUBMIT,
+        max_concurrency=None,   # 读 TTS_CONCURRENCY
+        # 请求体模板（autodl_body.json）没有 speed 字段 ⇒ 传了也无效
+        supports_speed=False,
+        # 8 个情绪滑杆可用，但 emo_surprised 被平台锁死为 "0"
+        # （见 _LABEL_TO_FIELD 注释），故「支持情绪」但存在单标签缺口
+        supports_emotion=True,
+    )
 
     def __init__(
         self,
@@ -76,7 +87,8 @@ class IndexttsArtEngine:
         poll_interval: float = 2.0,
         timeout: float = 600.0,
     ):
-        self.token = token or os.environ.get("AUTODL_API_TOKEN", "")
+        # 同 indextts_302ai：显式传值优先（含显式 "" = 明确不要 Token），None 才回退环境变量
+        self.token = token if token is not None else os.environ.get("AUTODL_API_TOKEN", "")
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
         self.body_template = body_template or json.loads(self._load_body_template().read_text(encoding="utf-8"))
         self.submit_url = submit_url

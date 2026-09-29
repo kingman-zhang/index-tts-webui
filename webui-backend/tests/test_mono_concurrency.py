@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """mono_runner 并发执行单测（无外部依赖，直接 python3 运行）。
 
-覆盖：_flatten_segments 语义、_concurrency 解析、并发保序、失败段重试一次、
-取消行为。用法：cd webui-backend && python3 tests/test_mono_concurrency.py
+覆盖：_flatten_segments 语义（含按能力切片）、effective_concurrency 解析、
+并发保序、失败段重试一次、全部失败熔断、取消行为。
+用法：cd webui-backend && python3 tests/test_mono_concurrency.py
 """
 
 import asyncio
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["TTS_CONCURRENCY"] = "3"
 
 from app import mono_runner  # noqa: E402
+from app.engines import EngineCapabilities, effective_concurrency  # noqa: E402
 from app.engines.base import SegmentRequest, VoiceRef  # noqa: E402
 
 
@@ -35,6 +37,8 @@ def check(name, actual, expected):
 
 class FakeEngine:
     name = "fake_api"
+    # 能力声明：单次不限、并发读 TTS_CONCURRENCY（与第三方 API 引擎一致）
+    capabilities = EngineCapabilities(display_name="假引擎（第三方 API 型）")
 
     def __init__(self, fail_first: set[str] | None = None, delay: float = 0.02):
         self.calls: list[str] = []
@@ -62,6 +66,8 @@ class FakeEngine:
 
 class FakeLocalEngine(FakeEngine):
     name = "indextts_local"
+    # 自建 GPU 实例串行 —— 现在由引擎自己声明，而非上层判断引擎名
+    capabilities = EngineCapabilities(display_name="假引擎（自建型）", max_concurrency=1)
 
 
 def _make_task(tmpdir: Path, lines: list[dict], **kw) -> dict:
@@ -81,11 +87,21 @@ def _make_voice_file(tmpdir: Path) -> None:
 
 
 def _patch_engine(engine, tmpdir: Path, concat_sink: list | None = None):
-    class _Reg:
-        async def resolve(self):
-            return engine
+    """把 mono_runner 的选引擎入口替换为固定假引擎。
 
-    mono_runner.build_registry = lambda: _Reg()
+    2026-09-29 起 mono_runner 不再自己 `build_registry()`，而是调
+    `engines.selector.select_engine()`（注册表已是进程级单例，因为熔断状态
+    必须跨任务存活），所以 patch 点从 `mono_runner.build_registry`
+    改成 `mono_runner.select_engine` —— 名字是从 `.engines` import 进本模块的，
+    patch 本模块属性即可生效。
+    """
+    async def _select():
+        return engine
+
+    mono_runner.select_engine = _select
+    # 失败路径会调 mark_engine_failed 写真实注册表的冷却表；测试里换成空操作，
+    # 避免假引擎名污染跨用例的熔断状态（熔断本身另有 tests/test_engine_layer.py 覆盖）。
+    mono_runner.mark_engine_failed = lambda name: None
     mono_runner.OUTPUTS_DIR = tmpdir  # 避免写入真实 data 目录
     if concat_sink is not None:
         def _fake_concat(chunks, gaps):
@@ -102,7 +118,7 @@ def test_flatten():
         {"speaker": "A", "text": "  "},  # 空行跳过
         {"speaker": "A", "text": "第二行"},
     ]
-    es = mono_runner._flatten_segments(lines, "fake_api")
+    es = mono_runner._flatten_segments(lines, FakeEngine.capabilities)
     all_ok &= check("扁平化段数", len(es), 3)
     all_ok &= check("扁平化顺序", [e["text"] for e in es], ["你好", "世界", "第二行"])
     all_ok &= check("情绪逐段继承", [e["emotion"] for e in es], ["happy", "happy", None])
@@ -111,18 +127,53 @@ def test_flatten():
     return all_ok
 
 
-def test_concurrency_env():
+def test_split_by_capability():
+    """切片依据必须是引擎声明的单次上限，而不是引擎名。
+
+    这是 2026-09-29 的核心修复。旧写法
+        `split_for_art(text) if engine_name == "indextts_art" else [text]`
+    让 302.ai（上限 2000）与 SiliconFlow（上限 2048）的超长输入直接抛
+    「请走 chunker」，而上层从来不切 ⇒ 同一段长文本 art 成功、302.ai 必失败。
+    """
     ok = True
-    ok &= check("默认并发 3", mono_runner._concurrency("fake_api"), 3)
-    ok &= check("自建恒为 1", mono_runner._concurrency("indextts_local"), 1)
+    # 5000 个汉字 = 10000 计费字符（chunker 口径：1 汉字 = 2）
+    long_text = "字" * 5000
+    lines = [{"speaker": "A", "text": long_text}]
+
+    no_limit = EngineCapabilities(display_name="不限", max_input_chars=None)
+    ok &= check("上限不限 ⇒ 不切片（自建引擎行为不变）", len(mono_runner._flatten_segments(lines, no_limit)), 1)
+
+    limited = EngineCapabilities(display_name="上限 2000", max_input_chars=2000)
+    es = mono_runner._flatten_segments(lines, limited)
+    ok &= check("上限 2000 ⇒ 切成 5 片", len(es), 5)
+    ok &= check("每片计费字符数不超上限", all(len(e["text"]) <= 1000 for e in es), True)
+    ok &= check("切片内容无损（拼接 == 原文）", "".join(e["text"] for e in es), long_text)
+
+    # art 的上限与旧行为一致 ⇒ 历史结果不漂移
+    art = EngineCapabilities(display_name="art", max_input_chars=2048)
+    ok &= check("art 上限仍是 2048 ⇒ 与旧行为一致", len(mono_runner._flatten_segments(lines, art)), 5)
+    return ok
+
+
+def test_concurrency_env():
+    """并发度来自能力声明：显式声明优先，None 才读 TTS_CONCURRENCY。"""
+    ok = True
+    api = EngineCapabilities(display_name="第三方 API 型")           # max_concurrency=None
+    local = EngineCapabilities(display_name="自建型", max_concurrency=1)
+
+    ok &= check("未声明 ⇒ 默认 3", effective_concurrency(api), 3)
+    ok &= check("声明 1 的引擎恒为 1（自建串行）", effective_concurrency(local), 1)
+
     import os
     old = os.environ.get("TTS_CONCURRENCY")
     os.environ["TTS_CONCURRENCY"] = "99"
-    ok &= check("上钳 8", mono_runner._concurrency("fake_api"), 8)
+    ok &= check("上钳 8", effective_concurrency(api), 8)
     os.environ["TTS_CONCURRENCY"] = "0"
-    ok &= check("下钳 1", mono_runner._concurrency("fake_api"), 1)
+    ok &= check("下钳 1", effective_concurrency(api), 1)
     os.environ["TTS_CONCURRENCY"] = "abc"
-    ok &= check("非法值回退 3", mono_runner._concurrency("fake_api"), 3)
+    ok &= check("非法值回退 3", effective_concurrency(api), 3)
+    os.environ["TTS_CONCURRENCY"] = "99"
+    ok &= check("显式声明不受 env 影响", effective_concurrency(local), 1)
     if old is None:
         os.environ.pop("TTS_CONCURRENCY")
     else:

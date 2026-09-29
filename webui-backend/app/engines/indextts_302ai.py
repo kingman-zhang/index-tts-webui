@@ -49,7 +49,7 @@ from pathlib import Path
 
 import httpx
 
-from .base import EMO_VECTOR_ORDER, SegmentRequest
+from .base import EMO_VECTOR_ORDER, EngineCapabilities, SegmentRequest
 
 DEFAULT_BASE_URL = "https://api.302ai.com"
 SAMPLE_RATE = 22050  # 平台固定输出采样率
@@ -87,6 +87,17 @@ _CONNECT_RETRY_BASE_S = 1.5
 
 class Indextts302aiEngine:
     name = "indextts_302ai"
+    capabilities = EngineCapabilities(
+        display_name="302.ai 托管 IndexTTS-2",
+        # 官方未文档化上限，用保守值 2000；上层据此切片，
+        # 不能再依赖 `engine_name == "indextts_art"` 那种硬编码
+        max_input_chars=MAX_INPUT_CHARS,
+        max_concurrency=None,   # 读 TTS_CONCURRENCY
+        # 平台请求体没有 speed 参数（见 _speed_warned）：传了也无效，
+        # 要变速必须上层后处理
+        supports_speed=False,
+        supports_emotion=True,  # emotion_vector 8 维
+    )
 
     def __init__(
         self,
@@ -97,7 +108,9 @@ class Indextts302aiEngine:
         voice_map: dict[str, str] | None = None,
         extra_params: dict | None = None,
     ):
-        self.api_key = api_key or os.environ.get("INDEXTTS302_API_KEY", "")
+        # 显式传值优先（含显式传 "" = 明确不要 Key）；只有 None 才回退环境变量。
+        # 用 `or` 会让显式 "" 被环境变量顶掉 ⇒ 无法在测试/调试里关掉 Key。
+        self.api_key = api_key if api_key is not None else os.environ.get("INDEXTTS302_API_KEY", "")
         self.base_url = (base_url or os.environ.get("INDEXTTS302_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
         self.cache_path = Path(cache_path) if cache_path else None

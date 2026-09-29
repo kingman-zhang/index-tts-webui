@@ -211,100 +211,22 @@ async def _execute_task(task_id: str) -> None:
         if number_norm.ENABLED:
             synth_lines = number_norm.apply_number_rules(synth_lines)
 
-        # 配音/播客模式：不进 tts-server 播客引擎，走引擎适配层在 backend 进程内合成
-        # （TTS_ENGINE_PREFERRED 指向云引擎时无需本地 tts-server 在线）
-        if task.get("kind") == "mono":
+        # 合成只有一条路径：引擎适配层（engines/），在 backend 进程内合成。
+        # 2026-09-29 之前这里还有一条兜底：kind 不是 mono/podcast 时
+        # POST {TTS_URL}/api/podcast，把任务交给本地 tts-server 的播客引擎。
+        # 那是「云引擎 / 本地服务器」两套执行路径并存的根源 —— 云端引擎部署下
+        # 它必然失败，且绕过了能力声明、探活与熔断，长期没有测试覆盖。
+        # 已删除：未知 kind 直接报错，好过悄悄走一条没人维护的老路。
+        kind = task.get("kind")
+        if kind == "mono":
             from .mono_runner import run_mono_task
             await run_mono_task(task, lines=synth_lines)
             return
-        if task.get("kind") == "podcast":
+        if kind == "podcast":
             from .podcast_runner import run_podcast_task
             await run_podcast_task(task, lines=synth_lines)
             return
-
-        req_data = {
-            "lines": synth_lines,
-            "voices": task["voices"],
-            "silence": task["silence"],
-            "params": task["params"],
-        }
-
-        resp = await http_client.post(f"{TTS_URL}/api/podcast", json=req_data, timeout=30.0)
-        if resp.status_code != 200:
-            try:
-                detail = resp.json().get("detail", "提交 TTS 失败")
-            except Exception:
-                detail = resp.text[:1000] or f"HTTP {resp.status_code}"
-            raise Exception(detail)
-        tts_task_id = resp.json().get("task_id")
-        if not tts_task_id:
-            raise Exception("TTS 未返回 task_id")
-        task["tts_task_id"] = tts_task_id
-        qs.persist_task(task_id)
-        logger.info("[queue] submitted task=%s tts_task=%s", task_id, tts_task_id)
-
-        # 轮询 TTS 任务状态。短暂断连不能直接判失败，否则 GPU 任务仍会继续运行。
-        poll_errors = 0
-        while True:
-            await asyncio.sleep(1.5)
-            try:
-                r = await http_client.get(f"{TTS_URL}/api/task/{tts_task_id}", timeout=10.0)
-                if r.status_code == 404:
-                    task["status"] = qs.QueueTaskStatus.INTERRUPTED
-                    task["message"] = "TTS 任务不存在，可重新提交"
-                    task["error"] = "TTS 任务不存在"
-                    qs.persist_task(task_id)
-                    break
-                if r.status_code != 200:
-                    raise Exception(f"TTS 状态查询 HTTP {r.status_code}: {r.text[:500]}")
-                payload = r.json()
-                poll_errors = 0
-                raw_progress = payload.get("progress", 0) or 0
-                task["progress"] = max(0.0, min(1.0, float(raw_progress) / 100.0))
-                task["current_line"] = payload.get("current_line", 0)
-                task["total_lines"] = payload.get("total_lines", 0)
-                task["message"] = payload.get("message", "")
-
-                status = payload.get("status")
-                if status in ("success", "completed"):
-                    task["status"] = qs.QueueTaskStatus.SUCCESS
-                    task["progress"] = 1.0
-                    task["output_path"] = payload.get("output_path")
-                    task["audio_url"] = f"/api/podcast/audio/{tts_task_id}"
-                    task["duration_sec"] = payload.get("duration_sec")
-                    task["message"] = payload.get("message") or "合成完成"
-                    qs.persist_task(task_id)
-                    logger.info("[queue] completed task=%s tts_task=%s", task_id, tts_task_id)
-                    break
-                elif status == "failed":
-                    task["status"] = qs.QueueTaskStatus.FAILED
-                    task["error"] = payload.get("error", "未知错误")
-                    qs.persist_task(task_id)
-                    break
-                elif task.get("cancel_requested"):
-                    task["status"] = qs.QueueTaskStatus.CANCELLED
-                    break
-            except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError) as e:
-                poll_errors += 1
-                logger.warning(
-                    "[queue] status poll disconnected task=%s tts_task=%s retry=%d error=%s",
-                    task_id, tts_task_id, poll_errors, e,
-                )
-                task["status"] = qs.QueueTaskStatus.SYNCING
-                task["message"] = f"TTS 连接中断，等待恢复（第 {poll_errors} 次）"
-                qs.persist_task(task_id)
-                # 任务已在 TTS 服务端创建，继续轮询，不能把它误判为失败。
-                if poll_errors >= 120:
-                    task["message"] = "连续无法连接 TTS 服务，可重新提交"
-                    task["error"] = "连续无法连接 TTS 服务"
-                    task["status"] = qs.QueueTaskStatus.INTERRUPTED
-                    qs.persist_task(task_id)
-                    break
-                continue
-            except Exception as e:
-                task["status"] = qs.QueueTaskStatus.FAILED
-                task["error"] = str(e)
-                break
+        raise ValueError(f"未知任务类型 kind={kind!r}（应为 mono 或 podcast）")
 
     except FileNotFoundError as e:
         # 参考音频等文件缺失是永久性配置错误，重试无意义，不能误报"连接中断"
@@ -314,10 +236,12 @@ async def _execute_task(task_id: str) -> None:
         task["error"] = f"参考音频文件不存在: {e}"
         qs.persist_task(task_id)
     except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError) as e:
-        logger.error("[queue] request disconnected before task tracking task=%s error=%s", task_id, e)
+        # 引擎侧网络中断（云端 API 不可达 / 自建 tts-server 掉线）。任务可能已合成
+        # 到一半，直接判 FAILED 会误导，标 INTERRUPTED 让用户决定是否重提。
+        logger.error("[queue] engine connection interrupted task=%s error=%s", task_id, e)
         task["status"] = qs.QueueTaskStatus.INTERRUPTED
-        task["message"] = "提交 TTS 时连接中断，可重新提交"
-        task["error"] = f"提交 TTS 时连接中断: {e}"
+        task["message"] = "合成过程中与引擎的连接中断，可重新提交"
+        task["error"] = f"引擎连接中断: {e}"
         qs.persist_task(task_id)
     except Exception as e:
         logger.exception("[queue] failed task=%s error=%s", task_id, e)

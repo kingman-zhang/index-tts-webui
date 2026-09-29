@@ -3,17 +3,33 @@
 对应 tts-server/server.py 的：
   GET  /api/health
   POST /api/synthesize   同步单段合成（阻塞，最长 300s）
+  GET  /api/audio/{f}    取回音频字节
+
+**为什么要二次下载**：/api/synthesize 返回的是 JSON（output_filename），
+不是音频字节。这层差异在本适配器内部消化掉，上层拿到的仍是 bytes ——
+与云引擎同构。这就是「自建服务缺接口」的现状：缺的是一个直接返回音频的
+端点，补齐后本适配器可以退化为一次请求。
 """
 
 from __future__ import annotations
 
 import httpx
 
-from .base import EMO_VECTOR_ORDER, SegmentRequest, VoiceRef
+from .base import EMO_VECTOR_ORDER, EngineCapabilities, SegmentRequest
 
 
 class IndexttsLocalEngine:
     name = "indextts_local"
+    capabilities = EngineCapabilities(
+        display_name="自建 tts-server（IndexTTS-2，GPU）",
+        # 不限：整段文本交给 tts-server 侧的播客引擎自行分段
+        max_input_chars=None,
+        # GPU 实例串行推理；原先靠上层判断 `engine_name == "indextts_local"` 得到，
+        # 现在改成引擎自己声明
+        max_concurrency=1,
+        supports_speed=True,      # payload.params.speed
+        supports_emotion=True,    # mode 2 的 8 维情绪向量
+    )
 
     def __init__(self, tts_url: str, client: httpx.AsyncClient):
         self.tts_url = tts_url.rstrip("/")

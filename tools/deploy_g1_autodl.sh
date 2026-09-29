@@ -123,11 +123,15 @@ print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.
 print("  年份读法归一   :", tp.get("year_norm_enabled"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
+eng = ((v.get("engines") or {}).get("registered")) or []
+print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
 assert v.get("glossary_exists"), "!! 容器读到的数据目录里没有 glossary.json —— 挂载卷指错了，所有词条静默失效"
 assert tp.get("glossary_terms"), "!! 词表条数为 0 —— 术语替换不会生效"
 assert tp.get("name_punct_enabled") is not False, "!! 人名分隔号归一化被关闭 —— 中点会进词表变 unk"
 assert tp.get("year_norm_enabled") is not False, "!! 年份读法归一化被关闭（YEAR_NORMALIZE=0）—— 2011 年会被读成数值"
-print("  [ok] 镜像含新代码（/api/version 存在且字段齐全）")
+# engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
+assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
+print("  [ok] 镜像含新代码（/api/version 存在、字段齐全、引擎已注册）")
 ' /tmp/wb-docker-version.json || { echo "!! 部署后自检未通过，见上"; exit 1; }
   rm -f /tmp/wb-docker-version.json
 
@@ -272,6 +276,16 @@ print("  年份读法归一   :", tp.get("year_norm_enabled"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
+eng = ((v.get("engines") or {}).get("registered")) or []
+print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
+for e in eng:
+    print("    -", e.get("name"), "| 单次上限", e.get("max_input_chars") or "不限",
+          "| 并发", e.get("max_concurrency") or "env",
+          "| 语速", e.get("supports_speed"), "| 情绪", e.get("supports_emotion"),
+          "| 冷却中" if e.get("in_cooldown") else "")
+# 引擎层（2026-09-29 拆分）：engines 字段是新代码才有的符号；注册数为 0 意味着
+# 任何合成都必然失败（通常是没有可用 Key/Token，或 .env 没被读到）。
+assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
 assert v.get("git_head") == sys.argv[1], (
     "!! 进程 HEAD 与磁盘 HEAD 不一致 —— 进程跑的是旧代码，重启未生效")
 assert v.get("glossary_exists"), (

@@ -2,6 +2,10 @@
 """build_registry 引擎优先级（TTS_ENGINE_PREFERRED）单测。
 
 纯构造级测试（不发网络请求）；env 通过 monkeypatch 设置。
+
+注意（2026-09-29）：注册表已改为**进程级单例**（app/engines/factory.py），
+因为熔断状态必须跨任务存活、health TTL 与音色缓存不能每任务作废。
+所以每处改完 env 都必须 reset_registry()，否则读到的是上一个用例的引擎集。
 """
 
 import os
@@ -10,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.mono_runner import build_registry  # noqa: E402
+from app.engines import build_registry, reset_registry  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -24,6 +28,8 @@ def check(cond: bool, desc: str) -> None:
 
 
 def order() -> list[str]:
+    # 单例缓存：env 变了必须重建，否则读的是上一次的注册表
+    reset_registry()
     return [e.name for e in build_registry().engines]
 
 

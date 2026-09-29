@@ -47,11 +47,12 @@ import re
 import struct
 import time
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
 
-from .base import SegmentRequest
+from .base import EngineCapabilities, SegmentRequest
 
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 # 国内站真机可用的克隆模型（IndexTTS-2 仅国际站，见模块 docstring）
@@ -80,6 +81,15 @@ _COSY_EMOTION_PROMPT = {
 
 class IndexttsSiliconflowEngine:
     name = "indextts_siliconflow"
+    # 默认按主力模型 CosyVoice2 声明；supports_emotion 随 model 变化，
+    # 由 __init__ 覆写（MOSS-TTSD 是对话模型，无情绪控制机制）
+    capabilities = EngineCapabilities(
+        display_name="SiliconFlow（CosyVoice2 / MOSS-TTSD）",
+        max_input_chars=MAX_INPUT_CHARS,
+        max_concurrency=None,    # 读 TTS_CONCURRENCY
+        supports_speed=True,     # speed 参数，钳 0.25-4.0
+        supports_emotion=True,   # CosyVoice2 用内联富文本提示控制语气
+    )
 
     def __init__(
         self,
@@ -96,7 +106,8 @@ class IndexttsSiliconflowEngine:
     ):
         import os
 
-        self.api_key = api_key or os.environ.get("SILICONFLOW_API_KEY", "")
+        # 同 indextts_302ai：显式传值优先（含显式 "" = 明确不要 Key），None 才回退环境变量
+        self.api_key = api_key if api_key is not None else os.environ.get("SILICONFLOW_API_KEY", "")
         self.base_url = base_url.rstrip("/")
         self.model = model or os.environ.get("SILICONFLOW_MODEL") or DEFAULT_MODEL
         self.client = client or httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
@@ -110,6 +121,10 @@ class IndexttsSiliconflowEngine:
         self.auto_transcribe = auto_transcribe
         self.extra_params = dict(extra_params or {})
         self._cache: dict = {}
+        # 情绪能力随模型而定（见 _emotion_input）：非 CosyVoice2 模型只能
+        # 跟随参考音频，故覆写能力声明——上层读声明即可，不必知道模型名。
+        if self.model != MODEL_COSYVOICE2:
+            self.capabilities = replace(self.capabilities, supports_emotion=False)
         self._cache_loaded = False
         # 并发合成下防止多段同时克隆上传同一参考音频
         self._voice_lock = asyncio.Lock()

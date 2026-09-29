@@ -2,8 +2,12 @@
 
 背景（2026-09-20）：播客任务原先 POST 到 tts-server /api/podcast（GPU 本地），
 要求 tts-server 在线。迁移后与 mono 一致：由 backend 内的引擎适配层合成
-（自建 → 302.ai → SiliconFlow → autodl.art，TTS_ENGINE_PREFERRED 调序），
-云引擎（302.ai 等）下不再依赖本地 tts-server。
+（默认注册顺序 自建 → 302.ai → SiliconFlow → autodl.art，`TTS_ENGINE_PREFERRED`
+可调序），云引擎（302.ai 等）下不再依赖本地 tts-server。
+
+引擎差异（2026-09-29）：本模块**不判断引擎名**。切片阈值与并发度都取自
+`engine.capabilities`（此前是 `engine_name == "indextts_art"` 与
+`_concurrency(engine_name)` 两处硬编码）。详见 webui-backend/ENGINES.md。
 
 与 mono_runner 的差异：
   - 多音色：voices = {A: 路径, B: 路径}，每说话人独立 VoiceRef 与语速；
@@ -17,8 +21,9 @@
     不支持 speed 参数，由本模块用 ffmpeg 管道逐段补齐（atempo + 归一 +
     统一重采样 24kHz）；ffmpeg 不可用时跳过处理（仅告警），行为与 mono 一致。
 
-顺序保证：段落可并发（TTS_CONCURRENCY），asyncio.gather 保序返回，
-拼接严格按文本顺序——第 10 段先完成也不会插到第 8 段前面。
+顺序保证：段落可并发（并发度取 capabilities.max_concurrency，未声明则读
+TTS_CONCURRENCY），asyncio.gather 保序返回，拼接严格按文本顺序——第 10 段先完成
+也不会插到第 8 段前面。
 分段文件在内存中处理，拼接后仅保留整篇 wav（outputs/podcast_{task_id}.wav）。
 """
 
@@ -27,24 +32,25 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
-import wave
-import io
-import logging
-import os
 from pathlib import Path
 
 from . import queue_state as qs
-from .config import DATA_DIR, logger
-from .engines import SegmentRequest, VoiceRef
+from .config import logger
+from .engines import (
+    EngineCapabilities,
+    SegmentRequest,
+    VoiceRef,
+    effective_concurrency,
+    mark_engine_failed,
+    select_engine,
+)
 from .mono_runner import (
     MAX_GAP_MS,
     OUTPUTS_DIR,
     _TaskCancelled,
-    _concurrency,
     _concat_wavs,
     _emotion_label,
     _resolve_local_voice,
-    build_registry,
     split_by_pauses,
 )
 from .engines.chunker import split_for_art
@@ -174,16 +180,20 @@ def _normalize_segment(data: bytes, speed: float) -> bytes:
     return _fix_wav_header(result.stdout)
 
 
-def _flatten_podcast_segments(lines: list[dict], engine_name: str, silence: dict) -> list[dict]:
+def _flatten_podcast_segments(lines: list[dict], caps: EngineCapabilities, silence: dict) -> list[dict]:
     """把播客行扁平化为合成段（并发最小单元），行间静音并入行尾子段。
 
     每段：{text, emotion, gap_ms, line_idx, speaker}。顺序即拼接顺序。
     行间静音规则（对齐原 podcast_engine，见模块 docstring）：
       显式 silence_after_ms（含 0）> 末行 0 > 说话人切换 > 同行连续。
+
+    切片依据是 caps.max_input_chars（引擎能力），与 mono 路径同源 ——
+    此前用 `engine_name == "indextts_art"` 判断，只切了 art。
     """
     entries: list[dict] = []
     prev_speaker: str | None = None
     last_idx = len(lines) - 1
+    limit = caps.max_input_chars
     for idx, line in enumerate(lines):
         text = (line.get("text") or "").strip()
         speaker = line.get("speaker") or "A"
@@ -199,8 +209,7 @@ def _flatten_podcast_segments(lines: list[dict], engine_name: str, silence: dict
             continue  # 空行不合成（提交侧已校验拒绝）；不更新 prev_speaker
         prev_speaker = speaker
         emotion_label = _emotion_label(line)
-        # autodl.art 按次计费且单次 ≤2048 字符：切满片省费用；其余引擎整行交引擎
-        pieces = split_for_art(text) if engine_name == "indextts_art" else [text]
+        pieces = split_for_art(text, limit) if limit else [text]
         line_entries: list[dict] = []
         for piece in pieces:
             for sub_text, gap_ms in split_by_pauses(piece):
@@ -237,7 +246,8 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
         raise ValueError("播客任务缺少音色配置")
 
     # 任务内固定单一引擎，避免中途故障切换导致音频参数不一致
-    engine = await build_registry().resolve()
+    engine = await select_engine()
+    caps = engine.capabilities
     logger.info("[podcast] task=%s engine=%s lines=%d", task_id, engine.name, len(lines))
 
     # 每说话人的音色引用与语速
@@ -254,11 +264,11 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
         )
         speeds[spk] = float(speaker_speeds.get(spk) or params.get("speed") or 1.0)
 
-    entries = _flatten_podcast_segments(lines, engine.name, silence)
+    entries = _flatten_podcast_segments(lines, caps, silence)
     if not entries:
         raise ValueError("所有文本段均为空")
     total = len(entries)
-    conc = _concurrency(engine.name)
+    conc = effective_concurrency(caps)
     logger.info("[podcast] task=%s engine=%s entries=%d concurrency=%d", task_id, engine.name, total, conc)
 
     # 行 → 段数映射（用于 current_line：行内全部段完成才计入）
@@ -345,6 +355,10 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
     errors = [r for r in results if isinstance(r, BaseException)]
     if errors:
         logger.error("[podcast] task=%s %d/%d 段重试后仍失败", task_id, len(errors), total)
+        # 判据与 mono 路径一致（见 mono_runner 同名注释）：全部失败，
+        # 或 3 段以上且过半失败，才判为引擎级故障；单段失败不熔断，避免误伤。
+        if len(errors) == total or (len(errors) >= 3 and len(errors) * 2 >= total):
+            mark_engine_failed(engine.name)
         raise errors[0]  # 保留原始异常类型，queue_worker 据此归类 INTERRUPTED/FAILED
 
     chunks: list[bytes] = [r for r in results]
