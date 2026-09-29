@@ -12,19 +12,23 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 TMP = tempfile.mkdtemp(prefix="wb-member-test-")
 os.environ["DATA_DIR"] = TMP
 os.environ["MEMBER_ADMIN_TOKEN"] = "test-admin-token"
 os.environ["MEMBER_REG_BONUS"] = "100"
-os.environ["MEMBER_CHECKIN_BONUS"] = "5"
+os.environ.pop("MEMBER_CHECKIN_BONUS", None)
 os.environ["MEMBER_ENFORCE"] = "0"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
-from app.main import app  # noqa: E402
+# 默认值回归不得受真实 .env 干扰，也不得读取其中的密钥。
+_path_exists = Path.exists
+with patch.object(Path, "exists", lambda p: False if p.name == ".env" else _path_exists(p)):
+    from app.main import app  # noqa: E402
 from app.membership import service  # noqa: E402
 from app.membership.service import MemberError  # noqa: E402
 
@@ -159,10 +163,14 @@ def main():
     print("── 签到 ──")
     r = client.get("/api/points/checkin", headers={"Authorization": f"Bearer {w5}"})
     check("签到状态查询", r.status_code == 200 and r.json()["checked_in_today"] is False)
+    check("签到状态显示 20", r.json()["bonus"] == 20)
+    before_checkin = client.get("/api/auth/me", headers={"Authorization": f"Bearer {w5}"}).json()["user"]["points"]
     r = client.post("/api/points/checkin", headers={"Authorization": f"Bearer {w5}"})
-    check("签到 +5", r.status_code == 200 and r.json()["added"] == 5, r.text)
+    check("签到默认 +20", r.status_code == 200 and r.json()["added"] == 20, r.text)
     r = client.post("/api/points/checkin", headers={"Authorization": f"Bearer {w5}"})
     check("重复签到 409", r.status_code == 409)
+    after_checkin = client.get("/api/auth/me", headers={"Authorization": f"Bearer {w5}"}).json()["user"]["points"]
+    check("重复签到不重复发放积分", after_checkin == before_checkin + 20)
     r = client.get("/api/points/checkin", headers={"Authorization": f"Bearer {w5}"})
     check("状态已变已签到", r.json()["checked_in_today"] is True and r.json()["total_days"] == 1)
 

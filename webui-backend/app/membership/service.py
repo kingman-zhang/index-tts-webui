@@ -2,7 +2,7 @@
 
 配置（环境变量或 .env，均可缺省）：
   MEMBER_REG_BONUS              注册赠送积分，默认 100；0 表示关闭
-  MEMBER_CHECKIN_BONUS          每日签到积分，默认 5；0 表示关闭
+  MEMBER_CHECKIN_BONUS          每日签到积分，默认 20；0 表示关闭
   MEMBER_POINTS_PER_1000_CHARS  合成扣费单价：每 1000 字符扣积分，默认 10；0 = 关闭按量扣费
   MEMBER_MIN_CHARGE             单次合成最低收费（积分），默认 5；0 = 不设地板
   MEMBER_TOKEN_TTL_DAYS         会话有效期（天），默认 30
@@ -28,7 +28,7 @@ from . import mailer
 # ─── 配置 ───────────────────────────────────────────────────
 
 REG_BONUS = int(os.environ.get("MEMBER_REG_BONUS", "100"))
-CHECKIN_BONUS = int(os.environ.get("MEMBER_CHECKIN_BONUS", "5"))
+CHECKIN_BONUS = int(os.environ.get("MEMBER_CHECKIN_BONUS", "20"))
 POINTS_PER_1000_CHARS = int(os.environ.get("MEMBER_POINTS_PER_1000_CHARS", "10"))
 MIN_CHARGE = int(os.environ.get("MEMBER_MIN_CHARGE", "5"))
 TOKEN_TTL_DAYS = int(os.environ.get("MEMBER_TOKEN_TTL_DAYS", "30"))

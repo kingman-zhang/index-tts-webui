@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -98,11 +99,14 @@ async def podcast_audio(task_id: str):
     from pathlib import Path as _Path
     from fastapi.responses import FileResponse
     task = qs.queue_tasks.get(task_id)
+    if task is None:
+        task = next((t for t in qs.queue_tasks.values() if t.get("tts_task_id") == task_id), None)
+    filename = qs.audio_download_name(task, task_id, "podcast")
     if task:
         output_path = task.get("output_path")
         if output_path and _Path(output_path).exists():
             return FileResponse(output_path, media_type="audio/wav",
-                                filename=f"podcast_{task_id}.wav")
+                                filename=filename)
     try:
         resp = await http_client.get(f"{TTS_URL}/api/task/{task_id}/audio", timeout=120.0)
         if resp.status_code != 200:
@@ -112,12 +116,11 @@ async def podcast_audio(task_id: str):
             except Exception:
                 pass
             raise HTTPException(resp.status_code, detail)
-        filename = f"podcast_{task_id}.wav"
         return StreamingResponse(
             iter([resp.content]),
             media_type="audio/wav",
             headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
                 "Content-Length": str(len(resp.content)),
                 "Accept-Ranges": "bytes",
             },

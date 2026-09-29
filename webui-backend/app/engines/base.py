@@ -17,13 +17,20 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import logging
 import mimetypes
 import os
 import time
+import io
+import wave
+import shutil
+import subprocess
+import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +59,32 @@ class SegmentRequest:
     voice: VoiceRef
     emotion_label: Optional[str] = None   # None = 跟随音色参考音频
     speed: float = 1.0
+    # 调用方的「还要不要这一单」检查钩子（通常是 task.cancel_requested）。
+    # 资源池在**等待租约期间**和**拿到租约但尚未提交前**都会调用它：
+    # 排队中的段一旦发现用户取消，就直接抛 SynthesisCancelled 退出，
+    # 不再向平台提交 —— 这里是唯一能在提交前拦住新费用的地方。
+    should_cancel: Optional[Callable[[], bool]] = None
+
+
+@dataclass(frozen=True)
+class ResourceConfig:
+    id: str
+    provider: str
+    api_key_env: str | None = None
+    base_url: str | None = None
+    max_concurrency: int = 1
+    weight: float = 1.0
+    tier: str = "cloud"
+    shared_voice_paths: bool = False
+
+    def __post_init__(self):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.id):
+            raise ValueError("资源 id 必须为安全的字母数字下划线或短横线")
+        if self.tier not in ("local", "cloud") or self.max_concurrency < 1 or not math.isfinite(self.weight) or self.weight <= 0:
+            raise ValueError("资源 tier、并发或 weight 无效")
+        if self.provider == "local":
+            object.__setattr__(self, "tier", "local")
+            object.__setattr__(self, "max_concurrency", 1)
 
 
 @dataclass(frozen=True)
@@ -76,11 +109,393 @@ class EngineCapabilities:
     # 并发度。None = 读 TTS_CONCURRENCY（第三方 API 默认 3，钳 1-8）；
     # 自建 GPU 实例串行，显式声明 1。
     max_concurrency: Optional[int] = None
-    # 是否原生支持语速。False 表示引擎会忽略 speed（当前仅 302.ai），
-    # 需要变速时得在上层做后处理。本轮只声明与上报，不改变合成行为。
+    # 是否**原生**支持语速（把 speed 作为参数传给平台/模型）。False 表示引擎
+    # 会忽略 speed（当前 302.ai 与 autodl.art 的请求体都没有 speed 字段）。
     supports_speed: bool = True
+    # 语速是否已由**下层**保证生效：True = synthesize_segment 返回的音频已经
+    # 就是 req.speed 的语速（原生参数生效，或由池/适配器内部补齐），
+    # 因此**上层不得再变一次速** —— 否则实际语速是 speed²（2026-09-29 修的真 bug：
+    # 播客链路对原生支持语速的引擎又套了一层 ffmpeg atempo）。
+    # 池门面恒为 True：不支持的资源由池在规范化时用 ffmpeg atempo 补齐，
+    # 每个段恰好变速一次。单引擎适配器默认 False（诚实声明：上层需自行后处理）。
+    speed_guaranteed: bool = False
     # 是否支持情绪表达。False 表示合成时只能跟随参考音频。
     supports_emotion: bool = True
+
+
+class NonRetryableSynthesisError(RuntimeError):
+    """请求可能已经提交或计费，调用方不得自动重试。"""
+
+
+class SynthesisCancelled(RuntimeError):
+    """调用方在提交前取消（等待租约期间发现 cancel 标记），未产生任何平台提交。
+
+    与 asyncio.CancelledError 的区别：这不是协程被外部 cancel，而是业务上的
+    主动放弃，所以**不会被**资源池当成「取消活跃远端任务」而隔离资源 ——
+    它压根还没提交过。
+    """
+
+
+# 统一输出规格：24kHz / 单声道 / PCM16（与 tts-server 播客引擎输出对齐）
+NORM_RATE = 24000
+NORM_CHANNELS = 1
+NORM_SAMPLE_WIDTH = 2
+
+
+def find_ffmpeg() -> Optional[str]:
+    """定位 ffmpeg：PATH 优先，兜底常见安装路径（macOS homebrew / Linux 发行版）。
+
+    为什么不能只信 shutil.which：本机与部分容器里 ffmpeg 装在 /opt/homebrew/bin
+    或 /usr/local/bin 但不在 PATH 上，只查 PATH 会误判「没有 ffmpeg」而退化到
+    低质量重采样。
+    """
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    for cand in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+        if Path(cand).is_file():
+            return cand
+    return None
+
+
+def fix_wav_header(data: bytes) -> bytes:
+    """修正 ffmpeg 管道输出的 wav 头：RIFF/data size 是流式占位（0xFFFFFFFF 或 0）。
+
+    wave 模块按头部声明的 size 读取，坏头会导致 readframes 读错帧数、
+    拼接产物错乱（与 302.ai 引擎 _repair_wav 同款问题）。按实际字节数回写。
+    """
+    if len(data) < 44 or data[:4] != b"RIFF":
+        return data
+    b = bytearray(data)
+    pos = 12
+    while pos + 8 <= len(b):
+        cid = bytes(b[pos:pos + 4])
+        size = int.from_bytes(b[pos + 4:pos + 8], "little")
+        remaining = len(b) - pos - 8
+        if size > remaining:  # 占位/坏 size：按实际剩余字节数修正
+            size = remaining
+            b[pos + 4:pos + 8] = size.to_bytes(4, "little")
+        if cid == b"data":
+            b[4:8] = (len(b) - 8).to_bytes(4, "little")
+            return bytes(b)
+        pos += 8 + size + (size & 1)  # chunk 按 2 字节对齐
+    return data
+
+
+def _parse_wav(data: bytes) -> Optional[tuple[int, int, int, bytes]]:
+    """解析 wav 为 (采样率, 声道数, 采样宽度, PCM 帧字节)；非 wav/坏头返回 None。"""
+    try:
+        with wave.open(io.BytesIO(data), "rb") as reader:
+            return (reader.getframerate(), reader.getnchannels(), reader.getsampwidth(),
+                    reader.readframes(reader.getnframes()))
+    except (wave.Error, EOFError):
+        return None
+
+
+def _wrap_pcm16_mono(pcm: bytes, rate: int = NORM_RATE) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as writer:
+        writer.setparams((NORM_CHANNELS, NORM_SAMPLE_WIDTH, rate, 0, "NONE", "not compressed"))
+        writer.writeframes(pcm)
+    return out.getvalue()
+
+
+def _pcm_linear_normalize(rate: int, channels: int, width: int, frames: bytes) -> bytes:
+    """标准库兜底：整数/浮点 PCM → 24kHz 单声道 PCM16（线性插值）。
+
+    无 ffmpeg 时才会走到这里，日志会明确提示。线性插值没有抗混叠滤波，
+    高频可能略有混叠 —— 生产环境应安装 ffmpeg。
+    """
+    step = channels * width
+    samples: list[float] = []
+    for offset in range(0, len(frames), step):
+        values = []
+        for channel in range(channels):
+            raw = frames[offset + channel * width:offset + (channel + 1) * width]
+            if len(raw) < width:
+                break
+            if width == 1:
+                value = raw[0] - 128
+            else:
+                value = int.from_bytes(raw, "little", signed=True)
+            values.append(value * 2 ** (16 - width * 8))
+        if values:
+            samples.append(sum(values) / len(values))
+    if not samples:
+        raise NonRetryableSynthesisError("音频为空，无法规范化")
+    pcm = bytearray()
+    for i in range(round(len(samples) * NORM_RATE / rate)):
+        position = i * rate / NORM_RATE
+        left = min(int(position), len(samples) - 1)
+        right = min(left + 1, len(samples) - 1)
+        value = round(samples[left] + (samples[right] - samples[left]) * (position - left))
+        pcm.extend(max(-32768, min(32767, value)).to_bytes(2, "little", signed=True))
+    return _wrap_pcm16_mono(bytes(pcm))
+
+
+def atempo_filters(speed: float) -> list[str]:
+    """把任意语速折算成 ffmpeg atempo 滤镜链（单个 atempo 只接受 0.5–2.0）。
+
+    speed=1.0 返回空列表（= 不变速）。上层与池共用这一个入口，
+    避免各处自己写 `max(0.5, min(2.0, speed))` 把用户设置的极端语速悄悄吞掉。
+    """
+    try:
+        remaining = float(speed)
+    except (TypeError, ValueError):
+        return []
+    if not math.isfinite(remaining) or remaining <= 0 or abs(remaining - 1.0) < 1e-3:
+        return []
+    chain: list[str] = []
+    while remaining > 2.0:
+        chain.append("atempo=2.0")
+        remaining /= 2.0
+    while remaining < 0.5:
+        chain.append("atempo=0.5")
+        remaining /= 0.5
+    if abs(remaining - 1.0) >= 1e-3:
+        chain.append(f"atempo={remaining:g}")
+    return chain
+
+
+def normalize_pcm(data: bytes, speed: float = 1.0) -> bytes:
+    """统一为 24kHz 单声道 PCM16 WAV，并按需变速一次（speed≠1.0 时）。
+
+    顺序刻意如此（2026-09-29 修正）：
+      ① 已经是目标格式且**不需要变速** → 零转换直接返回（无损、最快，
+         池里绝大多数段走这条）；
+      ② 有 ffmpeg → 交给 ffmpeg 重采样（带抗混叠滤波，音质最好），
+         需要变速时把 atempo 与重采样合并进**同一次** ffmpeg 调用；
+      ③ 无 ffmpeg（或 ffmpeg 转换失败）→ 标准库整数 PCM 线性插值兜底，
+         并**明确记 warning**，不再假装和 ffmpeg 等价。
+
+    旧实现把低质量的线性插值放在第一优先级，等于只要有 wav 头就永远绕过
+    ffmpeg —— ffmpeg 装了也用不上。
+
+    speed 参数的语义是「**本层**要补的语速」：调用方（池）在资源已经原生
+    支持语速时传 1.0，只有资源不支持时才把用户语速传进来 —— 这就是
+    「语速只应用一次」在代码里的落点。
+
+    转换失败一律抛 NonRetryableSynthesisError：音频已经计费，禁止整段重做。
+    """
+    atempo = atempo_filters(speed)
+    parsed = _parse_wav(data)
+    if parsed and parsed[:3] == (NORM_RATE, NORM_CHANNELS, NORM_SAMPLE_WIDTH) and not atempo:
+        return data
+
+    ffmpeg = find_ffmpeg()
+    if ffmpeg:
+        command = [ffmpeg, "-v", "error", "-i", "pipe:0"]
+        if atempo:
+            command += ["-filter:a", ",".join(atempo)]
+        command += ["-ar", str(NORM_RATE), "-ac", str(NORM_CHANNELS),
+                    "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
+        try:
+            result = subprocess.run(command, input=data, capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("[engine] ffmpeg 调用失败，回退标准库线性插值: %s", exc)
+        else:
+            if result.returncode == 0 and result.stdout:
+                fixed = fix_wav_header(result.stdout)
+                reparsed = _parse_wav(fixed)
+                if reparsed:
+                    frames = reparsed[3]
+                    return _wrap_pcm16_mono(frames)
+                logger.warning("[engine] ffmpeg 输出无法解析，回退标准库线性插值")
+            else:
+                logger.warning("[engine] ffmpeg 规范化失败，回退标准库线性插值: %s",
+                               result.stderr.decode("utf-8", "ignore")[-200:])
+    else:
+        logger.warning("[engine] 未找到 ffmpeg，使用标准库线性插值重采样（高频可能混叠）；建议部署 ffmpeg")
+
+    if not parsed:
+        raise NonRetryableSynthesisError("音频非 WAV 且无法用 ffmpeg 转换；不能重试已合成段")
+    if atempo:
+        # 标准库兜底不做变速（线性插值变速会变调），只能明确告知语速没生效
+        logger.warning("[engine] 无 ffmpeg，%.2fx 语速未能应用（该资源不支持原生变速）", speed)
+    return _pcm_linear_normalize(*parsed)
+
+
+class ResourcePoolEmptyError(RuntimeError):
+    """资源池为空，配置必须修复后才能启动合成。"""
+
+
+class EnginePoolFacade:
+    """按段选择资源的引擎门面；资源租约跨任务共享。"""
+
+    def __init__(self, resources: list[tuple[ResourceConfig, TTSEngine]], cooldown_sec: float = 120.0,
+                 health_ttl: float = 15.0, cancel_poll_sec: float = 0.5):
+        if not resources:
+            raise ResourcePoolEmptyError("TTS 资源池不能为空")
+        if len({cfg.id for cfg, _ in resources}) != len(resources):
+            raise ValueError("资源 id 不得重复")
+        self.resources = resources
+        self.cooldown_sec = cooldown_sec
+        self.health_ttl = health_ttl
+        # 排队等待时的取消轮询间隔（秒）：越短取消越灵敏，越长越省 CPU
+        self.cancel_poll_sec = cancel_poll_sec
+        self.cooldown_until: dict[str, float] = {}
+        self.health_state: dict[str, tuple[bool, float]] = {}
+        self._health_tasks: dict[str, asyncio.Task] = {}
+        self._condition = asyncio.Condition()
+        self._inflight: dict[str, int] = {cfg.id: 0 for cfg, _ in self.resources}
+        self._failures: dict[str, int] = {cfg.id: 0 for cfg, _ in self.resources}
+        self._served = {cfg.id: 0 for cfg, _ in self.resources}
+        self.capabilities = self._conservative_capabilities()
+        self.name = "pool"
+
+    def _conservative_capabilities(self) -> EngineCapabilities:
+        if not self.resources:
+            return EngineCapabilities(display_name="资源池", max_concurrency=1)
+        caps = [engine.capabilities for _, engine in self.resources]
+        limits = [c.max_input_chars for c in caps if c.max_input_chars is not None]
+        return EngineCapabilities(
+            display_name="多资源 TTS 池",
+            max_input_chars=min(limits) if limits else None,
+            max_concurrency=sum(max(1, cfg.max_concurrency) for cfg, _ in self.resources),
+            supports_speed=all(c.supports_speed for c in caps),
+            supports_emotion=all(c.supports_emotion for c in caps),
+            # 池保证语速：原生支持的资源直接传参，其余资源在规范化时由
+            # normalize_pcm(atempo) 补齐 ⇒ 上层永远不要再变速。
+            speed_guaranteed=True,
+        )
+
+    def _available(self, cfg: ResourceConfig) -> bool:
+        health = self.health_state.get(cfg.id)
+        return (
+            self._inflight[cfg.id] < max(1, cfg.max_concurrency)
+            and not self.in_cooldown(cfg.id)
+            and health is not None
+            and health[0]
+            and time.monotonic() - health[1] < self.health_ttl
+        )
+
+    async def _probe(self, cfg: ResourceConfig, engine: TTSEngine) -> bool:
+        try:
+            if getattr(engine, "has_free_probe", True):
+                # 池统一管理 TTL，恢复时不能复用适配器的旧阴性缓存。
+                if hasattr(engine, "_health_ts"):
+                    engine._health_ts = 0
+                ok = bool(await asyncio.wait_for(engine.health(), 12))
+            else:
+                ok = bool(engine.token)
+        except Exception:
+            ok = False
+        self.health_state[cfg.id] = (ok, time.monotonic())
+        if not ok:
+            self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
+        logger.info("[engine] resource=%s probe=%s", cfg.id,
+                    ("reachable" if getattr(engine, "has_free_probe", True) else "unverified") if ok else "unavailable")
+        return ok
+
+    async def _refresh_health(self) -> None:
+        now = time.monotonic()
+        probes = []
+        for cfg, engine in self.resources:
+            cached = self.health_state.get(cfg.id)
+            if self.in_cooldown(cfg.id):
+                continue
+            if cached and cached[0] and now - cached[1] < self.health_ttl:
+                continue
+            task = self._health_tasks.get(cfg.id)
+            if task is None or task.done():
+                task = asyncio.create_task(self._probe(cfg, engine))
+                self._health_tasks[cfg.id] = task
+            probes.append(task)
+        if probes:
+            await asyncio.gather(*(asyncio.shield(task) for task in probes))
+
+    def in_cooldown(self, resource_id: str) -> bool:
+        until = self.cooldown_until.get(resource_id)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            self.cooldown_until.pop(resource_id, None)
+            return False
+        return True
+
+    async def _lease(self, should_cancel: Optional[Callable[[], bool]] = None
+                     ) -> tuple[ResourceConfig, TTSEngine]:
+        async with self._condition:
+            while True:
+                if should_cancel is not None and should_cancel():
+                    raise SynthesisCancelled("等待资源期间收到取消，未提交任何合成请求")
+                await self._refresh_health()
+                candidates = [(cfg, engine) for cfg, engine in self.resources if self._available(cfg)]
+                if candidates:
+                    if should_cancel is not None and should_cancel():
+                        raise SynthesisCancelled("取得资源后、提交前收到取消，未提交任何合成请求")
+                    # 本地优先；云端比较 capacity 归一化负载，并用轮转序号打破完全相同的 tie。
+                    local = [item for item in candidates if item[0].tier == "local"]
+                    candidates = local or candidates
+                    candidates.sort(key=lambda item: (
+                        self._inflight[item[0].id] / item[0].max_concurrency / item[0].weight,
+                        self._served[item[0].id] / item[0].weight,
+                    ))
+                    cfg, engine = candidates[0]
+                    self._served[cfg.id] += 1
+                    self._inflight[cfg.id] += 1
+                    return cfg, engine
+                if all(self.in_cooldown(cfg.id) for cfg, _ in self.resources):
+                    raise RuntimeError("所有 TTS 资源均处于冷却中")
+                # 带超时等待：只要用户在该段排队期间点了取消，最多 0.5s 就能跳出
+                # 等待并抛 SynthesisCancelled —— 这是「提交前拦住新费用」的关键。
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=self.cancel_poll_sec)
+                except asyncio.TimeoutError:
+                    pass
+
+    async def synthesize_segment(self, req: SegmentRequest) -> bytes:
+        cfg, engine = await self._lease(req.should_cancel)
+        # 语速只应用一次，且由**实际被选中的那个资源**的能力决定：
+        #   原生支持 → 交给引擎（speed 传进去，规范化不再变）；
+        #   不支持 → 引擎忽略 speed，由本池在 normalize_pcm 里用 atempo 补齐。
+        # 混池（本地原生 + 云端不支持）下两种资源混在一篇里也各自恰好一次。
+        native_speed = bool(engine.capabilities.supports_speed)
+        try:
+            result = await engine.synthesize_segment(req)
+            self._failures[cfg.id] = 0
+        except asyncio.CancelledError:
+            # HTTP 取消不代表远端任务终止，隔离一段时间避免立刻再提交。
+            self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
+            raise
+        except Exception as exc:
+            self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
+            self.health_state.pop(cfg.id, None)
+            logger.warning("[engine] resource=%s 合成失败，隔离 %.0fs，不自动重提交", cfg.id, self.cooldown_sec)
+            raise NonRetryableSynthesisError(f"资源 {cfg.id} 合成失败，提交状态可能未知，禁止自动重试") from exc
+        finally:
+            async with self._condition:
+                self._inflight[cfg.id] -= 1
+                self._condition.notify_all()
+        post_speed = 1.0 if native_speed else float(req.speed or 1.0)
+        try:
+            return await asyncio.to_thread(normalize_pcm, result, post_speed)
+        except Exception as exc:
+            raise NonRetryableSynthesisError("已取得音频但规范化失败，禁止自动重新合成") from exc
+
+    async def health(self) -> bool:
+        await self._refresh_health()
+        return any(not self.in_cooldown(cfg.id) and self.health_state.get(cfg.id, (False, 0))[0]
+                   for cfg, _ in self.resources)
+
+    def resource_snapshot(self) -> list[dict]:
+        now = time.monotonic()
+        return [
+            {
+                "id": cfg.id,
+                "provider": cfg.provider,
+                "tier": cfg.tier,
+                "max_concurrency": cfg.max_concurrency,
+                "weight": cfg.weight,
+                "inflight": self._inflight[cfg.id],
+                "in_cooldown": self.in_cooldown(cfg.id),
+                "health": ("unavailable" if self.in_cooldown(cfg.id) else
+                           "unverified" if not getattr(engine, "has_free_probe", True) else
+                           "reachable" if self.health_state.get(cfg.id, (False, 0))[0] else "unknown"),
+                "health_age_sec": round(now - (self.health_state.get(cfg.id) or (None, now))[1], 2),
+            }
+            for cfg, engine in self.resources
+        ]
 
 
 def effective_concurrency(cap: EngineCapabilities) -> int:
@@ -137,7 +552,7 @@ def audio_data_uri(path: str | Path) -> str:
 
 @dataclass
 class EngineRegistry:
-    """候选引擎列表 + 进程级熔断状态。
+    """资源池注册表 + 进程级熔断状态。
 
     两条历史教训（2026-09-29）：
 
@@ -162,15 +577,26 @@ class EngineRegistry:
     def register(self, engine: TTSEngine) -> None:
         self.engines.append(engine)
 
-    def mark_failed(self, engine_name: str) -> None:
-        """把引擎置入冷却 —— 后续任务在选择阶段跳过它。
+    def register_pool(self, resources: list[tuple[ResourceConfig, TTSEngine]]) -> EnginePoolFacade:
+        pool = EnginePoolFacade(resources)
+        self.engines.append(pool)
+        return pool
 
-        触发点是「重试后仍然失败的段」，那种失败基本是引擎级故障
-        （余额耗尽、鉴权失效、服务不可达），重试无用但会拖垮每一个新任务。
-        """
-        self.cooldown_until[engine_name] = time.monotonic() + self.cooldown_sec
+    def mark_failed(self, engine_name: str) -> None:
+        """把引擎置入冷却 —— 后续任务在选择阶段跳过它。"""
+        for engine in self.engines:
+            if isinstance(engine, EnginePoolFacade):
+                if engine.name == engine_name:
+                    logger.warning("[engine] 忽略 pool 整体熔断，请由资源租约按资源隔离")
+                    return
+                continue
+            if engine.name == engine_name:
+                self.cooldown_until[engine_name] = time.monotonic() + self.cooldown_sec
+                return
 
     def in_cooldown(self, engine_name: str) -> bool:
+        if isinstance(engine_name, EnginePoolFacade):
+            return not any(not engine_name.in_cooldown(cfg.id) for cfg, _ in engine_name.resources)
         until = self.cooldown_until.get(engine_name)
         if until is None:
             return False
@@ -198,6 +624,8 @@ class EngineRegistry:
             )
             live = list(self.engines)
         for engine in live:
+            if isinstance(engine, EnginePoolFacade):
+                return engine
             try:
                 if await engine.health():
                     return engine

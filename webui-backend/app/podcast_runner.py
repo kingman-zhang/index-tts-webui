@@ -17,9 +17,12 @@
       说话人切换 → silence.speaker_switch；同行连续 → silence.between_lines；
     行级值并入该行最后一个子段的 gap_ms，拼接期插入；
   - 变速与响度归一：原引擎每行/子段独立 _apply_speed（ebur128 → 固定增益 →
-    alimiter，目标 -16 LUFS，峰值顶 -1.5dBFS，输出 24kHz）。302.ai 等云引擎
-    不支持 speed 参数，由本模块用 ffmpeg 管道逐段补齐（atempo + 归一 +
-    统一重采样 24kHz）；ffmpeg 不可用时跳过处理（仅告警），行为与 mono 一致。
+    alimiter，目标 -16 LUFS，峰值顶 -1.5dBFS，输出 24kHz）。**语速只在资源侧
+    应用一次**：资源原生支持 speed 就传参生效，不支持的由资源池在规范化时用
+    atempo 补齐（见 engines.base.EngineCapabilities.speed_guaranteed）。
+    本模块只在「既非原生、也没有下层保障」时才补变速，避免 speed²
+    （2026-09-29 修：此前对原生引擎又套了一层 atempo，加速听起来偏快）；
+    ffmpeg 不可用时跳过处理（仅告警），行为与 mono 一致。
 
 顺序保证：段落可并发（并发度取 capabilities.max_concurrency，未声明则读
 TTS_CONCURRENCY），asyncio.gather 保序返回，拼接严格按文本顺序——第 10 段先完成
@@ -30,7 +33,6 @@ TTS_CONCURRENCY），asyncio.gather 保序返回，拼接严格按文本顺序�
 from __future__ import annotations
 
 import asyncio
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -39,7 +41,9 @@ from .config import logger
 from .engines import (
     EngineCapabilities,
     SegmentRequest,
+    SynthesisCancelled,
     VoiceRef,
+    atempo_filters,
     effective_concurrency,
     mark_engine_failed,
     select_engine,
@@ -54,6 +58,7 @@ from .mono_runner import (
     split_by_pauses,
 )
 from .engines.chunker import split_for_art
+from .engines.base import NonRetryableSynthesisError, find_ffmpeg, fix_wav_header
 
 # ─── 响度归一参数（对齐 tts-server podcast_engine.NORM_*） ──────────
 NORM_TARGET_LUFS = -16.0
@@ -67,14 +72,11 @@ _FFMPEG_WARNED = False
 
 
 def _ffmpeg_bin() -> str | None:
-    """定位 ffmpeg：PATH 优先，兜底常见安装路径（macOS homebrew 等）。"""
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-    for cand in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
-        if Path(cand).is_file():
-            return cand
-    return None
+    """定位 ffmpeg（PATH 优先，兜底常见安装路径）。实现统一在 engines.base。
+
+    保留本模块同名函数是刻意的：既有测试会 patch 这个名字来模拟「无 ffmpeg」。
+    """
+    return find_ffmpeg()
 
 
 def _measure_loudness(ffmpeg: str, data: bytes) -> float | None:
@@ -105,34 +107,23 @@ def _measure_loudness(ffmpeg: str, data: bytes) -> float | None:
 
 
 def _fix_wav_header(data: bytes) -> bytes:
-    """修正 ffmpeg 管道输出的 wav 头：data/RIFF size 是流式占位（0xFFFFFFFF 或 0）。
+    """修正 ffmpeg 管道输出的 wav 头（实现见 engines.base.fix_wav_header）。
 
     wave 模块按头部声明的 size 读取，坏头会导致 readframes 读错帧数、
     拼接产物错乱（与 302.ai 引擎 _repair_wav 同款问题）。按实际字节数回写。
     """
-    if len(data) < 44 or data[:4] != b"RIFF":
-        return data
-    b = bytearray(data)
-    pos = 12
-    while pos + 8 <= len(b):
-        cid = bytes(b[pos:pos + 4])
-        size = int.from_bytes(b[pos + 4:pos + 8], "little")
-        remaining = len(b) - pos - 8
-        if size > remaining:  # 占位/坏 size：按实际剩余字节数修正
-            size = remaining
-            b[pos + 4:pos + 8] = size.to_bytes(4, "little")
-        if cid == b"data":
-            b[4:8] = (len(b) - 8).to_bytes(4, "little")
-            return bytes(b)
-        pos += 8 + size + (size & 1)  # chunk 按 2 字节对齐
-    return data
+    return fix_wav_header(data)
 
 
-def _normalize_segment(data: bytes, speed: float) -> bytes:
+def _normalize_segment(data: bytes, speed: float = 1.0) -> bytes:
     """对单段音频做变速 + 响度归一（管道，无临时文件）。
 
     对齐原 podcast_engine._apply_speed：atempo 变速 → ebur128 测量 →
     固定增益 → alimiter 限幅兜底 → 统一 24kHz。
+
+    参数 speed 是「**本层要补的语速**」，不是用户的语速：引擎原生支持变速
+    （或资源池已保证）时调用方传 1.0，这里就只做响度归一，绝不再变一次速。
+
     ffmpeg 不可用或处理失败时返回原始数据（不影响拼接，只记告警），
     避免音频后处理失败毁掉已合成的段落。
     """
@@ -144,10 +135,7 @@ def _normalize_segment(data: bytes, speed: float) -> bytes:
             _FFMPEG_WARNED = True
         return data
 
-    speed = max(0.5, min(2.0, float(speed)))
-    filters: list[str] = []
-    if abs(speed - 1.0) >= 0.001:
-        filters.append(f"atempo={speed:g}")
+    filters = atempo_filters(speed)
 
     lufs = _measure_loudness(ffmpeg, data)
     if lufs is None:
@@ -245,7 +233,8 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
     if not voices_cfg:
         raise ValueError("播客任务缺少音色配置")
 
-    # 任务内固定单一引擎，避免中途故障切换导致音频参数不一致
+    # 引擎/资源池：生产路径下一定是资源池门面（池内按段挑资源、跨任务共享并发）。
+    # 不按引擎名分支，一切差异看 capabilities。
     engine = await select_engine()
     caps = engine.capabilities
     logger.info("[podcast] task=%s engine=%s lines=%d", task_id, engine.name, len(lines))
@@ -263,6 +252,13 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
             display_name=Path(voice_path).name,
         )
         speeds[spk] = float(speaker_speeds.get(spk) or params.get("speed") or 1.0)
+
+    # 语速只应用一次：资源原生支持（或池已保证）时，本层补 1.0（= 不动）。
+    # 混池时由池按「实际服务该段的资源」决定变速，所以这里绝不能按整体能力猜。
+    speed_done_above = caps.supports_speed or caps.speed_guaranteed
+    post_speeds = {spk: (1.0 if speed_done_above else value) for spk, value in speeds.items()}
+    logger.info("[podcast] task=%s speeds=%s 语速由%s应用", task_id, speeds,
+                "资源侧（原生/池内 ffmpeg）" if speed_done_above else "本模块 ffmpeg")
 
     entries = _flatten_podcast_segments(lines, caps, silence)
     if not entries:
@@ -313,10 +309,12 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
                     voice=voice_refs[entry["speaker"]],
                     emotion_label=entry["emotion"],
                     speed=speeds[entry["speaker"]],
+                    # 见 mono_runner 同名注释：让池在提交前就能感知取消
+                    should_cancel=lambda: bool(task.get("cancel_requested")),
                 )
             )
-        # 段级变速 + 响度归一（ffmpeg 管道；不可用时原样返回）
-        audio = await asyncio.to_thread(_normalize_segment, audio, speeds[entry["speaker"]])
+        # 段级响度归一；只有资源侧不负责语速时（post_speeds≠1）才在这里变速一次
+        audio = await asyncio.to_thread(_normalize_segment, audio, post_speeds[entry["speaker"]])
         state["done"] += 1
         _update_progress()
         return audio
@@ -335,7 +333,8 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
         return
 
     # 失败段重试一次（只重试失败段；成功段保留原结果不重复扣调用）
-    retry_idx = [i for i, r in enumerate(results) if isinstance(r, BaseException) and not isinstance(r, _TaskCancelled)]
+    retry_idx = [i for i, r in enumerate(results) if isinstance(r, Exception)
+                 and not isinstance(r, (NonRetryableSynthesisError, SynthesisCancelled, _TaskCancelled))]
     if retry_idx:
         for i in retry_idx:
             logger.warning("[podcast] task=%s 段 %d/%d 首次合成失败，重试: %s", task_id, i + 1, total, results[i])

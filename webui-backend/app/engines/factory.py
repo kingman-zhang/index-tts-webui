@@ -1,83 +1,92 @@
-"""引擎注册表工厂 —— 全进程唯一实例。
-
-为什么必须唯一（2026-09-29 改动）：
-① 原实现每个任务都调一次 `build_registry()`（mono_runner 与 podcast_runner
-   各一处），而 302.ai / SiliconFlow 的 health TTL 缓存、音色解析缓存都是
-   **实例级**的 —— 一重建就作废，于是每个任务都重新探活、重新解析音色。
-② 熔断状态（`EngineRegistry.cooldown_until`）必须跨任务存活，否则
-   「某引擎余额耗尽 ⇒ 每个新任务都先去撞一次 403 再全段失败」永远修不掉。
-
-注册顺序即优先级（与旧行为一致，避免行为漂移）：
-    自建 → 302.ai → SiliconFlow → autodl.art
-有 Key/Token 才注册对应引擎；`TTS_ENGINE_PREFERRED` 可把指定引擎提到最前。
-
-注意这里**不判断「云引擎还是本地服务器」**：注册表里每个引擎地位平等，
-差异只体现在各自声明的 `capabilities` 上。部署在哪儿不影响上层。
-
-下一轮（负载均衡）只需要替换 `select_engine()` 的排序依据，本文件的结构不变。
-"""
-
+"""进程级资源池工厂；旧环境变量仅转译配置，不保留旧优先级算法。"""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import threading
+from pathlib import Path
+from urllib.parse import urlsplit
 
 from ..config import DATA_DIR, TTS_URL, http_client
-from .base import EngineRegistry
-from .indextts_302ai import Indextts302aiEngine
+from .base import EngineRegistry, ResourceConfig, EngineCapabilities, effective_concurrency
+from .indextts_302ai import Indextts302aiEngine, DEFAULT_BASE_URL as AI302_URL
 from .indextts_art import IndexttsArtEngine
 from .indextts_local import IndexttsLocalEngine
-from .indextts_siliconflow import IndexttsSiliconflowEngine
+from .indextts_siliconflow import IndexttsSiliconflowEngine, DEFAULT_BASE_URL as SF_URL
 
 logger = logging.getLogger(__name__)
-
-_REGISTRY: EngineRegistry | None = None
+_REGISTRY = None
 _LOCK = threading.Lock()
 
 
-def _create_registry() -> EngineRegistry:
-    registry = EngineRegistry()
-    # 自建 tts-server：无条件注册（不探活就不知道它在不在线，
-    # 离线时 resolve() 会在 2s 内跳过它，这是设计好的降级路径）
-    registry.register(IndexttsLocalEngine(TTS_URL, http_client))
-    if os.environ.get("INDEXTTS302_API_KEY"):
-        registry.register(
-            Indextts302aiEngine(cache_path=DATA_DIR / "ai302_voices.json")
-        )
-    if os.environ.get("SILICONFLOW_API_KEY"):
-        # 默认国内站（CosyVoice2）；要接国际站 IndexTTS-2 时：
-        #   SILICONFLOW_BASE_URL=https://api.siliconflow.com/v1
-        #   SILICONFLOW_MODEL=IndexTeam/IndexTTS-2
-        #   （换国际站 Key，国内/国际 Key 不互通）
-        registry.register(
-            IndexttsSiliconflowEngine(
-                base_url=os.environ.get("SILICONFLOW_BASE_URL")
-                or "https://api.siliconflow.cn/v1",
-                cache_path=DATA_DIR / "siliconflow_voices.json",
-            )
-        )
-    registry.register(IndexttsArtEngine())  # token 从 AUTODL_API_TOKEN 读取
+def _resource_specs() -> list[ResourceConfig]:
+    if "TTS_RESOURCES" in os.environ or os.environ.get("TTS_RESOURCES_FILE"):
+        try:
+            raw = os.environ.get("TTS_RESOURCES")
+            if raw is None:
+                raw = Path(os.environ["TTS_RESOURCES_FILE"]).read_text(encoding="utf-8")
+            items = json.loads(raw)
+            if not isinstance(items, list) or not items:
+                raise ValueError()
+            specs = [ResourceConfig(**item) for item in items]
+        except (ValueError, TypeError):
+            raise ValueError("TTS_RESOURCES 必须为非空有效资源列表") from None
+        if len({s.id for s in specs}) != len(specs):
+            raise ValueError("资源 id 重复")
+        locals_ = [s for s in specs if s.provider == "local"]
+        if len(locals_) > 1 and not all(s.shared_voice_paths for s in locals_):
+            raise ValueError("多本地节点必须显式确认 shared_voice_paths=true：所有节点共享相同绝对音色路径")
+        return specs
+    concurrency = effective_concurrency(EngineCapabilities("旧配置"))
+    specs = [ResourceConfig("indextts_local", "local", base_url=TTS_URL, shared_voice_paths=True)]
+    for provider, env, url in [
+        ("302ai", "INDEXTTS302_API_KEY", os.environ.get("INDEXTTS302_BASE_URL") or AI302_URL),
+        ("siliconflow", "SILICONFLOW_API_KEY", os.environ.get("SILICONFLOW_BASE_URL") or SF_URL),
+        ("art", "AUTODL_API_TOKEN", None),
+    ]:
+        if os.environ.get(env):
+            specs.append(ResourceConfig("indextts_" + provider, provider, env, url, concurrency))
+    if os.environ.get("TTS_ENGINE_PREFERRED"):
+        logger.warning("TTS_ENGINE_PREFERRED 已弃用；资源池始终本地优先、云端公平分配")
+    return specs
 
-    preferred = os.environ.get("TTS_ENGINE_PREFERRED", "").strip()
-    if preferred:
-        by_name = {e.name: e for e in registry.engines}
-        head: list = []
-        for n in (s.strip() for s in preferred.split(",")):
-            if not n:
-                continue
-            if n in by_name:
-                head.append(by_name.pop(n))
-            else:
-                logger.warning(
-                    "TTS_ENGINE_PREFERRED 含未注册引擎 %r（缺 Key 或名字写错），已忽略", n
-                )
-        registry.engines = head + list(by_name.values())
+
+def _create_provider(spec):
+    key = os.environ.get(spec.api_key_env, "") if spec.api_key_env else ""
+    if spec.base_url:
+        parsed = urlsplit(spec.base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("base_url 必须是无内嵌凭据、查询参数的 HTTP 地址")
+    if spec.provider == "local":
+        return IndexttsLocalEngine(spec.base_url or TTS_URL, http_client)
+    if not key:
+        raise ValueError("云资源缺少 api_key_env 指定的凭据")
+    # 凭据轮换和 endpoint 更换也不可复用旧账号音色 URI；摘要不输出该指纹。
+    digest = hashlib.sha256((spec.provider + "\0" + (spec.base_url or "") + "\0" + key).encode()).hexdigest()
+    cache = DATA_DIR / "engine-cache" / spec.id / digest / "voices.json"
+    if spec.provider == "302ai":
+        return Indextts302aiEngine(api_key=key, base_url=spec.base_url or AI302_URL, cache_path=cache, client=http_client)
+    if spec.provider == "siliconflow":
+        return IndexttsSiliconflowEngine(api_key=key, base_url=spec.base_url or SF_URL, cache_path=cache, client=http_client)
+    if spec.provider == "art":
+        kwargs = {}
+        if spec.base_url:
+            root = spec.base_url.rstrip("/")
+            kwargs = {"submit_url": root + "/api/v1/comfyui/comfyui_workflow/indextts2-v1",
+                      "result_url": root + "/api/v1/comfyui/comfyui_workflow/result/{task_id}"}
+        return IndexttsArtEngine(token=key, client=http_client, **kwargs)
+    raise ValueError("未知资源 provider")
+
+
+def _create_registry():
+    registry = EngineRegistry()
+    registry.register_pool([(s, _create_provider(s)) for s in _resource_specs()])
     return registry
 
 
-def build_registry(force: bool = False) -> EngineRegistry:
-    """取进程级注册表。`force=True` 强制重建（测试与热改配置时用）。"""
+def build_registry(force=False):
     global _REGISTRY
     with _LOCK:
         if _REGISTRY is None or force:
@@ -85,30 +94,19 @@ def build_registry(force: bool = False) -> EngineRegistry:
         return _REGISTRY
 
 
-def reset_registry() -> None:
-    """丢弃缓存实例。测试在改动环境变量后必须调用，否则读到上一个用例的引擎集。"""
+def reset_registry():
     global _REGISTRY
     with _LOCK:
         _REGISTRY = None
 
 
-def engine_summary() -> list[dict]:
-    """当前注册了哪些引擎、各自能力如何、是否在熔断冷却中。
-
-    用于 `/api/version` 与启动日志 —— 这几项都是「新代码才有的符号」，
-    日志里出现即证明进程加载的是哪一版；同时它也是排查
-    「为什么这次走了某个引擎」的直接依据（此前完全不可见）。
-    """
-    registry = build_registry()
-    return [
-        {
-            "name": e.name,
-            "display_name": e.capabilities.display_name,
-            "max_input_chars": e.capabilities.max_input_chars,
-            "max_concurrency": e.capabilities.max_concurrency,
-            "supports_speed": e.capabilities.supports_speed,
-            "supports_emotion": e.capabilities.supports_emotion,
-            "in_cooldown": registry.in_cooldown(e.name),
-        }
-        for e in registry.engines
-    ]
+def engine_summary():
+    return [{"name": e.name, "pool_schema_version": 3, "resources": e.resource_snapshot(),
+             "display_name": e.capabilities.display_name,
+             "max_input_chars": e.capabilities.max_input_chars,
+             "max_concurrency": e.capabilities.max_concurrency,
+             "supports_speed": e.capabilities.supports_speed,
+             # speed_guaranteed=True ⇒ 上层不得再变速（v3 起语速只在资源侧应用一次）
+             "speed_guaranteed": e.capabilities.speed_guaranteed,
+             "supports_emotion": e.capabilities.supports_emotion,
+             "in_cooldown": False} for e in build_registry().engines]

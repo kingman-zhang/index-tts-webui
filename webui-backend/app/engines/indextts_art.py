@@ -99,9 +99,11 @@ class IndexttsArtEngine:
         # 同一音色每段 base64 编码一次即可，文件变化自动失效
         self._audio_cache: dict[str, tuple[tuple[int, int], str]] = {}
 
+    has_free_probe = False
+
     async def health(self) -> bool:
-        """有 Token 即视为可调度（平台侧调度，无实例概念）；真正可用性在合成时验证。"""
-        return bool(self.token)
+        """无已确认的免费探测协议，不能把 Token 存在当作健康。"""
+        return False
 
     @staticmethod
     def _load_body_template() -> Path:

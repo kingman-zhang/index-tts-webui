@@ -119,6 +119,11 @@ print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 eng = ((v.get("engines") or {}).get("registered")) or []
 print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
+for e in eng:
+    print("  资源池         : schema v%s" % e.get("pool_schema_version"),
+          "| speed_guaranteed =", e.get("speed_guaranteed"),
+          "| 资源数", len(e.get("resources") or []),
+          "| 总槽位", e.get("max_concurrency"))
 sm = v.get("source_mtimes") or {}
 print("  受监视源文件数 :", sum(1 for x in sm.values() if x is not None), "/", len(sm))
 stale = v.get("stale_sources") or []
@@ -139,6 +144,14 @@ assert (tp.get("num_value_max_digits") or 0) >= 8, (
     "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 这类会原样进模型变 unk")
 # engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
+# pool_schema_version=3 / speed_guaranteed 是 2026-09-29「语速只在资源侧应用一次」
+# 引入的新符号，同样报**取值**而不是开关：只比 supports_speed 分辨不出来 ——
+# 池门面在混池时两版都报 False。缺这两个字段 = 跑的是会把语速叠加两遍的旧代码
+# （播客里把语速调到 1.5 实际听到 ≈ 2.25 倍）。
+assert all((e.get("pool_schema_version") or 0) >= 3 and e.get("speed_guaranteed") is True
+           for e in eng), (
+    "!! 资源池 schema 不是 v3（或 speed_guaranteed 不为 true）—— 镜像里是语速会被叠加的旧代码，"
+    "播客加速听起来明显偏快（实际 ≈ speed²）")
 # source_mtimes 全为 null ⇒ 探测路径算错了（曾因 REPO_ROOT 取成 `/` 在容器里恒为空，
 # stale_sources 也就永远查不出「进程跑的是旧代码」）。Docker 下必须能读到。
 assert any(x is not None for x in sm.values()), "!! 受监视源文件一个都没找到 —— build_info 的路径解析在容器里失效了"
@@ -306,13 +319,21 @@ print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.
 eng = ((v.get("engines") or {}).get("registered")) or []
 print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
 for e in eng:
-    print("    -", e.get("name"), "| 单次上限", e.get("max_input_chars") or "不限",
+    print("    -", e.get("name"), "| schema v%s" % e.get("pool_schema_version"),
+          "| 单次上限", e.get("max_input_chars") or "不限",
           "| 并发", e.get("max_concurrency") or "env",
-          "| 语速", e.get("supports_speed"), "| 情绪", e.get("supports_emotion"),
+          "| 语速", e.get("supports_speed"), "| 语速保证", e.get("speed_guaranteed"),
+          "| 情绪", e.get("supports_emotion"),
           "| 冷却中" if e.get("in_cooldown") else "")
 # 引擎层（2026-09-29 拆分）：engines 字段是新代码才有的符号；注册数为 0 意味着
 # 任何合成都必然失败（通常是没有可用 Key/Token，或 .env 没被读到）。
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
+# 见 Docker 路径同名断言：语速只应用一次靠 schema v3 + speed_guaranteed 取值来判，
+# 光看 supports_speed 分辨不出来（混池两版都报 False）。
+assert all((e.get("pool_schema_version") or 0) >= 3 and e.get("speed_guaranteed") is True
+           for e in eng), (
+    "!! 资源池 schema 不是 v3（或 speed_guaranteed 不为 true）—— 跑的是语速会被叠加的旧代码，"
+    "播客加速听起来明显偏快（实际 ≈ speed²）")
 assert v.get("git_head") == sys.argv[1], (
     "!! 进程 HEAD 与磁盘 HEAD 不一致 —— 进程跑的是旧代码，重启未生效")
 assert v.get("glossary_exists"), (

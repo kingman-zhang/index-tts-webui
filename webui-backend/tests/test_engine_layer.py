@@ -181,8 +181,8 @@ def test_registry_is_singleton():
     r2 = build_registry()
     ok &= check("两次取到同一实例", r1 is r2, True)
 
-    r1.mark_failed("indextts_art")
-    ok &= check("熔断状态跨调用可见", build_registry().in_cooldown("indextts_art"), True)
+    r1.engines[0].cooldown_until["indextts_local"] = float("inf")
+    ok &= check("资源熔断状态跨调用可见", build_registry().engines[0].in_cooldown("indextts_local"), True)
 
     reset_registry()
     r3 = build_registry()

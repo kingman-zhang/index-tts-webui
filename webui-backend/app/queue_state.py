@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,20 @@ running_ids: set = set()  # 所有运行中任务 id（并发调度用）
 
 import asyncio  # noqa: E402  (与原实现保持一致：模块级单例锁)
 queue_lock = asyncio.Lock()
+
+
+def audio_download_name(task: Optional[dict], task_id: str, kind: str) -> str:
+    """只调整下载名，不改磁盘路径；缺项目名的历史任务保留原命名。"""
+    name = (task or {}).get("project_name") or f"{kind}_{task_id}"
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f-\x9f]', "_", name).strip().rstrip(". ")
+    name = re.sub(r"(?:\.wav)+$", "", name, flags=re.IGNORECASE).rstrip(". ")
+    if not name:
+        name = "audio"
+    if re.match(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)", name, re.IGNORECASE):
+        name = "_" + name
+    # 给扩展名预留空间，避免中文多字节名称超过常见文件系统限制。
+    name = name.encode("utf-8")[:240].decode("utf-8", errors="ignore").rstrip(". ")
+    return f"{name}.wav"
 
 
 def queue_file(task_id: str) -> Path:

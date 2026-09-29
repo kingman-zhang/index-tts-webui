@@ -24,7 +24,7 @@
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `MEMBER_REG_BONUS` | 100 | 注册赠送积分（0=关闭） |
-| `MEMBER_CHECKIN_BONUS` | 5 | 每日签到积分（0=关闭） |
+| `MEMBER_CHECKIN_BONUS` | 20 | 每日签到积分（0=关闭）；Compose 环境变量优先于 backend `.env` |
 | `MEMBER_POINTS_PER_1000_CHARS` | 10 | 合成扣费**单价**：每千字扣分（0=关闭按量扣费）。线上 `.env` 实际配 50 ⇒ 50 积分/千字 = ¥5/万字 |
 | `MEMBER_MIN_CHARGE` | 5 | 单次合成最低收费（积分）；0=不设地板。见「计费口径」 |
 | `MEMBER_TOKEN_TTL_DAYS` | 30 | 会话有效期 |

@@ -41,12 +41,14 @@ from .engines import (
     EMO_VECTOR_ORDER,
     EngineCapabilities,
     SegmentRequest,
+    SynthesisCancelled,
     VoiceRef,
     effective_concurrency,
     mark_engine_failed,
     select_engine,
 )
 from .engines.chunker import split_for_art
+from .engines.base import NonRetryableSynthesisError
 
 OUTPUTS_DIR = DATA_DIR / "outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -256,10 +258,15 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
     if not lines:
         raise ValueError("配音任务没有文本段")
 
-    # 任务内固定单一引擎，避免中途故障切换导致音频参数不一致
+    # 引擎/资源池：生产路径下一定是资源池门面（池内按段挑资源、跨任务共享并发）
     engine = await select_engine()
     caps = engine.capabilities
     logger.info("[mono] task=%s engine=%s lines=%d speed=%.2f", task_id, engine.name, len(lines), speed)
+    # 语速由资源侧应用一次（原生参数，或池对不支持原生变速的资源用 atempo 补齐）。
+    # 这里只在「既非原生、也没有下层保障」时告警——mono 路径不做后处理，
+    # 那种情况下语速会静默丢掉，必须让人看得见。
+    if abs(speed - 1.0) >= 1e-3 and not (caps.supports_speed or caps.speed_guaranteed):
+        logger.warning("[mono] task=%s 该引擎不支持语速且无底层保障，speed=%.2f 不会生效", task_id, speed)
     voice = VoiceRef(tts_path=voice_path, local_path=_resolve_local_voice(voice_path), display_name=Path(voice_path).name)
 
     entries = _flatten_segments(lines, caps)
@@ -306,8 +313,11 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
                 raise _TaskCancelled()
             state["submitted"] += 1
             _update_progress()
+            # should_cancel 让资源池在「排队等待中 / 已拿到租约但尚未提交」时也能
+            # 发现取消，直接放弃该段而不是照常提交给平台（提交即产生费用）。
             audio = await engine.synthesize_segment(
-                SegmentRequest(text=entry["text"], voice=voice, emotion_label=entry["emotion"], speed=speed)
+                SegmentRequest(text=entry["text"], voice=voice, emotion_label=entry["emotion"],
+                               speed=speed, should_cancel=lambda: bool(task.get("cancel_requested")))
             )
         state["done"] += 1
         _update_progress()
@@ -317,7 +327,10 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
         return await asyncio.gather(*[_worker(e) for e in batch], return_exceptions=True)
 
     def _failed(results: list) -> list[int]:
-        return [i for i, r in enumerate(results) if isinstance(r, BaseException)]
+        # 不可重试的失败（可能已计费）与主动取消都不重试：
+        # NonRetryableSynthesisError 重试会重复扣平台费用，SynthesisCancelled 是用户主动放弃。
+        return [i for i, r in enumerate(results) if isinstance(r, Exception)
+                and not isinstance(r, (NonRetryableSynthesisError, SynthesisCancelled, _TaskCancelled))]
 
     results = await _run_batch(entries)
 
