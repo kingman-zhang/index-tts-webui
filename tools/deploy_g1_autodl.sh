@@ -138,6 +138,18 @@ print("  [ok] 镜像含新代码（/api/version 存在、字段齐全、引擎�
   echo
   echo "注意：容器内 /app 无 .git ⇒ /api/version 的 git_head 恒为 null 属正常，"
   echo "      不要据此判断「没部署成功」；以上三条证据才是判据。"
+
+  # 上面那几条证据都是在容器里取的。宿主机侧核对必须走 web 的对外端口：
+  # compose 里 backend 用的是 expose（仅内网可达），3001 在宿主机上是空的
+  # —— 直接 curl localhost:3001/api/version 会静默返回空，很容易被误读成
+  # 「部署失败」或「端点不存在」。这里把实际端口查出来直接印出来。
+  local webport
+  webport=$(docker port podcast-web 80 2>/dev/null | head -1 | sed 's/.*://')
+  echo
+  echo "宿主机侧核对版本（走 web 反代；backend 只在 compose 内网可达，3001 在宿主机上是空的）:"
+  echo "  curl -s localhost:${webport:-8088}/api/version"
+  echo "  （端口取自 docker port podcast-web 80；也可 docker exec podcast-backend \\"
+  echo "    python -c \"import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3001/api/version').read().decode())\"）"
 }
 
 log "0/6 环境自检"
@@ -158,6 +170,8 @@ if command -v docker >/dev/null 2>&1 \
   echo "  2. 新稿子提交一次，确认预估积分按实际字数显示（不再不足千字按整千扣）"
   echo "  3. 试听含人名中点的句子（如「作家卡仑・墨菲」）确认无怪音"
   echo "  4. 改一段文字重新提交，确认只按新字数扣费"
+  echo "  5. 宿主机核对版本与引擎（端点新符号）：curl -s localhost:8088/api/version"
+  echo "     要能看到 engines.registered 里有引擎；看不到说明进程仍是旧代码"
   exit 0
 fi
 
