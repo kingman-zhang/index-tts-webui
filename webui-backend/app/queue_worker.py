@@ -10,7 +10,9 @@ import httpx
 from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
-from . import name_punct, number_norm
+# import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / number_norm
+# 的开关是**模块级**读 os.environ 的。顺序反了会落到缺省值。
+from . import name_punct, number_norm, year_norm
 from .stores import apply_glossary, load_glossary_for_synthesis
 from . import queue_state as qs
 from .membership import service as member_svc
@@ -199,6 +201,11 @@ async def _execute_task(task_id: str) -> None:
         # 详见 app/name_punct.py。
         if name_punct.ENABLED:
             synth_lines = name_punct.apply_name_separator_rules(synth_lines)
+        # 年份读法：四位年份改逐位读（2011 年 → 二零一一年）。默认启用。
+        # 这条规则原本只在 tts-server（本地 GPU 引擎）里，云引擎链路绕过它 ——
+        # 见 app/year_norm.py 顶部的完整说明。
+        if year_norm.ENABLED:
+            synth_lines = year_norm.apply_year_rules(synth_lines)
         # 数字读法归一化：只补文本前端 TN 的缺口（长号码被按数值读等），
         # 默认关闭；NUM_NORMALIZE=1 启用。详见 app/number_norm.py 与 NUMBER_NORMALIZATION.md。
         if number_norm.ENABLED:

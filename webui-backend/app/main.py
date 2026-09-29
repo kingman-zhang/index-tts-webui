@@ -9,8 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import queue_state as qs
-# import 顺序有语义，别动：config 会加载 .env，而 name_punct / number_norm 的
-# 开关是**模块级**读 os.environ 的（.env 未加载就会落到缺省值，
+# import 顺序有语义，别动：config 会加载 .env，而 name_punct / year_norm /
+# number_norm 的开关是**模块级**读 os.environ 的（.env 未加载就会落到缺省值，
 # 表现为「.env 里明明写了 NAME_PUNCT_NORMALIZE=0 却不生效」）。
 # build_info 自己就把 config 放在首位，这里跟着同一顺序。
 from .config import GLOSSARY_PATH, TTS_URL, args, http_client, logger
@@ -55,9 +55,10 @@ async def on_startup():
     )
     logger.info(
         "[startup] 文本前处理：术语表 %s 条（合成展开 %s）"
-        " / 人名分隔号 %s(%s) / 数字读法 %s",
+        " / 人名分隔号 %s(%s) / 年份读法 %s / 数字读法 %s",
         _tp.get("glossary_terms"), _tp.get("glossary_terms_for_synthesis"),
         "开" if _tp.get("name_punct_enabled") else "关", _tp.get("name_punct_target"),
+        "开" if _tp.get("year_norm_enabled") else "关",
         "开" if _tp.get("number_norm_enabled") else "关",
     )
     if _boot.get("stale_sources"):

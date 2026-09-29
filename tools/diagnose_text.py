@@ -3,9 +3,12 @@
 """文本诊断：一句话为什么被读错 / 我配的词条为什么没生效。
 
 TTS 读错字的投诉里，绝大多数不是「模型不行」，而是**送进去的文本已经不是用户以为的那份**。
-这条链路有四道关，任何一道静默改变文本，用户都看不见：
+这条链路有五道关，任何一道静默改变文本，用户都看不见：
 
-    原文 --[术语表 str.replace]--> --[人名分隔号归一化]--> --[数字读法]--> 发往引擎
+    原文 --[术语表 str.replace]--> --[人名分隔号归一化]--> --[年份读法]--> --[数字读法]--> 发往引擎
+
+（2026-09-29 补第五道关：年份读法原先只存在于 tts-server 的本地引擎链路上，
+云引擎链路绕过它 ⇒「以前修好的年份读法又坏了」。详见 webui-backend/app/year_norm.py。）
 
 本工具把这条链路**逐步打印**出来，并把「看不见的字符」曝光：
 同一个视觉符号（中点、破折号、引号、空格）可能有多个 Unicode 码位，
@@ -61,7 +64,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 os.environ.setdefault("DATA_DIR", str(BACKEND_ROOT / "data"))
 
 from app import config as app_config  # noqa: E402  （读 --data-dir，必须在 stores 之前）
-from app import name_punct, number_norm, stores  # noqa: E402
+from app import name_punct, number_norm, stores, year_norm  # noqa: E402
 from app.stores import (  # noqa: E402
     apply_glossary,
     expand_separator_variants,
@@ -158,6 +161,8 @@ def show_env() -> dict:
           f"，单条上限 {stores.MAX_SEP_VARIANTS}）")
     print(f"人名分隔号归一化  : {'开' if name_punct.ENABLED else '关'}"
           f"（目标形态 {name_punct.TARGET}）")
+    print(f"年份读法归一化    : {'开' if year_norm.ENABLED else '关'}"
+          f"（四位年份逐位读，如 2011 年 → 二零一一年）")
     print(f"数字读法归一化    : {'开' if number_norm.ENABLED else '关'}")
     return {"terms": len(terms), "synth_terms": len(synth_terms)}
 
@@ -199,13 +204,16 @@ def run_chain(text: str, terms: list, member_id: str | None) -> dict:
     line = [{"text": after_glossary}]
     after_punct = (name_punct.apply_name_separator_rules(line)[0]["text"]
                    if name_punct.ENABLED else after_glossary)
-    after_number = (number_norm.apply_number_rules([{"text": after_punct}])[0]["text"]
-                    if number_norm.ENABLED else after_punct)
+    after_year = (year_norm.apply_year_rules([{"text": after_punct}])[0]["text"]
+                  if year_norm.ENABLED else after_punct)
+    after_number = (number_norm.apply_number_rules([{"text": after_year}])[0]["text"]
+                    if number_norm.ENABLED else after_year)
     return {
         "original": text,
         "hits": hit,
         "after_glossary": after_glossary,
         "after_punct": after_punct,
+        "after_year": after_year,
         "final": after_number,
         # 引擎侧清洗（本地 front.py 的 char_rep_map）：云端是否有同表未知
         "after_front": apply_front_char_map(after_number),
@@ -225,10 +233,14 @@ def show_chain(stage: dict, verbose: bool = False) -> None:
         print(f"分隔号 : {stage['after_punct']}")
     elif verbose:
         print("分隔号 : （未改动）")
-    if stage["final"] != stage["original"]:
-        print(f"最终   : {final}")
+    if stage["after_year"] != stage["after_punct"]:
+        print(f"年份   : {stage['after_year']}")
     elif verbose:
-        print("最终   : （未改动）")
+        print("年份   : （未改动）")
+    if stage["final"] != stage["after_year"]:
+        print(f"数字   : {stage['final']}")
+    elif verbose:
+        print("数字   : （未改动）")
     if stage["after_front"] != final:
         print(f"引擎侧 : {stage['after_front']}")
         print("         ↑ 本地 front.py 的字符替换表（如 ·→-）会再改一道；")
@@ -420,7 +432,7 @@ def main() -> int:
         if not odd:
             print("（无：汉字、ASCII 与常见中文标点）")
 
-        print("\n-- 四道关 --")
+        print("\n-- 五道关 --")
         stage = run_chain(text, terms, None)
         show_chain(stage, verbose=args.verbose)
 

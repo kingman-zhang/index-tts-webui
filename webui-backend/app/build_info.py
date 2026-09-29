@@ -55,6 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # 只取 mtime，不做 import，成本可忽略。
 WATCHED = (
     "app/name_punct.py",
+    "app/year_norm.py",
     "app/number_norm.py",
     "app/stores.py",
     "app/queue_worker.py",
@@ -130,13 +131,17 @@ def _data_dir() -> dict:
 def _text_switches() -> dict:
     """文本预处理各道关的开关与词表规模（延迟 import，保证 .env 已加载）。"""
     try:
-        from . import name_punct, number_norm, stores
+        from . import name_punct, number_norm, stores, year_norm
 
         terms = stores.load_global_glossary()
         synth = stores.load_glossary_for_synthesis(None)
         return {
             "name_punct_enabled": name_punct.ENABLED,
             "name_punct_target": name_punct.TARGET,
+            # 年份读法（2026-09-29 新增）：这条规则以前只在 tts-server 里，
+            # 云引擎链路绕过它 ⇒「以前修好了、现在又坏了」。出现该字段即说明
+            # 进程加载的是含 year_norm 的新代码。
+            "year_norm_enabled": year_norm.ENABLED,
             "number_norm_enabled": number_norm.ENABLED,
             "glossary_sep_variants": stores.GLOSSARY_SEP_VARIANTS,
             "glossary_sep_variants_max": stores.MAX_SEP_VARIANTS,

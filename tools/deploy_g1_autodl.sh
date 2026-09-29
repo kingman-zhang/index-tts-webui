@@ -120,11 +120,13 @@ print("  容器内数据目录 :", v.get("data_dir"), "存在" if v.get("data_di
 print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
+print("  年份读法归一   :", tp.get("year_norm_enabled"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 assert v.get("glossary_exists"), "!! 容器读到的数据目录里没有 glossary.json —— 挂载卷指错了，所有词条静默失效"
 assert tp.get("glossary_terms"), "!! 词表条数为 0 —— 术语替换不会生效"
 assert tp.get("name_punct_enabled") is not False, "!! 人名分隔号归一化被关闭 —— 中点会进词表变 unk"
+assert tp.get("year_norm_enabled") is not False, "!! 年份读法归一化被关闭（YEAR_NORMALIZE=0）—— 2011 年会被读成数值"
 print("  [ok] 镜像含新代码（/api/version 存在且字段齐全）")
 ' /tmp/wb-docker-version.json || { echo "!! 部署后自检未通过，见上"; exit 1; }
   rm -f /tmp/wb-docker-version.json
@@ -266,6 +268,7 @@ print("  未加载的新改动 :", v.get("stale_sources") or "（无）")
 print("  数据目录       :", v.get("data_dir"), "存在" if v.get("data_dir_exists") else "!! 不存在")
 print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
+print("  年份读法归一   :", tp.get("year_norm_enabled"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
@@ -275,6 +278,9 @@ assert v.get("glossary_exists"), (
     "!! 进程读到的数据目录里没有 glossary.json —— 数据目录指错了，所有词条静默失效")
 assert tp.get("name_punct_enabled") is not False, (
     "!! 人名分隔号归一化被关闭（.env NAME_PUNCT_NORMALIZE=0）—— 中点会进词表变 unk")
+assert tp.get("year_norm_enabled") is not False, (
+    "!! 年份读法归一化被关闭（.env YEAR_NORMALIZE=0）—— 四位年份会被读成数值"
+    "（2011 年 → 两千零一十一年）")
 # stale_sources 放最后断言：它只监视 4 个文本链路文件（name_punct / number_norm /
 # stores / queue_worker），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
 # 的顺序下它必然为空；若非空，说明确有文件在这次启动之后被写过，是真问题。
@@ -288,6 +294,13 @@ if python3 tools/diagnose_text.py "作家卡仑・墨菲" 2>/dev/null | grep -q 
   echo "    [ok] 中点已被收敛（行首「分隔号 :」出现即表示改动生效）"
 else
   echo "    !! 中点未被收敛 —— 磁盘上的代码或数据目录有问题，请人工看 diagnose_text.py 输出"
+  exit 1
+fi
+# 年份读法（2026-09-29）：这条规则以前只在 tts-server，云引擎链路绕过它 ⇒ 必须显式核。
+if python3 tools/diagnose_text.py "在 2011 年发生的事" 2>/dev/null | grep -q "二零一一年"; then
+  echo "    [ok] 年份读法生效（2011 年 → 二零一一年）"
+else
+  echo "    !! 年份未被逐位读 —— 见 webui-backend/app/year_norm.py"
   exit 1
 fi
 
