@@ -20,6 +20,11 @@ SKIP_FRONTEND=0
 
 log() { echo -e "\n\033[1;32m==> $*\033[0m"; }
 
+# 部署自检的纯函数（parse_iso_ts / check_image_fresh）。抽成单独文件是为了能
+# 脱离 docker 单测，见 tools/test_deploy_checks.sh。
+# shellcheck source=tools/lib_deploy_checks.sh
+source "$_SCRIPT_DIR/lib_deploy_checks.sh"
+
 # ── Docker 部署路径（2026-09-29 新增）──────────────────────────────────────
 # 背景：容器跑的是**镜像里 COPY 进去的** app/，`git pull` 只改磁盘 ⇒ 不重建镜像
 # 一行都不生效。旧版脚本遇到容器直接 exit 1 —— 判断正确但没解决问题，用户还得
@@ -77,30 +82,18 @@ docker_upgrade() {
   log "4/4 部署后自检：容器里跑的是哪份代码"
   # 容器内 /app **没有 .git**（.dockerignore 排除），/api/version 的 git_head
   # 恒为 null ⇒ 不能像裸进程那样拿它比磁盘 HEAD。改用三条独立证据：
-  #   ① 镜像创建时间晚于本次 HEAD 提交时间（否则 = 没重建）；
-  #   ② /api/version 返回 200 且含 text_pipeline（该端点是新代码才有的符号，
-  #      镜像里若是旧代码会直接 404）；
+  #   ① 镜像里的 app/ 是不是当前代码（check_image_fresh，按**构建输入**判，
+  #      不是按 HEAD —— 只改文档/tools 时 HEAD 会新于镜像，那是正常的）；
+  #   ② /api/version 返回 200 且含 text_pipeline / engines（这些端点的字段是
+  #      新代码才有的符号，镜像里若是旧代码会直接 404）；
   #   ③ 挂载卷里词表条数 > 0。
-  local img img_ts head_ts
-  img=$(docker inspect -f '{{.Created}}' podcast-backend:latest 2>/dev/null || true)
-  # 时间戳解析交给 python3，不用 date(1)：`docker inspect` 给的是 9 位小数秒
-  # （2026-09-29T00:15:03.123456789Z），GNU date 能吞、BSD date 不能，而
-  # Python 3.7–3.10 的 fromisoformat 也拒收 9 位小数。先去掉小数部分再解析。
-  img_ts=$(python3 -c '
-import datetime as d, re, sys
-s = re.sub(r"\.\d+", "", (sys.argv[1] or "").strip()).replace("Z", "+00:00")
-try:
-    print(int(d.datetime.fromisoformat(s).timestamp()))
-except Exception:
-    print(0)
-' "$img")
-  head_ts=$(git log -1 --format=%ct)
-  echo "  镜像创建时间   : $img"
-  echo "  HEAD 提交时间  : $(git log -1 --format=%cI)  ($(git rev-parse --short HEAD))"
-  if [[ "$img_ts" -eq 0 || "$img_ts" -lt "$head_ts" ]]; then
-    echo "!! 镜像比 HEAD 旧 —— 重建没生效，容器仍在跑旧代码"
-    exit 1
-  fi
+  #
+  # 基线为什么不能是 HEAD 的提交时间：见 lib_deploy_checks.sh 里
+  # check_image_fresh 的注释（2026-09-29 ff0cfb0 的线上假失败）。
+  BACKEND_SRC="webui-backend/app webui-backend/server.py webui-backend/Dockerfile webui-backend/Dockerfile.base webui-backend/requirements.txt"
+  FRONTEND_SRC="webui-frontend/src webui-frontend/Dockerfile webui-frontend/nginx.conf webui-frontend/index.html webui-frontend/package.json webui-frontend/package-lock.json webui-frontend/vite.config.ts"
+  check_image_fresh podcast-backend:latest $BACKEND_SRC || exit 1
+  check_image_fresh podcast-web:latest $FRONTEND_SRC || exit 1
 
   local ver
   ver=$(docker exec podcast-backend python -c \
@@ -125,12 +118,20 @@ print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 eng = ((v.get("engines") or {}).get("registered")) or []
 print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
+sm = v.get("source_mtimes") or {}
+print("  受监视源文件数 :", sum(1 for x in sm.values() if x is not None), "/", len(sm))
+stale = v.get("stale_sources") or []
+print("  进程启动后改动 :", stale or "无")
 assert v.get("glossary_exists"), "!! 容器读到的数据目录里没有 glossary.json —— 挂载卷指错了，所有词条静默失效"
 assert tp.get("glossary_terms"), "!! 词表条数为 0 —— 术语替换不会生效"
 assert tp.get("name_punct_enabled") is not False, "!! 人名分隔号归一化被关闭 —— 中点会进词表变 unk"
 assert tp.get("year_norm_enabled") is not False, "!! 年份读法归一化被关闭（YEAR_NORMALIZE=0）—— 2011 年会被读成数值"
 # engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
+# source_mtimes 全为 null ⇒ 探测路径算错了（曾因 REPO_ROOT 取成 `/` 在容器里恒为空，
+# stale_sources 也就永远查不出「进程跑的是旧代码」）。Docker 下必须能读到。
+assert any(x is not None for x in sm.values()), "!! 受监视源文件一个都没找到 —— build_info 的路径解析在容器里失效了"
+assert not stale, "!! 源文件在进程启动之后被改过 —— 容器里跑的仍是旧代码（重建镜像后要重启容器）"
 print("  [ok] 镜像含新代码（/api/version 存在、字段齐全、引擎已注册）")
 ' /tmp/wb-docker-version.json || { echo "!! 部署后自检未通过，见上"; exit 1; }
   rm -f /tmp/wb-docker-version.json

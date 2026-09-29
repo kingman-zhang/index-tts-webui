@@ -98,23 +98,31 @@ curl -s localhost:3001/api/version | python3 -c 'import json,sys;print(json.load
 git rev-parse --short HEAD                  # 两个必须一致
 
 # 容器：镜像里没有 .git，git_head 恒为 null，不能据此判断「没部署成功」。
-# 改比「镜像构建时间 vs HEAD 提交时间」——容器一定在镜像之后启动，比 StartedAt 没用：
-# 只重建容器不重建镜像时 StartedAt 也会变新，会假通过。
-python3 - <<'PY'
-import subprocess, re, datetime as d
-img = subprocess.run(["docker","inspect","-f","{{.Created}}","podcast-backend:latest"],
-                     capture_output=True, text=True).stdout.strip()
-head = subprocess.run(["git","log","-1","--format=%cI"], capture_output=True, text=True).stdout.strip()
-f = lambda s: int(d.datetime.fromisoformat(re.sub(r"\.\d+", "", s).replace("Z","+00:00")).timestamp())
-print(f"镜像构建 {img}  vs  HEAD 提交 {head}")
-print("✓ 镜像是新的" if f(img) >= f(head) else "✗ 镜像比 HEAD 旧 —— 重建没生效，仍是旧代码")
-PY
+# 基线**不是 HEAD 的提交时间**，而是「最后一次改动镜像构建输入的提交」——
+# 只改文档/tools 时 HEAD 会新于镜像，拿 HEAD 比会误报（2026-09-29 ff0cfb0 实测假失败：
+# 那次提交只改了 tools/deploy_g1_autodl.sh，Docker 全层 CACHED、镜像 manifest 的 sha256
+# 与上次完全相同，但 HEAD 时间晚于镜像创建时间）。
+# 比 StartedAt 也没用：只重建容器不重建镜像时 StartedAt 也会变新，会假通过。
+# 这段逻辑已抽成 tools/lib_deploy_checks.sh:check_image_fresh，并有单测
+# tools/test_deploy_checks.sh（9 项），别再手抄一份到别处。
+bash tools/test_deploy_checks.sh
+docker inspect -f '{{.Created}}' podcast-backend:latest     # 镜像构建时间
+git log -1 --format='%h %cI' -- webui-backend/app webui-backend/server.py \
+  webui-backend/Dockerfile webui-backend/requirements.txt   # 构建输入的最后改动
+git status --porcelain -- webui-backend/app                 # 必须为空
 ```
 
-`docker exec podcast-backend python -c "import urllib.request;print(urllib.request.urlopen('http://127.0.0.1:3001/api/version').read().decode())"`
-还能拿到容器内的 `/api/version`（backend 不对外暴露，只能从容器内探）。判据三条：
-① 镜像构建时间 ≥ HEAD 提交时间；② 该端点返回 200 且含 `text_pipeline`（旧镜像是 404，端点本身
-就是新代码才有的符号）；③ `glossary_terms` > 0 且 `glossary_exists` 为真。
+`docker exec podcast-backend python -c "import urllib.request;print(json.loads(urllib.request.urlopen('http://127.0.0.1:3001/api/version').read())['source_mtimes'])"`
+还能拿到容器内的 `/api/version`（backend 不对外暴露，只能从容器内探）。判据：
+① 镜像不早于「构建输入的最后改动」且这些输入没有未提交改动；
+② 该端点返回 200 且含 `text_pipeline` / `engines`（这些端点是新代码才有的符号，旧镜像 404）；
+③ `glossary_terms` > 0 且 `glossary_exists` 为真；
+④ `source_mtimes` 有值且 `stale_sources` 为空。
+
+> ④ 是 2026-09-29 补的：此前 `REPO_ROOT` 取 `parents[2]` 在容器里等于 `/`，
+> 于是去找 `/webui-backend/app/...`（不存在）⇒ `source_mtimes` 全 null、
+> `stale_sources` 恒空，**「进程跑的是旧代码」这个探测器在 Docker 下彻底失效**。
+> 现在按后端根解析（`BACKEND_ROOT`），两边都成立。
 
 `/api/version` 还会回 `stale_sources`：裸进程部署下非空表示这些源文件在进程启动之后
 才被改动，即**进程里仍是旧代码**，必须重启。另回 `data_dir` / `glossary_exists` /

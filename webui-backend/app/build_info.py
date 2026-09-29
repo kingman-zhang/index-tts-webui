@@ -22,9 +22,10 @@ mtime、以及 git HEAD 一起吐出来。判据只有一条：
 
     GET /api/version      # 见 routes/system.py
 
-容器 / 裸进程部署都适用。`tools/deploy_g1_autodl.sh` 在重启后会自动比对
-`git rev-parse` 与这里的 `git_head`：不一致就直接报错，避免「部署脚本跑完了、
-其实什么都没变」。
+容器 / 裸进程部署都适用。`tools/deploy_g1_autodl.sh` 在重启后会自动核对：
+裸进程路径比 `git rev-parse` 与这里的 `git_head`（不一致直接报错）；Docker 路径
+容器内没有 `.git`（`git_head` 恒 null），改按**镜像构建输入的最后改动时间**判，
+见 `tools/lib_deploy_checks.sh:check_image_fresh`。
 """
 
 from __future__ import annotations
@@ -48,8 +49,19 @@ logger = _config.logger
 PROCESS_STARTED_TS = time.time()
 PROCESS_STARTED_AT = datetime.fromtimestamp(PROCESS_STARTED_TS).isoformat(timespec="seconds")
 
-# 仓库根：webui-backend/app/build_info.py → parents[2]
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# 后端根 = webui-backend/（本文件在 webui-backend/app/build_info.py）。
+# 受监视源文件的相对路径是**相对后端根**记的（"app/name_punct.py"），所以解析
+# 必须挂在 BACKEND_ROOT 上。
+#
+# 2026-09-29 修：原来写成 `REPO_ROOT / "webui-backend" / rel`，而 REPO_ROOT 取
+# `parents[2]` —— 在容器里 app/ 是 COPY 到 /app 的，本文件在 /app/app/build_info.py，
+# parents[2] = `/`，于是去找 `/webui-backend/app/...`，永远不存在 ⇒
+# `source_mtimes` 全为 null、`stale_sources` 恒空。后果是**「进程跑的是旧代码」
+# 这个探测器在 Docker 部署下彻底失效**——恰恰是最需要它的场景（见模块 docstring）。
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+# 仓库根：裸进程部署时用于定位 .git；容器内 /app 无 .git ⇒ git_head 恒为 null 属正常。
+REPO_ROOT = BACKEND_ROOT.parent
 
 # 这些文件决定「文本送出去长什么样」与「走哪个引擎」，是排错时最需要核对的一组。
 # 只取 mtime，不做 import，成本可忽略。
@@ -103,7 +115,7 @@ def source_mtimes_ts() -> dict[str, float | None]:
     out: dict[str, float | None] = {}
     for rel in WATCHED:
         try:
-            out[rel] = (REPO_ROOT / "webui-backend" / rel).stat().st_mtime
+            out[rel] = (BACKEND_ROOT / rel).stat().st_mtime
         except OSError:
             out[rel] = None
     return out
