@@ -56,6 +56,60 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 **当前决定（2026-09-29，用户确认）**：多本地节点先用**共享挂载**（NFS / 对象存储挂载 / 同一台机器多实例）解决音色文件；不在同一存储域时由用户自行上传同步。**音色上传接口列为后续待办**，实施前不要假设「只填 URL 就能多机共用音色」。
 
+## 接入一台远程 tts-server（实操，2026-09-29）
+
+tts-server 默认 `--host 0.0.0.0`，本身就是 HTTP API —— 所以「公开接口」不缺口子，缺的是网络通道、池配置，以及**音色路径对齐**。
+
+### 1. 网络：不要让 8000 裸奔到公网
+
+tts-server **没有任何鉴权**（无 API Key，CORS `allow_origins=["*"]`），且带破坏性端点：`POST /api/voices/upload`（写文件）、`DELETE /api/voices/{name}`（删音色）、`DELETE /api/task/{id}`（删任务），外加吃 GPU 的 `POST /api/synthesize`。只给自家 backend 用时，**用防火墙白名单把它变成事实上的私网接口**：
+
+- 云安全组：只放行 backend 机器出口 IP → TCP 8000（取出口 IP：backend 机器上 `curl -s https://ifconfig.me`；容器内执行同样走宿主机 NAT）
+- 服务器系统防火墙兜底：`ufw allow from <BACKEND_IP> to any port 8000 proto tcp` 后 `ufw deny 8000/tcp`（规则顺序：allow 必须在 deny 之前）
+- backend 与 tts-server 同云时优先走内网 IP：免费、更快、完全不暴露
+
+端口：2.0 = 8000（`tts-server/`），2.5 = 8001（`tts-server-2.5/`），HTTP 契约相同，适配器与配置格式都不用变。
+
+### 2. 配置：`TTS_URL` 与 `TTS_RESOURCES` 必须一起改
+
+**只改 TTS_RESOURCES 不够**（容易漏）。两条是独立路径：
+
+| 用途 | 走哪个配置 |
+| --- | --- |
+| 合成（池调度） | `TTS_RESOURCES` 的 local 条目 |
+| 预设音色上传 `/api/preset-voices/upload-to-tts` | `TTS_URL` |
+| `/api/tts/health` 探针 | `TTS_URL` |
+
+前端选**预设音色**时，backend 会把文件上传到 `TTS_URL` 那台，并把**服务器返回的路径**存进任务（`SpeakerPanel.tsx:124` / `MonoVoiceCard.tsx:75`）。所以 `TTS_URL` 仍指旧地址时，音色会被传到旧机器，新机器上一个都没有 —— 表现为「网络通了、资源池也进去了，一合成就 400 参考音频不存在」。
+
+```
+TTS_URL=http://<TTS_HOST>:8000
+TTS_RESOURCES=[{"id":"gpu-1","provider":"local","base_url":"http://<TTS_HOST>:8000","shared_voice_paths":true}]
+```
+
+`TTS_RESOURCES` 在进程启动时读取，改完 `docker compose restart backend`。若 backend 所在机器设了 `HTTP_PROXY`，httpx 默认 `trust_env` 会把该地址也丢给代理（探活会返回代理的 502/`upstream connect failed`）—— 给 TTS 地址配 `NO_PROXY`。
+
+### 3. 音色对齐：先自检，再让用户点生成
+
+`engines/indextts_local.py` 把 `VoiceRef.tts_path`（任务里的原始路径）原样发给服务器，`server.py` 用 `os.path.exists(req.voice)` 校验，**backend 不上传参考音频**。三类音色风险不同：
+
+| 来源 | 路径从哪来 | 服务器上不存在时 |
+| --- | --- | --- |
+| 预设音色（65 个） | 选中时自动上传到 `TTS_URL`，路径由服务器返回 | 低风险（前提是 `TTS_URL` 正确） |
+| 自上传音色（`data/voices/`） | backend 本地绝对路径 | **合成 400** |
+| BreezeBlue（310 个） | backend 本地绝对路径 | **合成 400** |
+
+而且 400 发生在**提交之后**：池把进适配器的异常一律包成 NonRetryable（防重复计费），两个 runner 都不自动重试 —— **不会改投云端**，用户看到的是整个任务失败。
+
+接入前先跑只读自检（不上传、不改配置）：
+
+```bash
+python tools/check_tts_endpoint.py --tts-url http://<TTS_HOST>:8000
+python tools/check_tts_endpoint.py --tts-url http://<TTS_HOST>:8000 --probe-synth
+```
+
+依次检查 ①连通性与 `model_loaded` ②服务器已有音色 ③本地三类音色里哪些服务器上没有 ④可选端到端合成。退出码 0 = 无阻断项，1 = 有告警，2 = 连不上。消除差异仍靠共享挂载；跨存储域需 rsync 同步缺失文件。
+
 ## 摘要与日志
 
 engine_summary 的 pool.resources 提供 id/provider/tier/capacity/weight/inflight/in_cooldown/health/health_age_sec；health 为 unknown/reachable/unavailable/unverified。不返回 API key、凭据环境变量内容、endpoint URL 或缓存指纹。探测/隔离日志只标记资源 id 和状态，不打印异常响应正文。
