@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
 import { api } from "@/api/client";
-import { cn } from "@/lib/utils";
+import { cn, audioDownloadName } from "@/lib/utils";
 
 interface QueueTask {
   id: string;
@@ -455,7 +455,12 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                             <button onClick={() => play(task)} className="p-1 text-indigo-600 hover:bg-indigo-100 rounded">
                               <Play className="w-3.5 h-3.5" />
                             </button>
-                            <a href={task.audio_url} download className="p-1 text-green-600 hover:bg-green-100 rounded">
+                            <a
+                              href={task.audio_url}
+                              download={audioDownloadName(task.project_name, task.audio_url)}
+                              className="p-1 text-green-600 hover:bg-green-100 rounded"
+                              title={`下载 ${audioDownloadName(task.project_name, task.audio_url)}`}
+                            >
                               <Download className="w-3.5 h-3.5" />
                             </a>
                           </>
