@@ -83,6 +83,14 @@ IndexTTS 自带 TN 确实有年份规则，但它要求数字与「年」**紧�
 不回写 `task["lines"]`。顺序：glossary → name_punct → year_norm → number_norm。
 
 启用条件：`YEAR_NORMALIZE=1`（默认）。改 `.env` 后必须重启 backend —— config 只在启动时读。
+
+版本可观测
+==========
+`/api/version` 报 `text_pipeline.year_norm_min_digits`（取自本模块的 `MIN_DIGITS`）。
+**布尔开关证明不了版本**：只有 `year_norm_enabled` 时，「四位版」与「三位版」
+都报 `true`。2026-09-29 线上真实踩到 —— 现象是「2011 读对、1550～1850 读对，
+偏偏 公元850年 读成八百五十」，这个精确组合只有四位版能产生，却从 `/api/version`
+看不出差异。取值域（位数下限）才可判。
 """
 
 from __future__ import annotations
@@ -98,6 +106,18 @@ ENABLED = os.environ.get("YEAR_NORMALIZE", "1").strip() != "0"
 # 注意不能复用 number_norm.read_digits()：那个默认把 1 读成「幺」（为号码场景设计）。
 CHINESE_DIGITS = "零一二三四五六七八九"
 
+# 逐位读的年份位数范围。**这两个常量是单一真源**：下面的正则由它们拼出来，
+# `/api/version` 也报 `MIN_DIGITS`。
+#
+# 为什么要报出来（2026-09-29）：三位支持（`公元850年` → `公元八五零年`）上线后，
+# 服务器上跑的仍是只有四位的版本，用户听到的现象是「2011 读对、1550～1850 读对、
+# 偏偏 850 读成八百五十」—— 这个**精确组合**只有「四位版」能产生。但当时
+# `/api/version` 里只有 `year_norm_enabled: true`（两版都有），**分辨不出来**，
+# 只能靠逐行读代码的 git 史。加一个数字字段就把这件事变成一眼可判。
+# 命名取「最少几位」而不是「支持三位」：将来若要放宽到两位（`公元50年`）不用改名。
+MIN_DIGITS = 3
+MAX_DIGITS = 4
+
 # 区间分隔符：统一输出「到」。见模块 docstring 里「为什么分隔符要换成到」。
 RANGE_SEPARATOR = "到"
 
@@ -106,10 +126,10 @@ RANGE_SEPARATOR = "到"
 # 这两种 TN 处理不好的写法，以及左端被按数值读的情况。
 # 右端限定 4 位：`100-200年` 这种双三位更像「时长区间」（一百到两百年），不能当年份。
 _YEAR_RANGE_PATTERN = re.compile(
-    r"(?<!\d)(\d{3,4})\s*(年)?\s*(～|~|至|到|—|-)\s*(\d{4})\s*年"
+    rf"(?<!\d)(\d{{{MIN_DIGITS},{MAX_DIGITS}}})\s*(年)?\s*(～|~|至|到|—|-)\s*(\d{{{MAX_DIGITS}}})\s*年"
 )
 # 独立年份：`\s*` 是关键 —— 它同时负责「吃掉空格」。
-_YEAR_PATTERN = re.compile(r"(?<!\d)(\d{3,4})\s*年")
+_YEAR_PATTERN = re.compile(rf"(?<!\d)(\d{{{MIN_DIGITS},{MAX_DIGITS}}})\s*年")
 
 # ── 三位年份的否决（只对三位生效，四位行为不变）────────────────────────
 # 时长/序数语境：这些词紧邻数字右侧（窗口内）⇒ 是「时长」或「序数」不是年份。
@@ -130,8 +150,11 @@ def year_digits(digits: str) -> str:
     return "".join(CHINESE_DIGITS[int(d)] for d in digits)
 
 
-def _three_digit_rejected(text: str, start: int) -> bool:
-    """三位的否决判定：时长/序数语境，或前面是数字间的分隔符。"""
+def _short_year_rejected(text: str, start: int) -> bool:
+    """「短年份」（不足 MAX_DIGITS 位）的否决判定。
+
+    只有短年份需要否决 —— 四位几乎不可能是时长，一律改。
+    """
     # 注意先判空：`"" in RANGE_SEPARATORS` 恒为 True（空串是任何字符串的子串），
     # 句首的三位会被这条静默吞掉。
     prev = text[start - 1] if start > 0 else ""
@@ -149,8 +172,8 @@ def _replace_year_range(match: re.Match) -> str:
 
 def _replace_year(match: re.Match) -> str:
     digits = match.group(1)
-    # 只对三位否决；四位一律改（`2011年` 不可能是时长）。
-    if len(digits) == 3 and _three_digit_rejected(match.string, match.start()):
+    # 只对短年份否决；四位一律改（`2011年` 不可能是时长）。
+    if len(digits) < MAX_DIGITS and _short_year_rejected(match.string, match.start()):
         return match.group(0)
     return year_digits(digits) + "年"
 

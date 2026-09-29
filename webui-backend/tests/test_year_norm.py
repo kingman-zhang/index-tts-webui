@@ -12,6 +12,8 @@
   4. 与 TN 的互操作（装了 wetext 才跑）：转换后的汉字进 TN 必须原样输出，
      且**用户原始报障句**经过「本模块 → TN」后年份必须是逐位读法。
      —— 这一部分才是本模块存在的理由：光看字符串相等不够。
+  5. 自描述：MIN_DIGITS / MAX_DIGITS 必须与正则实际接受的范围一致
+     （`/api/version` 与部署自检靠 MIN_DIGITS 分辨「三位规则在不在」）。
 """
 
 from __future__ import annotations
@@ -99,6 +101,17 @@ CASES: list[tuple[str, str, str]] = [
     ("三千年的历史", "三千年的历史", "已是汉字"),
     ("9:30", "9:30", "时间不归本层（TN 读「九点三十分」）"),
     ("2011年度报告", "二零一一年度报告", "「年度」不是反例：TN 本身就读「二零一一年度报告」"),
+    # —— 用户第二次报障的整句（2026-09-29）：四种形态同句出现 ——
+    (
+        "在 2011 年遭受特大地震和海啸后，日本获得了难以计数的帮助。"
+        "社会心理学家黑兹尔・马库斯总结说，在公元850年前，我们试过了"
+        "从1550～1850年间，还有1550-1850年，学生们近 30% 的时间花在了交谈上",
+        "在 二零一一年遭受特大地震和海啸后，日本获得了难以计数的帮助。"
+        "社会心理学家黑兹尔・马库斯总结说，在公元八五零年前，我们试过了"
+        "从一五五零到一八五零年间，还有一五五零到一八五零年，"
+        "学生们近 30% 的时间花在了交谈上",
+        "★ 用户整句：四位+三位+区间+两位（30%）同句，各改各的",
+    ),
     ("没有数字的普通句子", "没有数字的普通句子", "恒等"),
     ("", "", "空串"),
 ]
@@ -184,6 +197,40 @@ def part4_with_tn() -> None:
     dur = "距今850年"
     check("时长语境 + TN 仍是数值读法", "八百五十" in tn.normalize(normalize_years(dur)), True)
 
+    # ⑤ 用户整句（四位 + 三位 + 区间 + 两位混排）：整条链路上都必须对
+    full = (
+        "在 2011 年遭受特大地震和海啸后，日本获得了难以计数的帮助。"
+        "社会心理学家黑兹尔・马库斯总结说，在公元850年前，我们试过了"
+        "从1550～1850年间，还有1550-1850年，学生们近 30% 的时间花在了交谈上"
+    )
+    got = tn.normalize(normalize_years(full))
+    check("整句：不再出现「八百五十」", "八百五十" in got, False)
+    check("整句：出现「公元八五零年」", "公元八五零年" in got, True)
+    check("整句：2011 仍是逐位", "二零一一年" in got, True)
+    check("整句：区间两端都逐位", "一五五零到一八五零" in got, True)
+
+
+def part5_descriptors() -> None:
+    print("── 5/5 自描述：常量与正则必须一致 ──")
+    # 这两个常量是 /api/version 的 year_norm_min_digits 与部署自检的判据：
+    # 看到 3 = 三位规则在跑；看到 4 = 仍是只有四位规则的旧版（850 会读成八百五十）。
+    check("MIN_DIGITS", year_norm.MIN_DIGITS, 3)
+    check("MAX_DIGITS", year_norm.MAX_DIGITS, 4)
+    # 正则由常量拼出 ⇒ 不可能与常量脱钩；这里做**行为**核对（比读 pattern 字符串稳）
+    for n in range(1, 6):
+        want = year_norm.MIN_DIGITS <= n <= year_norm.MAX_DIGITS
+        got = bool(year_norm._YEAR_PATTERN.fullmatch("8" * n + "年"))
+        check(f"{n} 位数字+「年」是否应匹配（期望 {want}）", got, want)
+    for n in range(1, 6):
+        # 左端同样是 3~4 位（`850～1850年间` 要命中）；**右端**才限定 4 位。
+        want = year_norm.MIN_DIGITS <= n <= year_norm.MAX_DIGITS
+        got = bool(year_norm._YEAR_RANGE_PATTERN.fullmatch("1" * n + "-1850年"))
+        check(f"区间左端 {n} 位（期望 {want}）", got, want)
+    for n in range(1, 6):
+        want = n == year_norm.MAX_DIGITS
+        got = bool(year_norm._YEAR_RANGE_PATTERN.fullmatch("1550-" + "1" * n + "年"))
+        check(f"区间右端 {n} 位（期望 {want}）", got, want)
+
 
 def main() -> int:
     print(f"app/year_norm.py  YEAR_NORMALIZE 生效 = {ENABLED}\n")
@@ -191,6 +238,7 @@ def main() -> int:
     part2_idempotent()
     part3_invariance()
     part4_with_tn()
+    part5_descriptors()
     print(f"\n通过 {PASS} 项，失败 {FAIL} 项")
     return 1 if FAIL else 0
 

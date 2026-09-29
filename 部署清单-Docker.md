@@ -117,12 +117,20 @@ git status --porcelain -- webui-backend/app                 # 必须为空
 ① 镜像不早于「构建输入的最后改动」且这些输入没有未提交改动；
 ② 该端点返回 200 且含 `text_pipeline` / `engines`（这些端点是新代码才有的符号，旧镜像 404）；
 ③ `glossary_terms` > 0 且 `glossary_exists` 为真；
-④ `source_mtimes` 有值且 `stale_sources` 为空。
+④ `source_mtimes` 有值且 `stale_sources` 为空；
+⑤ `text_pipeline.year_norm_min_digits` 为 **3**。
 
 > ④ 是 2026-09-29 补的：此前 `REPO_ROOT` 取 `parents[2]` 在容器里等于 `/`，
 > 于是去找 `/webui-backend/app/...`（不存在）⇒ `source_mtimes` 全 null、
 > `stale_sources` 恒空，**「进程跑的是旧代码」这个探测器在 Docker 下彻底失效**。
 > 现在按后端根解析（`BACKEND_ROOT`），两边都成立。
+
+> ⑤ 也是 2026-09-29 补的，同一天踩的另一个坑：`year_norm_enabled` 这种**布尔开关
+> 分辨不出规则的版本** —— 「只有四位年份」的旧版与「三+四位」的新版都报 `true`。
+> 结果线上出现「2011 读对、1550～1850 读对，偏偏 `公元850年` 读成八百五十」，
+> 光看 `/api/version` 完全看不出差异，只能去读 git 史。现在报**位数下限**：
+> 看到 `3` = 三位规则在跑；看到 `4` = 旧版，必须重新部署。
+> 通用教训：**开关量证明不了版本，能证明版本的是取值域**。
 
 `/api/version` 还会回 `stale_sources`：裸进程部署下非空表示这些源文件在进程启动之后
 才被改动，即**进程里仍是旧代码**，必须重启。另回 `data_dir` / `glossary_exists` /

@@ -113,7 +113,7 @@ print("  容器内数据目录 :", v.get("data_dir"), "存在" if v.get("data_di
 print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
-print("  年份读法归一   :", tp.get("year_norm_enabled"))
+print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 eng = ((v.get("engines") or {}).get("registered")) or []
@@ -126,6 +126,12 @@ assert v.get("glossary_exists"), "!! 容器读到的数据目录里没有 glossa
 assert tp.get("glossary_terms"), "!! 词表条数为 0 —— 术语替换不会生效"
 assert tp.get("name_punct_enabled") is not False, "!! 人名分隔号归一化被关闭 —— 中点会进词表变 unk"
 assert tp.get("year_norm_enabled") is not False, "!! 年份读法归一化被关闭（YEAR_NORMALIZE=0）—— 2011 年会被读成数值"
+# year_norm_min_digits 是 2026-09-29「三位年份逐位读」引入的新符号。它的值本身就是判据：
+# 只有 year_norm_enabled 时，「四位版」与「三位版」都报 true，**分辨不出来** ——
+# 于是会出现「2011 读对、1550～1850 读对，偏偏 850 读成八百五十」这种只在旧版发生的现象。
+assert (tp.get("year_norm_min_digits") or 9) <= 3, (
+    "!! 年份逐位读的下限不是 3（或字段缺失）—— 跑的是只有四位规则的旧代码，"
+    "公元850年 会被读成「八百五十」")
 # engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
 # source_mtimes 全为 null ⇒ 探测路径算错了（曾因 REPO_ROOT 取成 `/` 在容器里恒为空，
@@ -287,7 +293,7 @@ print("  未加载的新改动 :", v.get("stale_sources") or "（无）")
 print("  数据目录       :", v.get("data_dir"), "存在" if v.get("data_dir_exists") else "!! 不存在")
 print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
-print("  年份读法归一   :", tp.get("year_norm_enabled"))
+print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
@@ -310,6 +316,10 @@ assert tp.get("name_punct_enabled") is not False, (
 assert tp.get("year_norm_enabled") is not False, (
     "!! 年份读法归一化被关闭（.env YEAR_NORMALIZE=0）—— 四位年份会被读成数值"
     "（2011 年 → 两千零一十一年）")
+# 见 Docker 路径同名断言：字段值本身就是「三位规则在不在」的判据。
+assert (tp.get("year_norm_min_digits") or 9) <= 3, (
+    "!! 年份逐位读的下限不是 3（或字段缺失）—— 跑的是只有四位规则的旧代码，"
+    "公元850年 会被读成「八百五十」")
 # stale_sources 放最后断言：它只监视 4 个文本链路文件（name_punct / number_norm /
 # stores / queue_worker），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
 # 的顺序下它必然为空；若非空，说明确有文件在这次启动之后被写过，是真问题。

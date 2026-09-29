@@ -158,6 +158,12 @@ def _text_switches() -> dict:
             # 云引擎链路绕过它 ⇒「以前修好了、现在又坏了」。出现该字段即说明
             # 进程加载的是含 year_norm 的新代码。
             "year_norm_enabled": year_norm.ENABLED,
+            # 逐位读的**最少位数**。这个数字存在的理由：只有 year_norm_enabled
+            # 时，「四位版」与「三位版」的取值都是 true，**分辨不出来** ——
+            # 2026-09-29 就撞上了：服务器跑四位版，现象是「2011 读对、850 读错」，
+            # 而 /api/version 看不出差异，只能去读 git 史。
+            # 看到 3 = 三位规则在跑；看到 4 = 还是老的四位版，必须重新部署。
+            "year_norm_min_digits": year_norm.MIN_DIGITS,
             "number_norm_enabled": number_norm.ENABLED,
             "glossary_sep_variants": stores.GLOSSARY_SEP_VARIANTS,
             "glossary_sep_variants_max": stores.MAX_SEP_VARIANTS,
