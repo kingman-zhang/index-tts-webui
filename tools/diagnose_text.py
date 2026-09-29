@@ -162,7 +162,8 @@ def show_env() -> dict:
     print(f"人名分隔号归一化  : {'开' if name_punct.ENABLED else '关'}"
           f"（目标形态 {name_punct.TARGET}）")
     print(f"年份读法归一化    : {'开' if year_norm.ENABLED else '关'}"
-          f"（四位年份逐位读，如 2011 年 → 二零一一年）")
+          f"（四位/三位年份逐位读，如 2011 年 → 二零一一年、公元850年 → 公元八五零年；"
+          f"时长语境如「距今850年」不改）")
     print(f"数字读法归一化    : {'开' if number_norm.ENABLED else '关'}")
     return {"terms": len(terms), "synth_terms": len(synth_terms)}
 
