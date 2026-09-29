@@ -16,9 +16,11 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import threading
 import time
 import uuid
-from datetime import datetime, timedelta
+from contextlib import contextmanager
+from datetime import datetime
 from typing import Optional
 
 from . import store
@@ -321,32 +323,55 @@ def change_password(user: dict, old_password: str, new_password: str) -> None:
 
 # ─── 积分核心 ───────────────────────────────────────────────
 
+# 同一用户的「读 → 判断 → 写」必须串行，否则并发请求会各读到旧状态再各自写回。
+# 真实踩到的后果：两个并发签到同时通过「今天是否已签到」检查，各发一次积分
+# （2026-09-29 排期表 P1）。store 的锁只保证**单次**读/写原子，
+# 保护不了跨读写的业务判断，所以要在业务层加锁。
+# 刻意按 user_id 分锁：不同用户互不阻塞；锁本身很小，几千用户量级可接受。
+# 只覆盖**单进程**；将来若上多 worker，需换成文件锁（fcntl）并复查当日记录。
+_user_locks: dict = {}
+_user_locks_guard = threading.Lock()
+# 优惠码是**跨用户共享**的资源，同一用户的锁管不住「两个人同时兑同一个单次码」，
+# 所以兑换的读码→占坑→写回再用一把进程级锁串行化（兑换是低频操作，不值得更细的锁）。
+_redeem_lock = threading.RLock()
+
+
+@contextmanager
+def user_lock(user_id: str):
+    """按用户互斥（可重入：checkin 内部再调 _apply_delta 不会自锁）。"""
+    with _user_locks_guard:
+        lock = _user_locks.setdefault(user_id, threading.RLock())
+    with lock:
+        yield
+
+
 def _apply_delta(user: dict, delta: int, kind: str, reason: str, ref: str = "",
                  log_id: Optional[str] = None) -> int:
     """写入积分变动 + 流水。delta 可正可负；余额不足时抛错（kind=spend）。"""
-    users = store.load_users()
-    target = users.get(user["user_id"])
-    if not target:
-        raise MemberError("用户不存在", 404)
-    new_balance = target.get("points", 0) + delta
-    if new_balance < 0:
-        raise MemberError(f"积分不足（当前 {target.get('points', 0)}，需要 {-delta}）", 402)
-    target["points"] = new_balance
-    target["updated_at"] = datetime.now().isoformat()
-    store.save_users(users)
-    log_entry = {
-        "id": log_id or f"pl_{uuid.uuid4().hex[:12]}",
-        "user_id": target["user_id"],
-        "delta": delta,
-        "balance_after": new_balance,
-        "kind": kind,  # earn/spend/redeem/checkin/grant/refund
-        "reason": reason,
-        "ref": ref,
-        "created_at": datetime.now().isoformat(),
-    }
-    store.append_point_log(log_entry)
-    _trim_logs(target["user_id"])
-    return new_balance
+    with user_lock(user["user_id"]):
+        users = store.load_users()
+        target = users.get(user["user_id"])
+        if not target:
+            raise MemberError("用户不存在", 404)
+        new_balance = target.get("points", 0) + delta
+        if new_balance < 0:
+            raise MemberError(f"积分不足（当前 {target.get('points', 0)}，需要 {-delta}）", 402)
+        target["points"] = new_balance
+        target["updated_at"] = datetime.now().isoformat()
+        store.save_users(users)
+        log_entry = {
+            "id": log_id or f"pl_{uuid.uuid4().hex[:12]}",
+            "user_id": target["user_id"],
+            "delta": delta,
+            "balance_after": new_balance,
+            "kind": kind,  # earn/spend/redeem/checkin/grant/refund
+            "reason": reason,
+            "ref": ref,
+            "created_at": datetime.now().isoformat(),
+        }
+        store.append_point_log(log_entry)
+        _trim_logs(target["user_id"])
+        return new_balance
 
 
 def _trim_logs(user_id: str) -> None:
@@ -399,34 +424,38 @@ def create_redeem_codes(count: int, points: int, max_uses: int = 1,
 
 def redeem(user: dict, code: str) -> dict:
     code = (code or "").strip().upper()
-    codes = store.load_redeem_codes()
-    entry = codes.get(code)
-    if not entry:
-        raise MemberError("优惠码不存在")
-    if entry.get("disabled"):
-        raise MemberError("优惠码已停用")
-    if entry.get("expires_ts") and entry["expires_ts"] < time.time():
-        raise MemberError("优惠码已过期")
-    if entry.get("used_count", 0) >= entry.get("max_uses", 1):
-        raise MemberError("优惠码已被使用")
-    if any(u["user_id"] == user["user_id"] for u in entry.get("used_by", [])):
-        raise MemberError("您已使用过该优惠码")
-    # 先占坑再发积分，防止并发重复兑换
-    entry["used_count"] = entry.get("used_count", 0) + 1
-    entry["used_by"].append({
-        "user_id": user["user_id"],
-        "username": user["username"],
-        "at": datetime.now().isoformat(),
-    })
-    store.save_redeem_codes(codes)
-    try:
-        balance = _apply_delta(user, entry["points"], "redeem", f"优惠码兑换 {code}", ref=code)
-    except MemberError:
-        # 理论上不会发生（兑换只加不减），占坑回滚保平安
-        entry["used_count"] -= 1
-        entry["used_by"] = [u for u in entry["used_by"] if u["user_id"] != user["user_id"]]
+    # 与签到同类的竞态：读码 → 校验 → 占坑 → 写回，中间被并发插入就会超发
+    # （同一用户重复兑 / 单次码被两人同时兑）。同一用户内用 user_lock，
+    # 跨用户对同一码的争抢用进程级 _redeem_lock 串行化。仍只覆盖单进程。
+    with _redeem_lock, user_lock(user["user_id"]):
+        codes = store.load_redeem_codes()
+        entry = codes.get(code)
+        if not entry:
+            raise MemberError("优惠码不存在")
+        if entry.get("disabled"):
+            raise MemberError("优惠码已停用")
+        if entry.get("expires_ts") and entry["expires_ts"] < time.time():
+            raise MemberError("优惠码已过期")
+        if entry.get("used_count", 0) >= entry.get("max_uses", 1):
+            raise MemberError("优惠码已被使用")
+        if any(u["user_id"] == user["user_id"] for u in entry.get("used_by", [])):
+            raise MemberError("您已使用过该优惠码")
+        # 先占坑再发积分，防止并发重复兑换
+        entry["used_count"] = entry.get("used_count", 0) + 1
+        entry["used_by"].append({
+            "user_id": user["user_id"],
+            "username": user["username"],
+            "at": datetime.now().isoformat(),
+        })
         store.save_redeem_codes(codes)
-        raise
+        try:
+            balance = _apply_delta(user, entry["points"], "redeem", f"优惠码兑换 {code}", ref=code)
+        except MemberError:
+            # 理论上不会发生（兑换只加不减），占坑回滚保平安
+            entry["used_count"] -= 1
+            entry["used_by"] = [u for u in entry["used_by"] if u["user_id"] != user["user_id"]]
+            store.save_redeem_codes(codes)
+            raise
     return {"added": entry["points"], "balance": balance, "code": code}
 
 
@@ -436,15 +465,18 @@ def checkin(user: dict) -> dict:
     if CHECKIN_BONUS <= 0:
         raise MemberError("签到功能未开启")
     today = datetime.now().strftime("%Y-%m-%d")
-    data = store.load_checkins()
-    days = data.setdefault(user["user_id"], set())
-    days = set(days)
-    if today in days:
-        raise MemberError("今天已经签到过啦", 409)
-    days.add(today)
-    data[user["user_id"]] = list(days)
-    store.save_checkins(data)
-    balance = _apply_delta(user, CHECKIN_BONUS, "checkin", f"每日签到 {today}")
+    # 整段（读 → 判断今天是否已签 → 写 → 发积分）必须在同一临界区里：
+    # store 的锁只让单次读写原子，挡不住「两个请求都读到未签到」。
+    with user_lock(user["user_id"]):
+        data = store.load_checkins()
+        days = data.setdefault(user["user_id"], set())
+        days = set(days)
+        if today in days:
+            raise MemberError("今天已经签到过啦", 409)
+        days.add(today)
+        data[user["user_id"]] = list(days)
+        store.save_checkins(data)
+        balance = _apply_delta(user, CHECKIN_BONUS, "checkin", f"每日签到 {today}")
     return {"added": CHECKIN_BONUS, "balance": balance, "date": today}
 
 

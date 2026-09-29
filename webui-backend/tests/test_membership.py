@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +30,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 _path_exists = Path.exists
 with patch.object(Path, "exists", lambda p: False if p.name == ".env" else _path_exists(p)):
     from app.main import app  # noqa: E402
-from app.membership import service  # noqa: E402
+from app.membership import service, store  # noqa: E402
 from app.membership.service import MemberError  # noqa: E402
 
 client = TestClient(app)
@@ -174,6 +175,62 @@ def main():
     r = client.get("/api/points/checkin", headers={"Authorization": f"Bearer {w5}"})
     check("状态已变已签到", r.json()["checked_in_today"] is True and r.json()["total_days"] == 1)
 
+    print("── 并发原子性（2026-09-29 排期 P1） ──")
+    # 并发签到：8 个线程用 Barrier 对齐后同时进 checkin，只能有 1 个成功。
+    # 修前是「读签到表 → 判断 → 写回」非原子，多个线程会各发一次积分。
+    body_c, e_c = svc_register("赵六", "pass123")
+    check("并发测试用户注册", body_c is not None, str(e_c))
+    u6 = (body_c or {}).get("user", {})
+    bonus = service.CHECKIN_BONUS
+    threads_n = 8
+    ok, err = [], []
+    barrier = threading.Barrier(threads_n)
+
+    def _race_checkin():
+        barrier.wait()
+        try:
+            ok.append(service.checkin(u6))
+        except MemberError as exc:
+            err.append(exc)
+
+    workers = [threading.Thread(target=_race_checkin) for _ in range(threads_n)]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join()
+    balance6 = store.load_users()[u6["user_id"]]["points"]
+    check(f"并发签到只成功 1 次（成功 {len(ok)} / 409 {len(err)}）", len(ok) == 1, f"成功 {len(ok)} 次")
+    check("并发签到只发一次积分", balance6 == 100 + bonus, f"余额 {balance6}")
+    check("签到流水只有一条", len([e for e in store.load_point_logs()
+                                   if e["user_id"] == u6["user_id"] and e["kind"] == "checkin"]) == 1)
+
+    # 并发兑换：单次码被 4 个不同用户同时抢，只能有 1 个占坑成功
+    code_one = service.create_redeem_codes(1, 30, max_uses=1)[0]
+    redeem_ok, redeem_err = [], []
+    redeem_barrier = threading.Barrier(4)
+    redeem_users = []
+    for name in ("甲一", "乙二", "丙三", "丁四"):
+        b, _ = svc_register(name, "pass123")
+        redeem_users.append(b["user"])
+
+    def _race_redeem(u):
+        redeem_barrier.wait()
+        try:
+            redeem_ok.append(service.redeem(u, code_one))
+        except MemberError as exc:
+            redeem_err.append(exc)
+
+    workers = [threading.Thread(target=_race_redeem, args=(u,)) for u in redeem_users]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join()
+    check("单次码并发只被兑走 1 次", len(redeem_ok) == 1, f"成功 {len(redeem_ok)} 次")
+    check("单次码 used_count == 1",
+          store.load_redeem_codes()[code_one]["used_count"] == 1)
+    check("只有一位用户拿到 30 分",
+          len([1 for u in redeem_users if store.load_users()[u["user_id"]]["points"] == 130]) == 1)
+
     print("── 管理接口守卫 ──")
     r = client.post("/api/admin/members/codes", json={"count": 1, "points": 10})
     check("无令牌 401", r.status_code == 401)
@@ -181,7 +238,8 @@ def main():
                     headers={"X-Admin-Token": "wrong"})
     check("错令牌 401", r.status_code == 401)
     r = client.get("/api/admin/members/users", headers=ADMIN)
-    check("用户列表 2 人", r.status_code == 200 and len(r.json()["users"]) == 2, r.text)
+    check("用户列表 7 人（张三/王五/赵六/甲乙丙丁）",
+          r.status_code == 200 and len(r.json()["users"]) == 7, r.text)
     r = client.post("/api/admin/members/disable", json={"user": "王五", "disabled": True}, headers=ADMIN)
     check("禁用成功", r.status_code == 200)
     r = client.post("/api/auth/login", json={"username": "王五", "password": "pass123"})
