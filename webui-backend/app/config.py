@@ -104,115 +104,26 @@ def resource_file_path() -> Path | None:
     return p if p.is_absolute() else (BACKEND_ROOT / p)
 
 
-def _strip_comments(text: str) -> str:
-    """剥掉 JSONC 风格的注释（`//` 行注释、`/* */` 块注释）。
-
-    为什么容忍注释：这是一份**手写的小配置文件**，用户很自然会想「把备用的那台
-    先注释掉、要用了再放开」（2026-09-30 实际发生）。而标准 JSON 不允许注释 ——
-    `json.loads` 只会报「Expecting value: line 1 column 1」，指不到真正的原因，
-    排查成本远高于这里多出来的二十行。
-
-    ⚠️ **必须逐字符扫描、跟踪字符串状态**：URL 里的 `//` 不是注释
-    （`"base_url": "https://host:8000"` 恰恰是这份文件里最常见的值），
-    字符串里的 `/*` 同理。用正则一把梭会**静默截断 URL**，属于最难查的一类 bug。
-    """
-    out: list[str] = []
-    i, n = 0, len(text)
-    in_string = False
-    while i < n:
-        ch = text[i]
-        if in_string:
-            out.append(ch)
-            if ch == "\\" and i + 1 < n:      # 转义：连下一个字符一起吞掉
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-            i += 1
-            continue
-        if ch == '"':
-            in_string = True
-            out.append(ch)
-            i += 1
-            continue
-        if ch == "/" and i + 1 < n:
-            nxt = text[i + 1]
-            if nxt == "/":
-                i += 2
-                while i < n and text[i] not in "\r\n":
-                    i += 1
-                continue
-            if nxt == "*":
-                i += 2
-                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
-                    i += 1
-                i += 2                        # 跳过 `*/`；未闭合就到末尾
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def _drop_trailing_commas(text: str) -> str:
-    """去掉 `,]` / `,}` 这类尾随逗号。
-
-    为什么**必须**连带做这个：支持注释之后，「注释掉数组最后一项」就必然留下
-    尾随逗号（`{"b"},` 后面跟着被注释掉的 `{"c"}` ⇒ `{"b"},]`），标准 JSON 直接
-    报错。只支持注释却不管尾随逗号，等于把「注释可用」变成「注释有时可用」——
-    比不支持注释更糟，因为错误更难懂。
-
-    同样要跟踪字符串状态：`"值里,]"` 不能被改。
-    """
-    out: list[str] = []
-    i, n = 0, len(text)
-    in_string = False
-    while i < n:
-        ch = text[i]
-        if in_string:
-            out.append(ch)
-            if ch == "\\" and i + 1 < n:
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if ch == '"':
-                in_string = False
-            i += 1
-            continue
-        if ch == '"':
-            in_string = True
-            out.append(ch)
-            i += 1
-            continue
-        if ch == ",":
-            j = i + 1
-            while j < n and text[j] in " \t\r\n":
-                j += 1
-            if j < n and text[j] in "]}":
-                i += 1                        # 丢弃这个逗号
-                continue
-        out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-def normalize_jsonc(text: str) -> str:
-    """把 JSONC 宽松写法规范成严格 JSON：剥注释 + 去尾随逗号。"""
-    return _drop_trailing_commas(_strip_comments(text))
-
-
 def read_resources_text() -> str | None:
-    """读取资源池配置正文（已按 JSONC 规范化并去掉 BOM）；`legacy` 形态返回 None。"""
+    """读取资源池配置正文；`legacy` 形态返回 None（由调用方按旧变量转译）。
+
+    ⚠️ 这里**不做任何语法宽容**：这份配置就是标准 JSON（RFC 8259）—— 注释、
+    尾随逗号、BOM 都不该出现，出现即报错。理由：一旦开始兼容，它就不再是 JSON 了，
+    而是一种「只有本项目认得」的方言 —— 编辑器的 JSON 校验（VS Code 会直接标红）、
+    格式化工具、其它语言写的运维脚本全部失效，接手的人也读不懂哪部分才是规范。
+    为迁就一次手滑而扩宽协议，代价远大于收益。
+
+    但**报错必须说清写错了什么**（json 原生只给 `line 1 column 1`，对「写了注释」
+    这种错法毫无指向性）—— 那部分是 `factory._diagnose_json_failure` 的职责。
+    """
     kind, _ = resources_source()
     if kind == "env":
-        return normalize_jsonc(os.environ.get("TTS_RESOURCES", ""))
+        return os.environ.get("TTS_RESOURCES", "")
     if kind == "file":
         p = resource_file_path()
         if p is None or not p.is_file():
             raise ValueError(f"TTS_RESOURCES_FILE 指向的文件不存在：{p}")
-        # utf-8-sig：宽容 Windows 记事本保存出的 BOM —— 否则 json 在第 1 个字符就失败，
-        # 报错是「Expecting value: line 1 column 1」，看不出是编码问题。
-        return normalize_jsonc(p.read_text(encoding="utf-8-sig"))
+        return p.read_text(encoding="utf-8")
     return None
 
 

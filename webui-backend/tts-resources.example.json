@@ -1,13 +1,7 @@
 [
-  // 一台服务器 / 一个账号 = 一条资源。加减一台就是增删一条，改完**不用重启** backend。
-  // 支持 `//` 行注释、`/* */` 块注释，以及「注释掉最后一项后残留的尾随逗号」。
-  // provider 只有 local / 302ai / siliconflow / art 四种，其余字段见 ENGINES.md。
   {"id": "gpu-a", "provider": "local", "base_url": "http://127.0.0.1:8000"},
   {"id": "gpu-b", "provider": "local", "base_url": "http://127.0.0.1:8001"},
-  // 云端资源的 api_key_env 填**环境变量名**（不是密钥本身），密钥写在 .env 里：
-  //   .env:  AUTODL_API_TOKEN=<你的密钥>
   {"id": "art", "provider": "art", "api_key_env": "AUTODL_API_TOKEN"},
   {"id": "ai302", "provider": "302ai", "api_key_env": "INDEXTTS302_API_KEY", "max_concurrency": 3},
-  // 暂时不用的那条可以整段注释藏起来，要用了把 /* */ 去掉即可：
-  /* {"id": "siliconflow", "provider": "siliconflow", "api_key_env": "SILICONFLOW_API_KEY"} */
+  {"id": "siliconflow", "provider": "siliconflow", "api_key_env": "SILICONFLOW_API_KEY"}
 ]

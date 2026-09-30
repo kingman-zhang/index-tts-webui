@@ -60,6 +60,34 @@ _DEFAULT_KEY_ENV = {
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+_BOM = "\ufeff"
+
+
+def _diagnose_json_failure(raw: str, exc: ValueError) -> str:
+    """把 json 的解析失败翻译成「你实际写错了什么」。
+
+    `json.loads` 的原生报错只有位置（`Expecting value: line 1 column 1`），而手写配置
+    最常犯的两种错 —— **写了注释**、**文件带 BOM** —— 恰恰都表现为第 1 行第 1 列，
+    毫无指向性。这两种又都是 JSON 规范**不允许**的（所以不能靠宽容解析绕过去，
+    见 `config.read_resources_text` 的说明），只能靠报错讲清楚。
+
+    诊断只看「行首是不是注释符」：手写注释几乎总是整行，而 URL（`https://…`）
+    永远不会出现在行首 ⇒ **零误报**。行尾注释落到通用提示里，不会被误判成别的原因。
+    """
+    where = f"：{exc}"
+    if raw.startswith(_BOM):
+        return (f"资源池配置不是合法 JSON{where}。文件开头有 UTF-8 **BOM**"
+                f"（字节 EF BB BF）—— RFC 8259 要求 JSON 文本不得带 BOM，"
+                f"请用「UTF-8 无 BOM」重新保存")
+    for lineno, line in enumerate(raw.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith(("//", "/*", "*")):
+            return (f"资源池配置不是合法 JSON{where}。第 {lineno} 行是**注释**，"
+                    f"而 JSON 不支持注释（`//`、`/* */`、`#` 都不行）—— "
+                    f"要暂时停用某条资源，把它从数组里删掉")
+    return (f"资源池配置不是合法 JSON{where}。常见原因：逗号多写/漏写、"
+            f"引号或括号不配对、写成了注释（JSON 不支持注释）")
+
 
 def _looks_like_a_secret(value: str) -> bool:
     """启发式：这串东西更像**密钥本身**，而不是环境变量名。
@@ -119,13 +147,7 @@ def _resource_specs() -> list[ResourceConfig]:
         try:
             items = json.loads(raw)
         except ValueError as exc:
-            # `//` 与 `/* */` 注释已在 config.strip_json_comments 里剥掉，所以走到这里
-            # 就是真的写坏了。json 自带的行列位置有用，一定带上；再点掉两个最常见原因。
-            raise ValueError(
-                f"资源池配置不是合法 JSON（{exc}）。"
-                f"注释（`//`、`/* */`）是被支持的、不会导致这个错误；"
-                f"常见原因是逗号多写/漏写、引号或括号不配对"
-            ) from None
+            raise ValueError(_diagnose_json_failure(raw, exc)) from None
         if not isinstance(items, list) or not items:
             raise ValueError("资源列表必须是非空 JSON 数组")
         specs = [_make_spec(item) for item in items]
