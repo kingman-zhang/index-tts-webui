@@ -51,6 +51,12 @@ class VoiceRef:
     local_path: Optional[str] = None   # 本地（backend 侧）可读的音频文件路径
     tts_path: Optional[str] = None     # TTS 服务器侧路径（自建引擎直用，避免重复上传）
     display_name: str = ""
+    # 音色归属（任务里的 member_id）：**只用于本地引擎按需上传时的命名隔离**。
+    # 预设音色与 BreezeBlue 是全员共享（同名即同内容），用户自上传音色则是独有的，
+    # 不同用户可能各有一个同名但内容不同的文件 —— 上传到 tts-server 时用
+    # `{音色名}__{owner_id}` 区分，避免互相覆盖（见 engines/voice_sync.py）。
+    # None = 未知/未登录（隔离未开启），此时退化为按原名上传（与旧行为一致）。
+    owner_id: Optional[str] = None
 
 
 @dataclass

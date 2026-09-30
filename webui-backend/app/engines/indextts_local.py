@@ -9,6 +9,11 @@
 不是音频字节。这层差异在本适配器内部消化掉，上层拿到的仍是 bytes ——
 与云引擎同构。这就是「自建服务缺接口」的现状：缺的是一个直接返回音频的
 端点，补齐后本适配器可以退化为一次请求。
+
+**为什么提交前要过一次 `voice_sync`**：tts-server 只认**服务器本地路径**，
+而 backend 的「音色选择」与「服务器上有什么文件」是两份状态。新上线一台
+服务器、或任务里存着陈旧路径时，就会 400「参考音频不存在」。本适配器在
+提交前确保服务器有这个文件（缺了就按需上传），把三种路径形态在引擎层统一掉。
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from dataclasses import replace
 import httpx
 
 from ..config import logger
+from . import voice_sync
 from .base import EMO_VECTOR_ORDER, EngineCapabilities, SegmentRequest
 
 
@@ -86,9 +92,10 @@ class IndexttsLocalEngine:
         return vec
 
     async def synthesize_segment(self, req: SegmentRequest) -> bytes:
-        voice_path = req.voice.tts_path or req.voice.local_path
-        if not voice_path:
-            raise ValueError(f"音色缺少参考音频路径: {req.voice.display_name!r}")
+        # 提交前确保服务器上有这个参考音频（缺失就从 backend 按需上传）。
+        # 返回的路径来自服务器自身的 /api/voices，因此不再受 backend cwd 与
+        # 路径形态影响 —— 新上线的服务器、陈旧相对路径都在这一层被统一。
+        voice_path = await voice_sync.ensure_voice_on_server(self.client, self.tts_url, req.voice)
         payload = {
             "voice": voice_path,
             "text": req.text,

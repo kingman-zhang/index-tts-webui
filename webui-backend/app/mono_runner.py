@@ -267,7 +267,12 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
     # 那种情况下语速会静默丢掉，必须让人看得见。
     if abs(speed - 1.0) >= 1e-3 and not (caps.supports_speed or caps.speed_guaranteed):
         logger.warning("[mono] task=%s 该引擎不支持语速且无底层保障，speed=%.2f 不会生效", task_id, speed)
-    voice = VoiceRef(tts_path=voice_path, local_path=_resolve_local_voice(voice_path), display_name=Path(voice_path).name)
+    voice = VoiceRef(
+        tts_path=voice_path,
+        local_path=_resolve_local_voice(voice_path),
+        display_name=Path(voice_path).name,
+        owner_id=task.get("member_id"),
+    )
 
     entries = _flatten_segments(lines, caps)
     if not entries:

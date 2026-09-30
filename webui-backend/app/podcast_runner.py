@@ -261,6 +261,7 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
             tts_path=voice_path,
             local_path=_resolve_local_voice(voice_path),
             display_name=Path(voice_path).name,
+            owner_id=task.get("member_id"),
         )
         speeds[spk] = float(speaker_speeds.get(spk) or params.get("speed") or 1.0)
 

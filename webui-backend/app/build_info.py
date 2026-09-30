@@ -77,6 +77,11 @@ WATCHED = (
     "app/engines/base.py",
     "app/engines/factory.py",
     "app/engines/selector.py",
+    # 参考音频按需同步（2026-09-30 新增）：**这个文件在 source_mtimes 里出现本身
+    # 就证明新代码已上线** —— 旧版本没有它，字段会是 null。这是「版本可观测」
+    # 最省事的落点，不必再额外造一个开关字段。
+    "app/engines/voice_sync.py",
+    "app/engines/indextts_local.py",
 )
 
 
