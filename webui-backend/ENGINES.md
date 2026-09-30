@@ -50,13 +50,32 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 统一容器格式不保证不同模型的音色、响度、情绪相同；语速请求值一致，但原生参数与 ffmpeg atempo 的音色细节仍有差异，跨资源混用需听感验收。
 
-## 多本地音色与按需同步
+## 多台本地引擎（分流与音色）
 
-只配置多个 URL 不能让节点共享文件。`/api/synthesize` 接受的是**服务端路径**，不是字节流。多 local 配置必须逐节点显式 `shared_voice_paths=true`，表示部署方保证所有节点上相同绝对路径指向同一份参考音频。未声明则配置失败；声明是部署契约，不是服务端文件存在性证明。
+### 分流：多台 local 会自动轮转
 
-**2026-09-30 起新增兜底：backend 会在提交前按需把缺失的音色补传过去**（`app/engines/voice_sync.py`，见下节）。所以「新上线一台一个音色都没有的服务器」不再必然 400。但 `shared_voice_paths` 的语义**没有放松** —— 共享挂载仍是首选，按需同步只是补丁，且每台节点会各存一份（磁盘按节点数增长）。
+`_lease()`（`base.py:459-464`）先按 `tier` 取本地候选，**本地全满才溢出到云端**；多个 local 之间按
+`inflight / max_concurrency / weight` 排序，并以累计段数（`_served`）打破平局 —— 所以两台 local 会
+**自动轮流接段**，不需要额外配置。local 的 `max_concurrency` 恒为 1
+（`ResourceConfig.__post_init__` 强制，`base.py:93`），两台 = 两个并行槽位。想调倾斜度用 `weight`。
 
-**历史决定（2026-09-29，用户确认）**：多本地节点先用**共享挂载**（NFS / 对象存储挂载 / 同一台机器多实例）解决音色文件；不在同一存储域时由用户自行上传同步。
+### 音色：`shared_voice_paths` 是形式声明，正确性由 `voice_sync` 保证
+
+`/api/synthesize` 接受的是**服务端路径**，不是字节流 —— 只配多个 URL 不能让节点共享文件。
+
+多 local 配置必须**逐个**显式 `shared_voice_paths=true`（`factory.py:39-40` 校验，缺一个启动即
+`ValueError`）。但要注意它现在**只有一个读取点，就是那条校验**，合成链路上没有任何地方读它：
+
+| 情形 | 写 `true` 后能否工作 | 代价 |
+| --- | --- | --- |
+| 真做了共享挂载（NFS / 对象存储 / 同机多实例） | ✅ | 首选：零重复存储，命中不回传 |
+| **没做共享挂载** | ✅ | 每台各存一份（`voice_sync` 按台补传）；磁盘按节点数增长，每台首次各传一次 |
+
+所以它今天的含义是「**我知道多节点不再自动共享音色、每台会各存一份**」，而不是「你必须先做共享挂载」。
+正确性由 `voice_sync` 兜住（下节）；共享挂载仍值得做，理由是**省掉每台的首次上传**。
+
+**历史决定（2026-09-29，用户确认）**：多本地节点优先用**共享挂载**解决音色文件；
+不在同一存储域时，2026-09-30 起由 `voice_sync` 按需补传，或用户自行 rsync。
 
 ## 参考音频的按需同步（`voice_sync`，2026-09-30）
 
@@ -266,9 +285,13 @@ curl -s http://127.0.0.1:8000/api/health
 3. backend 侧改 `TTS_URL` + `TTS_RESOURCES`（见下一节）→ 重启 backend
 4. backend 侧跑 `tools/check_tts_endpoint.py --probe-synth` → 确认两类检查都过
 
-## 接入一台远程 tts-server（实操，2026-09-29）
+## 接入远程 tts-server（实操，2026-09-29）
 
 tts-server 默认 `--host 0.0.0.0`，本身就是 HTTP API —— 所以「公开接口」不缺口子，缺的是网络通道、池配置，以及**音色路径对齐**。
+
+流程对**单台与多台完全通用**，差别只在第 2 小节的配置写法：单台填一行 `TTS_URL`；**再加一台**就把所有
+local 列进 `TTS_RESOURCES` 并给每个加 `shared_voice_paths=true`（新机器上的音色由 `voice_sync` 自动补，
+不用手工同步）。
 
 ### 1. 网络：不要让 8000 裸奔到公网
 
@@ -280,22 +303,36 @@ tts-server **没有任何鉴权**（无 API Key，CORS `allow_origins=["*"]`）�
 
 端口：2.0 = 8000（`tts-server/`），2.5 = 8001（`tts-server-2.5/`），HTTP 契约相同，适配器与配置格式都不用变。
 
-### 2. 配置：`TTS_URL` 与 `TTS_RESOURCES` 必须一起改
+### 2. 配置：`TTS_URL` 与 `TTS_RESOURCES` 的分工
 
-**只改 TTS_RESOURCES 不够**（容易漏）。两条是独立路径：
+**`TTS_URL` 是单值，只能指一台**，而它不只是「池的地址」—— 它还是**音色管理面**的地址：
 
-| 用途 | 走哪个配置 |
-| --- | --- |
-| 合成（池调度） | `TTS_RESOURCES` 的 local 条目 |
-| 预设音色上传 `/api/preset-voices/upload-to-tts` | `TTS_URL` |
-| `/api/tts/health` 探针 | `TTS_URL` |
+| 用途 | 走哪个配置 | 多台时 |
+| --- | --- | --- |
+| **合成（池调度）** | `TTS_RESOURCES` 的 local 条目 | 所有 local 自动轮转（本地优先） |
+| 预设音色上传 `/api/preset-voices/upload-to-tts` | `TTS_URL` | **只传这一台**，其余靠 `voice_sync` 补 |
+| 音色库增删改 / 试听（`routes/voices.py:99`–`301`） | `TTS_URL` | **只作用于这一台** |
+| `/api/tts/health` 探针 | `TTS_URL` | **只探这一台** |
 
-前端选**预设音色**时，backend 会把文件上传到 `TTS_URL` 那台，并把**服务器返回的路径**存进任务（`SpeakerPanel.tsx:124` / `MonoVoiceCard.tsx:75`）。所以 `TTS_URL` 仍指旧地址时，音色会被传到旧机器，新机器上一个都没有 —— 表现为「网络通了、资源池也进去了，一合成就 400 参考音频不存在」。
+前端选**预设音色**时，backend 会把文件上传到 `TTS_URL` 那台，并把**服务器返回的路径**存进任务（`SpeakerPanel.tsx:124` / `MonoVoiceCard.tsx:75`）。所以 `TTS_URL` 仍指旧地址时，音色会被传到旧机器 —— 表现为「网络通了、资源池也进去了，一合成就 400 参考音频不存在」。
 
-```
+**单台**（默认形态，什么都不用加）：
+
+```ini
 TTS_URL=http://<TTS_HOST>:8000
-TTS_RESOURCES=[{"id":"gpu-1","provider":"local","base_url":"http://<TTS_HOST>:8000","shared_voice_paths":true}]
 ```
+
+**加第二台起**：把所有 local 列进 `TTS_RESOURCES`，`TTS_URL` 指向你在 UI 里希望「管音色」的那台：
+
+```ini
+TTS_URL=http://host-a:8000
+TTS_RESOURCES=[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000","shared_voice_paths":true},{"id":"gpu-b","provider":"local","base_url":"http://host-b:8000","shared_voice_paths":true}]
+```
+
+⚠️ 多个 local 条目**每个都要** `shared_voice_paths=true`，否则 backend 启动即 `ValueError`。
+第二台上一开始什么音色都没有 —— **不用手动同步**，合成分到它时由 `voice_sync` 自动补传（下节）。
+配完必须**重启 backend**（`TTS_RESOURCES` 在进程启动时读一次），然后跑
+`tools/check_tts_endpoint.py --tts-url <新地址>` 逐台自检。
 
 **优先级陷阱（2026-09-30 实际踩到）**：`TTS_URL` 有四个来源，从左到右覆盖 ——
 `--tts-url` 命令行 > 真实环境变量 > **`webui-backend/.env`** > 内置默认 `http://localhost:8000`
