@@ -467,8 +467,8 @@ def check_jit_toolchain(tts_dir: Path) -> None:
         venv_bin = Path(sys.executable).parent
         add(FAIL, "JIT 编译", f"没装 ninja，而启动脚本开着 {names}", "",
             f"{venv_bin}/pip install ninja && ln -sf {venv_bin}/ninja /usr/local/bin/ninja"
-            "（⚠ 必须让它出现在 PATH 上，见下一项）。不装就关掉加速项："
-            "USE_DEEPSPEED=0 —— --deepspeed 没有兜底，会拖垮整个模型加载")
+            "（⚠ 必须让它出现在 PATH 上，见下一项）。不装就把 start_spacehpc.sh 里对应的"
+            "加速项改成空字符串 —— --deepspeed 没有兜底，会拖垮整个模型加载")
     else:
         add(OK, "JIT 编译", "没装 ninja（当前 start*.sh 也没开需要它的开关）",
             "无需处理：--deepspeed / --cuda-kernel 都关着", "")
