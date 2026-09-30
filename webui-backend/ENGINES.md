@@ -133,6 +133,36 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 `/api/synthesize` 只认**服务器本地路径**（`server.py:357` 是 `os.path.exists(req.voice)`），于是「backend 选好的音色」与「服务器上有什么文件」是两份互不知情的状态，任何一边变动就 400。
 `engines/voice_sync.py` 在**提交前**确保服务器上有这个文件，把三种路径形态（服务器路径 / backend 绝对路径 / 陈旧相对路径）在引擎层统一掉。
 
+### 目标机 = **本次合成分到的那一台**，与 `TTS_URL` 无关
+
+这是最容易被误解的一点（两台服务器不共享音色目录时尤其要看清）：
+
+| 环节 | 目标地址从哪里来 |
+| --- | --- |
+| **合成（补传发生在这一步）** | `factory.py:_create_provider` 为**每条 local 资源**各造一个 `IndexttsLocalEngine`，各带自己的 `base_url`；池把请求分给哪台，就是那个实例在跑，`ensure_voice_on_server(self.client, self.tts_url, …)` 收到的自然是**那一台的地址**（`indextts_local.py:98`） |
+| 前端选中预设音色时的一次性上传 | 全局 `TTS_URL`（缺省 = 资源列表里**第一个** local）—— 见下节 `TTS_URL` 的职责 |
+
+所以 `gpu-a` 排第一位、`gpu-b` 排第二位时：选题上传那一刻音色只进了 `gpu-a`（因为 `TTS_URL` 派生自 `gpu-a`）；
+**任务轮到 `gpu-b` 时，缺的音色是传到 `gpu-b`**，不会拐回 `gpu-a`。离线实测（两段一轮转）：
+
+```
+第1段 → 合成打到 gpu-a；新上传 无（gpu-a 已有，这就是 upload-to-tts 传的那一份）
+第2段 → 合成打到 gpu-b；新上传 [('gpu-b', 'voice-a01.wav')]   ← 补传到「落点」那台
+第3段 → 合成打到 gpu-a；新上传 无
+第4段 → 合成打到 gpu-b；新上传 无（gpu-b 上已经有了，缓存 + 服务器表命中）
+```
+
+**上传的源文件取 backend 本地**（`locate_voice` 先按原路径判可读，读不到再拿 basename 在
+`data/preset-voices/`、`data/breezeblue/audio/`、`data/voices/` 里找同名替身）⇒ **backend 是音色文件的权威源，
+服务器都只是副本**。于是有一条硬边界：**backend 本地也没有这个文件时会直接报错，不会去别的服务器拉**：
+
+```
+VoiceUnavailable: 参考音频 'voice-a01.wav' 在 tts-server(http://gpu-b:8000) 上不存在，
+backend 本地也找不到同名文件（原路径 '/data/voices/voice-a01.wav'）
+```
+
+「音色只在 `gpu-a` 上有、backend 没有」这种拓扑不在支持范围内 —— 保持 backend 为源，比让服务器之间互相拉更简单也更可预期。
+
 ### 方向：为什么是 backend 推，而不是 tts-server 拉
 
 | | 拉（tts-server → backend） | **推（backend → tts-server）** |
@@ -360,7 +390,7 @@ tts-server **没有任何鉴权**（无 API Key，CORS `allow_origins=["*"]`）�
 | 用途 | 读哪个配置 | 多台时 |
 | --- | --- | --- |
 | **合成（池调度）** | 资源列表里的 `local` 条目 | 所有 local 自动轮转（本地优先） |
-| 预设音色上传 `/api/preset-voices/upload-to-tts` | `TTS_URL` | **只传这一台**，其余靠 `voice_sync` 补 |
+| 预设音色上传 `/api/preset-voices/upload-to-tts` | `TTS_URL` | **只传这一台**（预热性质）；合成时缺的由 `voice_sync` 补到**落点那台**，见「参考音频的按需同步 → 目标机」 |
 | 音色库增删改 / 试听（`routes/voices.py:99`–`301`） | `TTS_URL` | **只作用于这一台** |
 | `/api/tts/health` 探针 | `TTS_URL` | **只探这一台** |
 
