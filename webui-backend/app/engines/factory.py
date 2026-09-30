@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import fields
 from urllib.parse import urlsplit
@@ -50,6 +51,50 @@ _REMOVED_FIELDS = {
                           "按需补传；共享挂载只是「省掉每台首次上传」的优化手段，不需要声明",
 }
 
+# 各 provider 惯用的凭据变量名。只用于**报错时给一个能照抄的例子**。
+_DEFAULT_KEY_ENV = {
+    "302ai": "INDEXTTS302_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "art": "AUTODL_API_TOKEN",
+}
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _looks_like_a_secret(value: str) -> bool:
+    """启发式：这串东西更像**密钥本身**，而不是环境变量名。
+
+    2026-09-30 实际踩到：`"api_key_env": "j7cyWVxW..."`（43 位随机串）。
+    名称几乎总是全大写加下划线，密钥则常是长串混合大小写 —— 但对
+    `AUTODL_API_TOKEN`（全大写、合法名）必须判 False，对 `my_token`
+    （合法但短）也别误报。**只用于提示，不做拒绝**：环境变量名技术上允许小写。
+    """
+    return len(value) >= 16 and not (value.isupper() and _ENV_NAME_RE.fullmatch(value))
+
+
+def _credential_hint(spec: ResourceConfig) -> str:
+    """把「凭据读不到」翻译成一句能直接照着改的话。
+
+    原来的措辞是「缺少 api_key_env（<值>）指定的凭据」—— 用户看到自己填的密钥
+    出现在括号里，很容易读成「这个密钥不对」，而真正的问题是**这里根本不该填密钥**。
+    """
+    suggested = _DEFAULT_KEY_ENV.get(spec.provider, "")
+    name = spec.api_key_env
+    if not name:
+        head = (f"资源 {spec.id}（provider={spec.provider}）没有 api_key_env："
+                f"它要填**环境变量名**（如 {suggested or 'MY_API_KEY'}），密钥的值写在 .env 里")
+    elif _looks_like_a_secret(name):
+        # 只给前 4 位与长度：足够让用户认出是哪一个，又不把密钥写进日志。
+        head = (f"资源 {spec.id}（provider={spec.provider}）的 api_key_env 填的是 {name[:4]}…"
+                f"（{len(name)} 字符）—— 它看起来是**密钥本身**，而这里要填的是**变量名**。"
+                f"例如写成 \"{suggested or 'MY_API_KEY'}\"，密钥留在 .env")
+    else:
+        head = (f"资源 {spec.id}（provider={spec.provider}）的 api_key_env={name} "
+                f"在环境里读不到（未设置或为空）—— 在 .env 里补一行 {name}=<密钥>")
+    if suggested and suggested != name and os.environ.get(suggested):
+        head += f"；注：环境里已存在 {suggested}，若密钥就在那里，把 api_key_env 改成它即可"
+    return head
+
 
 def _make_spec(item) -> ResourceConfig:
     """把一条 JSON 对象变成 ResourceConfig；错误消息必须能直接指向要改的那一行。"""
@@ -73,8 +118,14 @@ def _resource_specs() -> list[ResourceConfig]:
     if raw is not None:
         try:
             items = json.loads(raw)
-        except ValueError:
-            raise ValueError("TTS_RESOURCES / TTS_RESOURCES_FILE 不是合法 JSON") from None
+        except ValueError as exc:
+            # `//` 与 `/* */` 注释已在 config.strip_json_comments 里剥掉，所以走到这里
+            # 就是真的写坏了。json 自带的行列位置有用，一定带上；再点掉两个最常见原因。
+            raise ValueError(
+                f"资源池配置不是合法 JSON（{exc}）。"
+                f"注释（`//`、`/* */`）是被支持的、不会导致这个错误；"
+                f"常见原因是逗号多写/漏写、引号或括号不配对"
+            ) from None
         if not isinstance(items, list) or not items:
             raise ValueError("资源列表必须是非空 JSON 数组")
         specs = [_make_spec(item) for item in items]
@@ -106,7 +157,7 @@ def _create_provider(spec):
     if spec.provider == "local":
         return IndexttsLocalEngine(spec.base_url or TTS_URL, http_client)
     if not key:
-        raise ValueError(f"资源 {spec.id} 缺少 api_key_env（{spec.api_key_env or '未填写'}）指定的凭据")
+        raise ValueError(_credential_hint(spec))
     # 凭据轮换和 endpoint 更换也不可复用旧账号音色 URI；摘要不输出该指纹。
     digest = hashlib.sha256((spec.provider + "\0" + (spec.base_url or "") + "\0" + key).encode()).hexdigest()
     cache = DATA_DIR / "engine-cache" / spec.id / digest / "voices.json"
@@ -125,8 +176,17 @@ def _create_provider(spec):
 
 
 def _create_registry():
+    specs = _resource_specs()
+    # 凭据问题**一次性列全**：配了三家云、只报第一家，等于让人来回重启三次
+    # （2026-09-30 实际发生）。这里不静默跳过缺凭据的资源 —— 与「配置错误直接
+    # 失败，不悄悄换一套账号去合成」的原则一致。
+    problems = [_credential_hint(s) for s in specs
+                if s.provider != "local"
+                and not (os.environ.get(s.api_key_env, "") if s.api_key_env else "")]
+    if problems:
+        raise ValueError("资源池凭据不完整：\n  - " + "\n  - ".join(problems))
     registry = EngineRegistry()
-    registry.register_pool([(s, _create_provider(s)) for s in _resource_specs()])
+    registry.register_pool([(s, _create_provider(s)) for s in specs])
     return registry
 
 

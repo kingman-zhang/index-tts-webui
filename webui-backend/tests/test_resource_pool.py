@@ -479,6 +479,117 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIn('旧式', factory.engine_summary()[0]['config_source'])
 
+    # ─── 注释与凭据：两处实际踩过的坑（2026-09-30）───
+
+    def test_jsonc_comments_are_stripped(self):
+        """手写配置里「把备用机注释掉」是自然需求，而标准 JSON 不允许注释。
+
+        `json.loads` 只会报 `Expecting value: line 1 column 1` —— 指不到真正的原因。
+        """
+        l1 = json.dumps(dict(id='l1', provider='local', base_url='http://a:8000'))
+        l2 = json.dumps(dict(id='l2', provider='local', base_url='http://b:8000'))
+        text = f"""// 备用机，先注释掉，需要时放开
+[
+  {l1},   // 主
+  /* {l2} */
+]
+"""
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
+
+    def test_url_double_slash_survives_stripping(self):
+        """⚠️ URL 里的 `//` 不是注释 —— 正则一把梭会**静默截断 base_url**。"""
+        from app import config
+        self.assertEqual(config.normalize_jsonc('{"u":"https://h:8000/api"}'),
+                         '{"u":"https://h:8000/api"}')
+        self.assertEqual(json.loads(config.normalize_jsonc('{"u":"https://h:8000"}// 尾注'))['u'],
+                         'https://h:8000')
+        specs = [dict(id='l1', provider='local', base_url='https://h.example.com:3391')]
+        text = json.dumps(specs) + '\n// 尾部注释'
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual(pool.resources[0][1].tts_url, 'https://h.example.com:3391')
+
+    def test_trailing_comma_from_commented_last_item(self):
+        """注释掉数组**最后一项**必然留下尾随逗号 —— 只剥注释不够，必须连带容忍。
+
+        否则「注释可用」变成「注释有时可用」，报错还比不支持的更难懂。
+        """
+        from app import config
+        l1 = json.dumps(dict(id='l1', provider='local', base_url='http://a:8000'))
+        text = f"""[{l1},   // 这一项想留
+//  {{"id":"l2","provider":"local","base_url":"http://b:8000"}}   ← 整项注释掉
+]"""
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
+        # 字符串里的 `,]` 不能被当成尾随逗号
+        self.assertEqual(config.normalize_jsonc('{"a":"x,]","b":1}'), '{"a":"x,]","b":1}')
+
+    def test_comment_markers_inside_strings_and_escapes(self):
+        """字符串里的 `/*`、`//` 与转义引号都不能破坏扫描状态。"""
+        from app import config
+        for raw in [r'{"a":"/* not a comment */"}', r'{"a":"x\"//y"}', r'{"a":"//"}']:
+            self.assertEqual(config.normalize_jsonc(raw), raw)
+
+    def test_bom_in_config_file_is_tolerated(self):
+        """Windows 记事本保存出的 BOM 会让 json 在第 1 个字符就失败。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.json'
+            body = json.dumps([dict(id='l1', provider='local', base_url='http://a:8000')])
+            path.write_bytes(b'\xef\xbb\xbf' + body.encode('utf-8'))
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
+                pool = factory.build_registry(force=True).engines[0]
+                self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
+
+    def test_credential_hint_is_actionable(self):
+        """填了密钥本身时，报错要说清「这里要填变量名」，并给出该 provider 的惯用名。
+
+        原措辞「缺少 api_key_env（<填进去的密钥>）指定的凭据」会被读成
+        「这个密钥不对」，而真正的问题是**位置错了**。
+        """
+        secret = 'j7cy' + 'X' * 39          # 形态：长随机串（非全大写）
+        specs = [dict(id='art', provider='art', api_key_env=secret)]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs)}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+        msg = str(ctx.exception)
+        self.assertIn('密钥本身', msg)
+        self.assertIn('AUTODL_API_TOKEN', msg)
+        self.assertNotIn(secret, msg)       # 绝不把密钥回显进日志
+
+    def test_all_missing_credentials_reported_at_once(self):
+        """配了三家云只报第一家 = 让人来回重启三次。"""
+        specs = [dict(id='art', provider='art', api_key_env='AUTODL_API_TOKEN'),
+                 dict(id='ai302', provider='302ai', api_key_env='INDEXTTS302_API_KEY'),
+                 dict(id='sf', provider='siliconflow', api_key_env='SILICONFLOW_API_KEY')]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs)}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+        msg = str(ctx.exception)
+        for name in ('art', 'ai302', 'sf'):
+            self.assertIn(name, msg)
+
+    def test_hint_points_at_existing_conventional_variable(self):
+        """变量名写错但惯用名就在环境里时，直接点名 —— 改一个字就能跑。"""
+        specs = [dict(id='art', provider='art', api_key_env='AUTODL_TOKEN')]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs),
+                                     'AUTODL_API_TOKEN': 'fake'}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+        msg = str(ctx.exception)
+        self.assertIn('AUTODL_TOKEN', msg)
+        self.assertIn('已存在 AUTODL_API_TOKEN', msg)
+
+    def test_example_config_stays_parsable(self):
+        """仓库里的示例配置必须始终可解析 —— 文档一腐烂，用户照抄就报错。"""
+        from app import config
+        path = Path(__file__).resolve().parents[1] / 'tts-resources.example.json'
+        items = json.loads(config.normalize_jsonc(path.read_text(encoding='utf-8')))
+        self.assertEqual([i['id'] for i in items], ['gpu-a', 'gpu-b', 'art', 'ai302'])
+        self.assertTrue(all(i.get('provider') for i in items))
+
 
 if __name__ == '__main__':
     unittest.main()
