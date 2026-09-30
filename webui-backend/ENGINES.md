@@ -56,6 +56,91 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 **当前决定（2026-09-29，用户确认）**：多本地节点先用**共享挂载**（NFS / 对象存储挂载 / 同一台机器多实例）解决音色文件；不在同一存储域时由用户自行上传同步。**音色上传接口列为后续待办**，实施前不要假设「只填 URL 就能多机共用音色」。
 
+## 两套术语表与文本规则的归属（2026-09-30）
+
+### ⚠️ 引擎自带一份术语表，会静默生效
+
+`index-tts` 自己有一套术语表，**与我们无关，但会被我们踩到**：
+
+| 位置 | 内容 |
+|---|---|
+| `indextts/utils/front.py:75` | `self.term_glossary = dict()` |
+| `front.py:323-343` | 按**词条长度降序**排序后 `re.sub`（`re.IGNORECASE`），支持 `{"term": {"zh": …, "en": …}}` |
+| `infer_v2.py:184` | `TextNormalizer(enable_glossary=True)` |
+| **`infer_v2.py:191-194`** | **`<model_dir>/glossary.yaml` 存在就自动加载**，打印 `>> Glossary loaded from:` |
+
+tts-server 构造引擎时把 `--model-dir` 当作 `model_dir`，所以只要 GPU 上
+`…/checkpoints/glossary.yaml` 存在，**引擎就会自动启用它**。
+
+后果：本地引擎链路上会出现**两套术语表串联**（backend 先 `str.replace`，引擎再
+`re.sub`），匹配顺序与规则都不同；backend 完全感知不到，`/api/version` 也看不到。
+表现是「同一句话，本地引擎和云引擎读法不一样」，排查时极易误判为「backend 的词条
+没生效」。
+
+**处置**：`tts-server/doctor.py` 已显式报告该文件是否存在与条目数（**存在即 WARN**，
+让人有据可查）。不需要它就删掉/改名 —— 那是关闭它的唯一开关。
+
+### 文本规则：唯一落点在哪一侧
+
+| 规则 | 落点 | 状态 |
+|---|---|---|
+| 术语表 | backend（`stores.py` + `routes/glossary.py`） | ✓ 用户可增删 |
+| 人名中点归一 | backend `name_punct.py`（10 变体 × 4 目标） | ✓ |
+| 年份逐位读 | backend `year_norm.py` | ✓ 2026-09-29 从 tts-server 提过来 |
+| **时间 `时:分`** | backend `time_norm.py` | ✓ 2026-09-30 从 tts-server 提过来 |
+| 数值读法 / 号码读法 | backend `num_value_norm.py` / `number_norm.py` | ✓ |
+| 情感 4 模式、采样参数、token 诊断、模型加载与 health、GPU 串行锁、音色存储 | **tts-server（引擎侧）** | ✓ 这些只能是引擎的 |
+| 响度归一 -16 LUFS | 2.0 壳：两侧各有一份等价实现（6 常量逐项相同）；2.5 壳：只有单遍 loudnorm、达不到目标 | ⚠️ 见下「响度归一」 |
+| 变速 | 两侧（钳制范围不一致） | ⚠️ 见下「变速」 |
+
+判据：**规则若与「读什么」有关，必须在 backend**（因为云引擎链路不经过 tts-server，
+规则留在引擎侧就只有本地链路生效）；**与「怎么合成」有关的（情感、采样、GPU、
+音色存储）只能留在引擎侧**。
+
+### 响度归一（`normalizes_loudness`，2026-09-30）
+
+**契约**：`normalizes_loudness=True` 表示「返回的音频**已归一到 -16 LUFS**」——是「达标」，
+不只是「做过归一动作」。报 `False` 也不代表「本壳没做归一」，而代表「没达到 -16，请上层兜底」。
+
+`tts-server/`（2.0）的 `/api/synthesize` 内部必经 `_apply_speed`，做的是「ebur128 测量 →
+固定增益 → alimiter 限幅 → 24kHz」，目标 -16 LUFS、峰值 ≤ -1.5 dBFS —— 与 backend
+`podcast_runner._normalize_segment` 是**两份独立实现、6 个常量逐项相同**，于是 2.0 自述
+`True`，backend 跳过自己那一次重复归一（否则白跑一次 ffmpeg + 一次重采样）。
+
+⚠️ **`tts-server-2.5/` 不是同一回事**：它每段会跑一次 `_apply_loudness`，对每段执行**单遍**
+`loudnorm=I=-16:TP=-1.5:LRA=11`。单遍 loudnorm 的响度统计带门限（gating），实测只到
+**-21.7 LUFS**（同素材，见 2.0 侧 `podcast_engine.py` 的 NORM_* 实测记录）——「动作做了、
+目标没到」。所以 2.5 自述 `False`，让 backend 再走一次它那套把响度拉回 -16（这是正确行为，
+不是重复劳动）。**不要用 `tier == "local"` 推断「是本壳 = 2.0 壳」。**
+
+修法照 `speed_guaranteed` 的思路加**能力声明**，但取值改为**服务自述**：
+
+- `EngineCapabilities.normalizes_loudness`（默认 `False`）
+- `indextts_local` 的类属性保持保守 `False`，**在探活时按 `/api/health` 自述更新**
+  （`_apply_capabilities`）；云引擎一律 `False`（我们不知道它做了什么）；
+- 池门面 `capabilities` 是 **property**（不再在 `__init__` 里算一次），取池内资源**当前**
+  能力的 `all()` —— 混池（本地 + 云端）⇒ `False` ⇒ 照旧归一。
+- `podcast_runner` 在「资源已保证」时**跳过本层 ffmpeg**，不再重复归一。
+
+**观测**：`/api/version` 的 `engines.registered[].normalizes_loudness` 报出该能力。因为它是
+「服务自述」值，`/api/version` 会**先触发一次池探活**再读快照（`refresh_pool_health()`，
+幂等、带 15s TTL、内置引擎探活均免费）—— 否则报的是构造时的保守值，部署自检会得到与自己
+相反的结论（本地 2.0 壳明明会归一到 -16，却报 False）。
+
+`tools/deploy_g1_autodl.sh` 只断言该**字段存在**（防旧代码），**不再断言「全 local ⇒ True」**：
+本地壳有两代，2.0 自述 True、2.5 自述 False，硬断言必然有一边误报。实际值打印出来，与
+tts-server 的 `/api/health` 自述核对。
+
+### 变速（2026-09-30）
+
+`engines/base.py:atempo_filters()` 支持**链式 atempo**（`atempo=2.0,atempo=2.0` ⇒ 到 4.0，
+低到 0.25），而 tts-server 的 `_apply_speed` 是 `max(0.5, min(2.0, speed))`
+**静默钳制**。因为 `indextts_local` 声明 `supports_speed=True`，池认为「资源原生支持」
+⇒ 不在池内补 atempo ⇒ 直接交给 tts-server ⇒ 被钳到 2.0，**同一设置云引擎 3.0 倍、
+本地引擎 2.0 倍，且无任何日志**。
+
+已改：tts-server 侧改用同一套链式 atempo，超范围打 warning，不再静默吞语速。
+
 ## 在 GPU 服务器上启动 tts-server（实操，2026-09-30）
 
 ### 0. 先纠正认知：tts-server 不是独立服务

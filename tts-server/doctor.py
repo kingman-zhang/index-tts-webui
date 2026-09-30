@@ -195,6 +195,28 @@ def parse_config_refs(cfg_path: Path) -> list[tuple[str, str]]:
 
 EXTRA_WEIGHT_FILES = ("pinyin.vocab", "glossary.yaml")
 
+# 顶层键 = 行首无缩进、非注释、含冒号（`"C++":` 或 `"C++": {...}`）。
+# 缩进行是某个词条的 en/zh 取值，不算新词条。
+_TOP_KEY = re.compile(r"^([^\s#][^:]*?)\s*:(?:\s|$)")
+
+
+def count_glossary_entries(path: Path) -> int:
+    """粗略数 `glossary.yaml` 的**顶层词条数**（刻意不依赖 pyyaml）。
+
+    这只是个提示性数字：数不出来就返回 0，不值得为它报错。
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return 0
+    n = 0
+    for line in text.splitlines():
+        if not line.strip() or line[:1].isspace() or line.lstrip().startswith("#"):
+            continue
+        if _TOP_KEY.match(line):
+            n += 1
+    return n
+
 
 # ─── 各项检查 ───────────────────────────────────────────────
 
@@ -333,6 +355,26 @@ def check_model_dir(model_dir: Path | None) -> None:
     add(OK if weights else WARN, "模型权重", "主权重文件与体积",
         f"{len(weights)} 个权重文件，共 {size_gb:.2f} GB",
         "" if weights else "目录里没有 .pt/.pth/.bin/.safetensors，权重很可能没下")
+
+    # 引擎内置术语表（2026-09-30 新增）。**这一项必须显式报**：
+    # index-tts 自带另一套术语表（front.py 的 TextNormalizer.term_glossary），
+    # infer_v2.py 在 <model_dir>/glossary.yaml 存在时**自动加载**（启动日志会打
+    # ">> Glossary loaded from:"）。它与 backend 的那套是两套、规则也不同：
+    #   backend：str.replace 精确匹配、中点变体展开、用户可增删（data/glossary.json）
+    #   引擎  ：按词条长度降序 + re.IGNORECASE 的 re.sub，支持 {zh,en} 双语读法
+    # 两者会**串联**（backend 先替换，引擎再替换），backend 完全感知不到、
+    # /api/version 也看不到。表现是「同一句话，本地引擎与云引擎读法不一样」，
+    # 排查时极易误判成「backend 的词条没生效」。所以这里报出来，让人有据可查。
+    gl = model_dir / "glossary.yaml"
+    if gl.is_file():
+        add(WARN, "模型权重", f"存在引擎内置术语表 glossary.yaml（{count_glossary_entries(gl)} 条）",
+            str(gl),
+            "它会与 backend 的术语表**串联**（backend 先替换、引擎再替换），规则与 backend "
+            "不同，且 /api/version 看不到。若不是有意为之，删掉/改名即关闭；"
+            "详见 webui-backend/ENGINES.md 的「两套术语表」")
+    else:
+        add(OK, "模型权重", "没有引擎内置术语表（glossary.yaml 不存在）",
+            "引擎不会额外做术语替换；backend 的词条照常生效")
 
     hf_cache = model_dir / "hf_cache"
     if hf_cache.is_dir() and any(hf_cache.iterdir()):

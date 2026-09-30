@@ -8,6 +8,7 @@ GPU 模型必须串行推理，避免多线程并发导致 CUDA 错误。
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -148,7 +149,12 @@ _YEAR_RANGE_PATTERN = re.compile(
     r"(?<!\d)(\d{4})(年)?\s*(～|~|至|到|—|-)\s*(\d{4})\s*年"
 )
 _YEAR_PATTERN = re.compile(r"(?<!\d)(\d{4})\s*年")
-_TIME_PATTERN = re.compile(r"(?<!\d)(\d{1,2})\s*[:：]\s*(\d{2})(?!\d)")
+# 时:分。分钟固定两位 ⇒ 比分/比例/版本号（`3:2`/`16:9`/`1:2`）天然不命中；
+# 两个否定环同时挡**数字与冒号**：`123:45`/`12:345` 不命中，`12:30:45`（时:分:秒）
+# 与 `1:12:30` 也整串不命中 ⇒ 原样交回 TN（它读得对）。只挡数字的话，`12:30:45`
+# 会被截成「十二点三十分:45」，留下一个孤立冒号（2026-09-30 修）。
+# 与 backend `app/time_norm.py:_TIME_PATTERN` **逐字节等价**，改动必须同步。
+_TIME_PATTERN = re.compile(r"(?<![\d:：])(\d{1,2})\s*[:：]\s*(\d{2})(?![\d:：])")
 
 
 def _year_digits(digits: str) -> str:
@@ -169,29 +175,38 @@ def _replace_year(match: re.Match) -> str:
     return _year_digits(match.group(1)) + "年"
 
 
-def _chinese_hour(hour: int) -> str:
-    """将 0-23 小时转换为自然的中文小时读法。"""
-    if hour < 10:
-        return _CHINESE_DIGITS[hour]
-    if hour < 20:
-        return "十" if hour == 10 else "十" + _CHINESE_DIGITS[hour - 10]
-    return "二十" if hour == 20 else "二十" + _CHINESE_DIGITS[hour - 20]
+def _chinese_under_100(n: int) -> str:
+    """0~99 的规范中文读法：0→零、10→十、15→十五、20→二十、30→三十、45→四十五。
+
+    小时（0~23）与分钟（0~59）共用这一个函数 —— 旧实现里小时走规范读法、分钟 ≥10
+    却是**逐位读**（`12:30` → 「十二点三零分」），是漏了没共用。与 backend
+    `webui-backend/app/time_norm.py:chinese_under_100()` **逐字节等价**。
+
+    ⚠️ 为什么两边必须一致：音色**试听**直连本服务（`/api/synthesize`），不走 backend
+    的前处理链；两处读法一旦不同，用户会听到「试听对、正式合成不对」（或反之）。
+    """
+    if n < 10:
+        return _CHINESE_DIGITS[n]
+    tens, ones = divmod(n, 10)
+    head = "十" if tens == 1 else _CHINESE_DIGITS[tens] + "十"
+    return head + (_CHINESE_DIGITS[ones] if ones else "")
 
 
 def _replace_time(match: re.Match) -> str:
-    """将明确的时:分格式改为中文时间读法，避免冒号被读成“比”。"""
+    """将明确的时:分格式改为中文时间读法，避免冒号被读成“比”。
+
+    读法与 backend `app/time_norm.py` 完全一致：整点 → 「八点整」；分钟 <10 补零
+    （`9:05` → 九点零五分）；其余按数值读（`12:30` → 十二点三十分，**不是**旧实现的
+    「十二点三零分」）。时/分越界原样返回，交回 TN。
+    """
     hour = int(match.group(1))
     minute = int(match.group(2))
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return match.group(0)
-    hour_text = _chinese_hour(hour)
+    hour_text = _chinese_under_100(hour)
     if minute == 0:
         return f"{hour_text}点整"
-    if minute < 10:
-        minute_text = f"零{_CHINESE_DIGITS[minute]}"
-    else:
-        minute_text = str(minute)
-        minute_text = "".join(_CHINESE_DIGITS[int(digit)] for digit in minute_text)
+    minute_text = f"零{_CHINESE_DIGITS[minute]}" if minute < 10 else _chinese_under_100(minute)
     return f"{hour_text}点{minute_text}分"
 
 
@@ -375,13 +390,51 @@ def _measure_loudness(ffmpeg: str, path: str):
     return lufs, peak
 
 
+def _atempo_chain(speed: float) -> list[str]:
+    """把任意语速折算成 ffmpeg atempo 滤镜链（单个 atempo 只接受 0.5–2.0）。
+
+    与 backend `webui-backend/app/engines/base.py:atempo_filters()` **逐字节等价** ——
+    两边必须给出同一结果：本地引擎走这段，云端引擎走池里那段；一旦分叉，同一个语速
+    设置在两边的听感就不一样（这正是 2026-09-30 修的问题）。
+
+    speed=1.0 返回空列表（= 不变速）；非法值（0 / 负数 / NaN）同样返回空列表。
+    """
+    try:
+        remaining = float(speed)
+    except (TypeError, ValueError):
+        return []
+    if not math.isfinite(remaining) or remaining <= 0 or abs(remaining - 1.0) < 1e-3:
+        return []
+    chain: list[str] = []
+    while remaining > 2.0:
+        chain.append("atempo=2.0")
+        remaining /= 2.0
+    while remaining < 0.5:
+        chain.append("atempo=0.5")
+        remaining /= 0.5
+    if abs(remaining - 1.0) >= 1e-3:
+        chain.append(f"atempo={remaining:g}")
+    return chain
+
+
 def _apply_speed(path: str, speed: float) -> None:
     """使用 ffmpeg 调整 WAV 速度并做逐行响度归一化；1.0 速度也做归一化防破音。
 
     归一化策略见 NORM_* 常量：默认按"测量 -> 固定增益 -> 限幅"处理，
     保证每一行独立落到 NORM_TARGET_LUFS，且峰值不超过 NORM_CEILING_DBFS。
+
+    语速（2026-09-30 修）：**不再 `max(0.5, min(2.0, speed))` 静默钳制**。
+    旧实现在这里把超出 0.5~2.0 的语速吃掉且不留任何日志；而 backend 池用的是链式
+    atempo（支持到 4.0 / 低到 0.25）⇒ 同一个设置会出现「云引擎 3.0 倍、本地引擎
+    2.0 倍」。现在改用 `_atempo_chain`，与 backend 完全一致，超范围会打 warning。
     """
-    speed = max(0.5, min(2.0, float(speed)))
+    speed = float(speed)
+    if math.isfinite(speed) and speed > 0 and not (0.5 <= speed <= 2.0):
+        logger.warning(
+            "[audio] 语速 %.2f 超出单级 atempo 范围 0.5~2.0，改用链式 atempo"
+            "（与 backend engines.base.atempo_filters 一致）；此前这里是静默钳制",
+            speed,
+        )
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("音频处理需要 TTS 服务器安装 ffmpeg")
@@ -390,9 +443,7 @@ def _apply_speed(path: str, speed: float) -> None:
     if AUDIO_DEBUG:
         shutil.copy2(path, f"{path}.raw.wav")
 
-    filters = []
-    if abs(speed - 1.0) >= 0.001:
-        filters.append(f"atempo={speed:g}")
+    filters = _atempo_chain(speed)
 
     if NORM_MODE == "loudnorm":
         filters.append(NORM_LEGACY_FILTER)

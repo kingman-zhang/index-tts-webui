@@ -114,6 +114,7 @@ print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("gloss
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
+print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >=", tp.get("time_norm_max_parts"))
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
@@ -122,6 +123,7 @@ print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) o
 for e in eng:
     print("  资源池         : schema v%s" % e.get("pool_schema_version"),
           "| speed_guaranteed =", e.get("speed_guaranteed"),
+          "| normalizes_loudness =", e.get("normalizes_loudness"),
           "| 资源数", len(e.get("resources") or []),
           "| 总槽位", e.get("max_concurrency"))
 sm = v.get("source_mtimes") or {}
@@ -152,6 +154,20 @@ assert all((e.get("pool_schema_version") or 0) >= 3 and e.get("speed_guaranteed"
            for e in eng), (
     "!! 资源池 schema 不是 v3（或 speed_guaranteed 不为 true）—— 镜像里是语速会被叠加的旧代码，"
     "播客加速听起来明显偏快（实际 ≈ speed²）")
+# normalizes_loudness 是 2026-09-30「响度归一去重」引入的新符号。它**可以为 False**
+# 且属正常（混池/纯云池、以及**本地 2.5 壳**都报 False），所以只断言**字段存在** ——
+# 缺了说明是「对本地段重复做一次响度归一」的旧代码。
+# 不再断言「池内全是本地资源时必须为 True」：本地壳有两代，tts-server/（2.0）自述
+# True、tts-server-2.5/（单遍 loudnorm 达不到 -16）自述 False，硬断言必然误报。
+# 实际值打印在下面，请与 tts-server 的 /api/health 自述核对（2.0 应 true、2.5 应 false）。
+assert all("normalizes_loudness" in e for e in eng), (
+    "!! 引擎能力里没有 normalizes_loudness 字段 —— 镜像会对本地段重复做响度归一"
+    "（白跑一次 ffmpeg + 一次重采样）")
+for e in eng:
+    if (e.get("resources") or []) and all(
+            r.get("tier") == "local" for r in (e.get("resources") or [])):
+        print("  [note] 全 local 池的响度保证 normalizes_loudness =",
+              e.get("normalizes_loudness"), "（2.0 壳应 true / 2.5 壳应 false）")
 # source_mtimes 全为 null ⇒ 探测路径算错了（曾因 REPO_ROOT 取成 `/` 在容器里恒为空，
 # stale_sources 也就永远查不出「进程跑的是旧代码」）。Docker 下必须能读到。
 assert any(x is not None for x in sm.values()), "!! 受监视源文件一个都没找到 —— build_info 的路径解析在容器里失效了"
@@ -312,6 +328,7 @@ print("  数据目录       :", v.get("data_dir"), "存在" if v.get("data_dir_e
 print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("glossary_exists") else "!! 不存在")
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
+print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >=", tp.get("time_norm_max_parts"))
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
@@ -323,6 +340,7 @@ for e in eng:
           "| 单次上限", e.get("max_input_chars") or "不限",
           "| 并发", e.get("max_concurrency") or "env",
           "| 语速", e.get("supports_speed"), "| 语速保证", e.get("speed_guaranteed"),
+          "| 响度保证", e.get("normalizes_loudness"),
           "| 情绪", e.get("supports_emotion"),
           "| 冷却中" if e.get("in_cooldown") else "")
 # 引擎层（2026-09-29 拆分）：engines 字段是新代码才有的符号；注册数为 0 意味着
@@ -334,6 +352,16 @@ assert all((e.get("pool_schema_version") or 0) >= 3 and e.get("speed_guaranteed"
            for e in eng), (
     "!! 资源池 schema 不是 v3（或 speed_guaranteed 不为 true）—— 跑的是语速会被叠加的旧代码，"
     "播客加速听起来明显偏快（实际 ≈ speed²）")
+# normalizes_loudness 是 2026-09-30「响度归一去重」引入的新符号，见 Docker 路径同名断言：
+# 只断言**字段存在**；**允许为 False**（混池/纯云池，以及本地 2.5 壳都属正常）。
+# 不再断言「全 local ⇒ True」：2.0 壳 True、2.5 壳 False，硬断言必然误一边。
+assert all("normalizes_loudness" in e for e in eng), (
+    "!! 引擎能力里没有 normalizes_loudness 字段 —— 跑的是会对本地段重复做响度归一的旧代码")
+for e in eng:
+    if (e.get("resources") or []) and all(
+            r.get("tier") == "local" for r in (e.get("resources") or [])):
+        print("  [note] 全 local 池的响度保证 normalizes_loudness =",
+              e.get("normalizes_loudness"), "（2.0 壳应 true / 2.5 壳应 false）")
 assert v.get("git_head") == sys.argv[1], (
     "!! 进程 HEAD 与磁盘 HEAD 不一致 —— 进程跑的是旧代码，重启未生效")
 assert v.get("glossary_exists"), (
@@ -350,8 +378,15 @@ assert (tp.get("year_norm_min_digits") or 9) <= 3, (
 # 见 Docker 路径同名断言：数值读法这一层在不在，看取值域而不看开关。
 assert (tp.get("num_value_max_digits") or 0) >= 8, (
     "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 会原样进模型变 unk")
-# stale_sources 放最后断言：它只监视 4 个文本链路文件（name_punct / number_norm /
-# stores / queue_worker），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
+# time_norm_max_parts 是 2026-09-30「时间读法」引入的新符号。同样看取值域：
+# 字段缺失 = 镜像里还没有这层 —— 带空格的 `12 : 30` 与小时为 0 的 `0:30` 会被 TN
+# 读成「十二比三十 / 零比三十」（比例），`12:30` 也只是碰巧读对。
+assert (tp.get("time_norm_max_parts") or 0) >= 2, (
+    "!! 时间读法这一层不在（字段缺失）—— 12:30 / 12 : 30 / 0:30 会原样进模型，"
+    "带空格与 0 点开头的会被读成「比」")
+# stale_sources 放最后断言：它监视的是 build_info.WATCHED 里那组文本/引擎链路文件
+# （name_punct / year_norm / time_norm / num_value_norm / number_norm / stores /
+# queue_worker / engines 三件），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
 # 的顺序下它必然为空；若非空，说明确有文件在这次启动之后被写过，是真问题。
 assert not (v.get("stale_sources") or []), (
     "!! 下列源文件在进程启动后才被改动，进程里仍是旧版本: %s" % v["stale_sources"])

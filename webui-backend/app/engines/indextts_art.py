@@ -75,6 +75,8 @@ class IndexttsArtEngine:
         # 8 个情绪滑杆可用，但 emo_surprised 被平台锁死为 "0"
         # （见 _LABEL_TO_FIELD 注释），故「支持情绪」但存在单标签缺口
         supports_emotion=True,
+        # ComfyUI 工作流返回的音频是否归一过未知 ⇒ 不承诺，由 backend 归一（默认 False）
+        normalizes_loudness=False,
     )
 
     def __init__(

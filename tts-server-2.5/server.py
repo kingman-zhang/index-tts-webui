@@ -244,6 +244,18 @@ def health():
     return {
         "status": "ok" if tts is not None else "no_model",
         "model_loaded": tts is not None,
+        # 能力自述（2026-09-30）：本壳报 **False**，但理由不是「不做归一」——
+        # 2.5 每段都会跑一次 `_apply_loudness`（podcast_engine.py，对每段直接执行
+        # **单遍** `loudnorm=I=-16:TP=-1.5:LRA=11`）。问题是单遍 loudnorm 达不到 -16：
+        # 它的响度统计带门限（gating），一次处理里电平偏小的内容会被门限排除、增益
+        # 按正常电平那部分定，实测只到 **-21.7 LUFS**（同素材，见 2.0 侧
+        # `tts-server/podcast_engine.py` 顶部 NORM_* 常量上方的实测记录）——
+        # 也就是说它「动作做了、目标没到」。
+        # 而 `normalizes_loudness=True` 的契约是「**已归一到 -16 LUFS**」（见 backend
+        # engines/factory.py 里该字段的注释），2.5 不满足 ⇒ 报 False，让 backend 照常
+        # 再走一次它那套「ebur128 测量 → 固定增益 → alimiter 限幅」把响度拉回 -16。
+        # 若哪天把 2.5 的 `_apply_loudness` 换成与 2.0 等价的后处理，这里才该改 True。
+        "normalizes_loudness": False,
         "device": args.device,
         "bf16": args.bf16,
         "model_version": "2.5",

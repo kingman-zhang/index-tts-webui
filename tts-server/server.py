@@ -238,6 +238,13 @@ def health():
     return {
         "status": "ok" if tts is not None else "no_model",
         "model_loaded": tts is not None,
+        # 能力自述（2026-09-30）：本壳的 /api/synthesize 必经 _apply_speed
+        # （ebur128 测量 → 固定增益 → alimiter 限幅 → 24kHz，目标 -16 LUFS /
+        # 峰值 ≤ -1.5 dBFS），也就是说**出音已经做过响度归一**。backend 据此
+        # 跳过自己那一次重复归一。改动这里之前先确认 _apply_speed 还在链路上：
+        # tts-server-2.5 的壳也有一个 `_apply_loudness`，但那是**单遍 loudnorm**、
+        # 达不到 -16（实测 -21.7），所以那边报的是 False（理由见那边 server.py）。
+        "normalizes_loudness": True,
         "device": args.device,
         "fp16": args.fp16,
         "model_dir": args.model_dir,
@@ -404,9 +411,36 @@ def synthesize(req: SynthesizeRequestModel):
     }
 
 
+# ── 已无活调用方的端点：只打一次性弃用告警，**不改变行为**（2026-09-30）──
+#
+# 背景：backend 自 2026-09-20 起改走引擎适配层合成（`/api/synthesize`），
+# 「播客异步任务」这条体系再没有调用方。但**不能直接删**：
+#   - 它曾是 tts-server 与 backend 之间的主链路，历史任务恢复与旧版 backend 可能还在用；
+#   - 删掉会让「把 backend 回滚到旧版本」这条路彻底断掉。
+# 所以先留着 + 打一次性告警，观察一段确认线上确实没人调了再删。
+#
+# ⚠️ 别把同一套逻辑套到 `split_pauses` / `synthesize_line_with_pauses` /
+# `_concatenate_wav_segments` 上 —— 它们**仍在 `/api/synthesize` 的链路上**
+# （行内停顿标记 `[pause:N]` 就靠它），是活代码。2026-09-30 的功能归属审查报告
+# 曾把它们误列为死代码，已在该报告里更正。
+_DEPRECATION_WARNED: set = set()
+
+
+def _warn_deprecated(what: str, why: str) -> None:
+    """对已无活调用方的入口打一次性弃用告警（不影响返回值与副作用）。"""
+    if what in _DEPRECATION_WARNED:
+        return
+    _DEPRECATION_WARNED.add(what)
+    logger.warning(
+        "[deprecated] %s 已无活调用方（backend 改走 /api/synthesize 的引擎适配层），"
+        "保留仅为兼容、将来可能移除。%s", what, why,
+    )
+
+
 @app.post("/api/podcast")
 def create_podcast(req: PodcastRequestModel):
     """提交双人播客合成任务（异步），返回 task_id。"""
+    _warn_deprecated("POST /api/podcast", "调用方应改用 backend 的 /api/queue/submit")
     logger.info(
         "[podcast] submit lines=%d voices=%s device=%s",
         len(req.lines), list(req.voices.keys()), args.device,
@@ -553,6 +587,7 @@ def get_audio(filename: str):
 @app.delete("/api/task/{task_id}")
 def delete_task(task_id: str):
     """删除任务（及其音频文件）。"""
+    _warn_deprecated("DELETE /api/task/{task_id}", "无任何调用方（backend 侧已无对应路由）")
     with _tasks_lock:
         task = _tasks.pop(task_id, None)
     if task is None:

@@ -45,7 +45,7 @@ async def on_startup():
     #   ② 代码 pull 了但进程没重启，跑的是内存里的旧模块 —— 磁盘上怎么查都对，
     #      离线复现链路也正确，就是线上没变化。
     # 故启动时把「这个进程是谁」一次性打全：git HEAD / 启动时刻 / 数据目录 /
-    # 三件前处理开关。这些符号只有新代码才有，日志里出现即证明加载的是哪一版。
+    # 各道前处理开关。这些符号只有新代码才有，日志里出现即证明加载的是哪一版。
     # 同一份快照也挂在 GET /api/version（见 app/build_info.py 与 routes/system.py）。
     _boot = build_info.snapshot()
     _tp = _boot.get("text_pipeline") or {}
@@ -55,10 +55,12 @@ async def on_startup():
     )
     logger.info(
         "[startup] 文本前处理：术语表 %s 条（合成展开 %s）"
-        " / 人名分隔号 %s(%s) / 年份读法 %s / 数字读法 %s",
+        " / 人名分隔号 %s(%s) / 年份读法 %s / 时间读法 %s / 数值读法 %s / 数字读法 %s",
         _tp.get("glossary_terms"), _tp.get("glossary_terms_for_synthesis"),
         "开" if _tp.get("name_punct_enabled") else "关", _tp.get("name_punct_target"),
         "开" if _tp.get("year_norm_enabled") else "关",
+        "开" if _tp.get("time_norm_enabled") else "关",
+        "开" if _tp.get("num_value_normalize") else "关",
         "开" if _tp.get("number_norm_enabled") else "关",
     )
     # 引擎链路（2026-09-29）：注册顺序即优先级，能力由各引擎自己声明。

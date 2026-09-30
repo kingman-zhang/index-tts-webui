@@ -13,8 +13,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import httpx
 
+from ..config import logger
 from .base import EMO_VECTOR_ORDER, EngineCapabilities, SegmentRequest
 
 
@@ -29,6 +32,9 @@ class IndexttsLocalEngine:
         max_concurrency=1,
         supports_speed=True,      # payload.params.speed
         supports_emotion=True,    # mode 2 的 8 维情绪向量
+        # 响度归一：**由服务自述，不写死**（见 _apply_capabilities）。
+        # 默认 False = 保守（上层照旧归一，不会错，只多跑一次 ffmpeg）。
+        normalizes_loudness=False,
     )
 
     def __init__(self, tts_url: str, client: httpx.AsyncClient):
@@ -41,9 +47,32 @@ class IndexttsLocalEngine:
             resp = await self.client.get(f"{self.tts_url}/api/health", timeout=2.0)
             if resp.status_code != 200:
                 return False
-            return bool(resp.json().get("model_loaded", True))
+            data = resp.json()
+            self._apply_capabilities(data)
+            return bool(data.get("model_loaded", True))
         except Exception:
             return False
+
+    def _apply_capabilities(self, health: dict) -> None:
+        """按服务**自述**更新本适配器的能力（2026-09-30）。
+
+        为什么 `normalizes_loudness` 不能写死在类属性里：**同一个适配器连的可能是两个
+        不同的壳** —— 仓库里有 `tts-server/`（IndexTTS 2.0：`/api/synthesize` 必经
+        `_apply_speed`，做 ebur128 → 固定增益 → alimiter 的 -16 LUFS 归一，自述 True）
+        和 `tts-server-2.5/`（IndexTTS 2.5：每段跑一次**单遍** `_apply_loudness`，
+        但单遍 loudnorm 因门限效应达不到 -16、实测只到 -21.7 ⇒ 自述 False，让上层
+        兜底再归一一次）。TTS_URL 指向哪台，能力就不同，静态声明必然有一边是错的：
+        若写 True 而实际连了 2.5，上层就会跳过归一 ⇒ 那段响度停在 -21.7、音色之间
+        音量不齐（静默的回归）。
+
+        所以让服务在 `/api/health` 里自报；自报缺失或类型不对就**保持保守值 False**
+        （上层照旧归一 —— 多跑一次 ffmpeg，但绝不会漏）。
+        """
+        value = health.get("normalizes_loudness")
+        if not isinstance(value, bool) or value == self.capabilities.normalizes_loudness:
+            return
+        self.capabilities = replace(self.capabilities, normalizes_loudness=value)
+        logger.info("[engine] indextts_local 响度归一能力更新为 %s（服务自述）", value)
 
     def _emotion_vector(self, emotion_label: str | None) -> list[float]:
         """统一标签 → IndexTTS2 8 维向量（mode 2）。

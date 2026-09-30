@@ -23,6 +23,11 @@
     本模块只在「既非原生、也没有下层保障」时才补变速，避免 speed²
     （2026-09-29 修：此前对原生引擎又套了一层 atempo，加速听起来偏快）；
     ffmpeg 不可用时跳过处理（仅告警），行为与 mono 一致。
+  - **响度归一同样只在需要时做**（2026-09-30）：本地 tts-server 的 `_apply_speed`
+    已经归一到同一目标（两份实现的 6 个常量逐项相同），再归一次是白跑一次 ffmpeg
+    加一次重采样。故按 `EngineCapabilities.normalizes_loudness` 判断，资源已保证
+    就整段跳过（`skip_loudness`）；池门面取 all()，混池时照旧归一。两件都不需要时
+    `_normalize_segment` 根本不调用（此前无条件跑一次 ffmpeg）。
 
 顺序保证：段落可并发（并发度取 capabilities.max_concurrency，未声明则读
 TTS_CONCURRENCY），asyncio.gather 保序返回，拼接严格按文本顺序——第 10 段先完成
@@ -236,6 +241,12 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
     # 引擎/资源池：生产路径下一定是资源池门面（池内按段挑资源、跨任务共享并发）。
     # 不按引擎名分支，一切差异看 capabilities。
     engine = await select_engine()
+    # 先探一次活再读能力：本地资源的「响度归一」等能力是**服务自述**的
+    # （IndexttsLocalEngine 从 /api/health 读），不探就只能拿到保守值 False
+    # ⇒ 上层照旧归一（不会错，但白跑一次 ffmpeg）。池内探活带 TTL 缓存
+    # （默认 15s），任务连发时通常零成本；TTS 真离线时这里返回 False，
+    # 后续 synthesize 会照常报错 —— 行为不变。
+    await engine.health()
     caps = engine.capabilities
     logger.info("[podcast] task=%s engine=%s lines=%d", task_id, engine.name, len(lines))
 
@@ -259,6 +270,13 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
     post_speeds = {spk: (1.0 if speed_done_above else value) for spk, value in speeds.items()}
     logger.info("[podcast] task=%s speeds=%s 语速由%s应用", task_id, speeds,
                 "资源侧（原生/池内 ffmpeg）" if speed_done_above else "本模块 ffmpeg")
+    # 响度归一：资源已保证时（caps.normalizes_loudness，如本地 tts-server 的
+    # _apply_speed 必经 -16 LUFS）**整段跳过**本层 ffmpeg —— 两份实现的 6 个常量
+    # 逐项相同，第二次测到的已是 ~-16、增益≈0，纯属白跑一次 ffmpeg 与一次重采样。
+    # 池门面取 all()，混池时为 False（照旧归一），所以这里不需要再判断引擎名。
+    skip_loudness = bool(caps.normalizes_loudness)
+    logger.info("[podcast] task=%s 响度归一由%s执行", task_id,
+                "资源侧（本层跳过）" if skip_loudness else "本模块 ffmpeg")
 
     entries = _flatten_podcast_segments(lines, caps, silence)
     if not entries:
@@ -313,8 +331,12 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
                     should_cancel=lambda: bool(task.get("cancel_requested")),
                 )
             )
-        # 段级响度归一；只有资源侧不负责语速时（post_speeds≠1）才在这里变速一次
-        audio = await asyncio.to_thread(_normalize_segment, audio, post_speeds[entry["speaker"]])
+        # 段级后处理（变速 + 响度归一），**两件都不需要时直接返回**（零开销）：
+        #   变速：只有资源侧不负责语速时（post_speeds≠1）才在本层补一次；
+        #   归一：资源已保证响度时（skip_loudness）不再重复归一。
+        post_speed = post_speeds[entry["speaker"]]
+        if not (skip_loudness and abs(post_speed - 1.0) < 1e-3):
+            audio = await asyncio.to_thread(_normalize_segment, audio, post_speed)
         state["done"] += 1
         _update_progress()
         return audio

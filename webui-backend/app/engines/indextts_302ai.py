@@ -97,6 +97,8 @@ class Indextts302aiEngine:
         # 要变速必须上层后处理
         supports_speed=False,
         supports_emotion=True,  # emotion_vector 8 维
+        # 平台返回的音频做过什么后处理未知 ⇒ 不承诺响度，由 backend 归一（默认 False）
+        normalizes_loudness=False,
     )
 
     def __init__(

@@ -100,6 +100,8 @@ if name_punct.ENABLED:        # 人名中点归一
     synth_lines = name_punct.apply_name_separator_rules(synth_lines)
 if year_norm.ENABLED:         # 年份逐位读
     synth_lines = year_norm.apply_year_rules(synth_lines)
+if time_norm.ENABLED:         # 时间读法（2026-09-30 新增，默认开）
+    synth_lines = time_norm.apply_time_rules(synth_lines)
 if num_value_norm.ENABLED:    # 数值读法（2026-09-29 新增，默认开）
     synth_lines = num_value_norm.apply_value_rules(synth_lines)
 if number_norm.ENABLED:       # 号码读法
@@ -107,8 +109,10 @@ if number_norm.ENABLED:       # 号码读法
 ```
 
 **顺序不能换**：术语表在前（用户意志优先）；`year_norm` 必须在数值层之前
-（否则四位年份会被按数值读）；数值层必须在号码层之前（两层命中集合不相交，
-先跑数值层能让「有单位」的数字从号码层手里被正确接走）。详见第十节。
+（否则四位年份会被按数值读）；时间层紧跟年份层（两层命中集合不相交：年份规则
+只认「数字+年」，时间规则只认「数字:两位数字」）；数值层必须在号码层之前
+（两层命中集合不相交，先跑数值层能让「有单位」的数字从号码层手里被正确接走）。
+详见第十节。
 
 顺序是**术语表在前**：用户若在术语表里手写 `110 → 一百一十`，会先生效，
 本模块看不到阿拉伯数字，不会覆盖用户意志。
@@ -150,6 +154,7 @@ cd webui-backend
 python tests/test_number_norm.py     # 39 项：判定用例 + 端到端 +（可选）TN 对照表
 python tests/test_num_value_norm.py  # 129 项：数值层 + wetext 基准对照 + 两层不相交
 python tests/test_year_norm.py       # 158 项：年份读法
+python tests/test_time_norm.py       # 93 项：时间读法 + wetext 基准对照
 ```
 
 装了 `wetext`（`pip install wetext`）时会额外打印 TN 原始输出对照表，
@@ -254,8 +259,8 @@ MAX_DIGITS = 4
 YEAR_NORMALIZE=0      # .env，默认开启；改后需重启 backend
 ```
 
-落点在 `queue_worker._execute_task`，顺序 **术语表 → 人名分隔号 → 年份 → 数字**，
-作用于**合成副本**，不回写 `task["lines"]`（任务详情与存档仍是用户原文）。
+落点在 `queue_worker._execute_task`，顺序 **术语表 → 人名分隔号 → 年份 → 时间 →
+数值 → 号码**，作用于**合成副本**，不回写 `task["lines"]`（任务详情与存档仍是用户原文）。
 
 ### 测试
 
@@ -267,6 +272,85 @@ python tests/test_year_norm.py    # 158 项，含「本层产出进 TN 必须原
 第四部分是关键：它验证「修复前 TN 确实读错（基线）→ 修复后逐位读」，
 光比较字符串相等不足以证明修好了。第五部分核对 `MIN_DIGITS` / `MAX_DIGITS`
 与正则**实际接受的范围**一致（逐位长验证 1~5 位），防止常量与正则脱钩。
+
+---
+
+## 八·二、时间读法（2026-09-30 新增，独立模块 `app/time_norm.py`）
+
+`12:30` → 十二点三十分、`9:05` → 九点零五分、`8:00` → 八点整。**默认开启**。
+
+### 又是同一个故事：规则留在被绕过的那一侧
+
+时间规则原本只在 `tts-server/podcast_engine.py`（`_replace_time`），而云引擎不经过
+tts-server ⇒ 走 302.ai / SiliconFlow / autodl.art 时，`12:30` 以阿拉伯形态进模型。
+与年份读法是同一个迁移故事（见第八节）。
+
+### 实测：TN 大部分读得对，缺口是具体两类
+
+用 wetext 替身实测（`lang='zh'`, `operator='tn'`）：
+
+| 输入 | TN 输出 | 判定 |
+|---|---|---|
+| `12:30` | 十二点三十分 | ✓ |
+| `会议定在12:30开始` | 会议定在十二点三十分开始 | ✓ |
+| `下午 3:16 开会` | 下午 三点十六分开会 | ✓ |
+| `8:00` | 八点 | ✓（少了「整」） |
+| **`12 : 30`** | **十二比三十** | ✗ 冒号两侧带空格 ⇒ 退化成比例 |
+| **`0:30`** | **零比三十** | ✗ 小时为 0 ⇒ 退化成比例 |
+| **`0:00`** | **零比零零** | ✗ 同上 |
+
+「带空格就退化」与 `year_norm` 撞的是同一个坑（`2011 年` → 两千零一十一 年）——
+从网页/文档/PPT 粘贴的文本经常带空格。更要紧的是云端 TN 是**服务端实现**，
+各厂商不同、我们既控制不了也测不到。
+
+### 规则与边界
+
+```python
+_TIME_PATTERN = re.compile(r"(?<![\d:：])(\d{1,2})\s*[:：]\s*(\d{2})(?![\d:：])")
+```
+
+- 分钟**固定两位** ⇒ `3:2`（比分）、`16:9`（比例）、`1:2`（版本号）天然不命中。
+- 两个否定环同时挡数字与冒号 ⇒ `123:45` / `12:345` / `12:30:45` / `1:12:30`
+  整串不命中，**原样交回 TN**（TN 实测把 `12:30:45` 读成「十二点三十分四十五秒」）。
+  只挡数字是不够的：那样 `12:30:45` 会被截成「十二点三十分:45」，留下一个孤立
+  冒号 ⇒ 冒号仍可能被读成「比」。旧 tts-server 的正则正是这个毛病，本次一并修掉。
+- 时/分越界（`99:99`）原样返回；`24:00` 不碰（「二十四点」是合法读法，交回 TN）。
+- 读法：整点 → 「八点整」；分钟 <10 → 「九点零五分」（补零）；其余 → 「十二点三十分」。
+  小时与分钟共用同一个 0~99 中文读法函数。
+
+**已知取舍**：`3:16` 这类章节/经文引用会被读成「三点十六分」。**TN 也这么读**
+（实测），所以不加左语境否决 —— 加了反而会让两条链路读法不一致。
+
+### 必须与 tts-server 保持等价
+
+音色**试听**（`routes/voices.py` → tts-server `/api/synthesize`）**不走**本链，
+所以 tts-server 侧必须保留自己的时间规则；两处规则一旦不同，用户会听到
+「试听对、正式合成不对」。两边刻意保持同一套读法，改动必须同步。
+本次相对 tts-server 旧实现的行为变更是**分钟 ≥10 由逐位读（`三零`）改为规范读法
+（`三十`）**，tts-server 侧已同步改（`podcast_engine._chinese_under_100`）。
+
+### 开关、可观测与部署自检
+
+- `TIME_NORMALIZE=0` 关闭（**默认开**；改 `.env` 后需重启 backend）。
+- `/api/version` → `text_pipeline.time_norm_enabled` + **`time_norm_max_parts`**（=2，
+  只做「时:分」；将来做「时:分:秒」会变 3）。报取值域而非只报开关 —— 理由同第八节。
+- `tools/deploy_g1_autodl.sh` 两条路径都断言 `time_norm_max_parts >= 2`。
+- `tools/diagnose_text.py` 的链路已从「六道关」改成**七道关**，中间态里有「时间」一行。
+
+### 测试
+
+```bash
+cd webui-backend
+python tests/test_time_norm.py    # 93 项，含「TN 读错（基线）→ 修复后读对」
+
+# tts-server 侧有各自一套等价实现（音色**试听**直连 tts-server，不走 backend 前处理链），
+# 两边的 20 条时间语料与本文件的 CASES **逐条对应**，改动必须同步改三处：
+cd ../tts-server      && python -m pytest -q test_podcast_text_rules.py  # 40 项（含 20 条时间）
+cd ../tts-server-2.5  && python -m pytest -q test_podcast_text_rules.py  # 30 项（含 20 条时间）
+```
+
+第四部分是关键：它先断言**修复前 TN 确实把 `12 : 30` 读成「十二比三十」**（基线），
+再断言修复后读成时间 —— 光比较字符串相等不足以证明修好了。
 
 ---
 
@@ -421,11 +505,13 @@ python3 tools/probe_number_reading.py --engine 302ai    # 换引擎对照
 `30％`（TN 不管全角，本层管）、`涨了110点`（TN 读幺幺零点，本层读一百一十点）、
 单个 2 的 两/二。
 
-### 与 `year_norm` 的顺序耦合
+### 与 `year_norm` / `time_norm` 的顺序耦合
 
-顺序固定：`glossary → name_punct → year_norm → 数值层 → 号码层`。
+顺序固定：`glossary → name_punct → year_norm → time_norm → 数值层 → 号码层`。
 
 - `2011年` / `公元850年` 由 `year_norm` **先**换掉，本层看不到；
+- `12:30` 由 `time_norm` **先**换成汉字 —— 本层本来也把「两侧都是数字的分隔符」
+  （含 `:`）列为否决，两层不争抢；先换掉之后本层连那串阿拉伯数字都看不见了；
 - `year_norm` 刻意**否决**的形态（`距今850年` 这类时长）落到本层，由「年」命中
   ⇒ 读「八百五十年」—— 正是时长该有的读法。两层在此天然接续，不必再加词表。
 - 本层对**四位数字紧邻「年」**另有一道否决兜底（万一 `YEAR_NORMALIZE=0`，
@@ -437,11 +523,12 @@ python3 tools/probe_number_reading.py --engine 302ai    # 换引擎对照
 - `/api/version` → `text_pipeline.num_value_normalize` + **`num_value_max_digits`**。
   报取值域而不只报开关 —— 这是第九节第九条教训的直接应用：布尔开关证明不了版本。
 - `tools/deploy_g1_autodl.sh` 两条路径都断言 `num_value_max_digits >= 8`。
-- `tools/diagnose_text.py` 已把链路从「五道关」改成**六道关**，中间态里有「数值」一行：
+- `tools/diagnose_text.py` 已把链路改成**七道关**，中间态里有「时间」「数值」各行：
 
   ```
-  原文   : 美国自 2005 年至 2007 年的飞行安全度是汽车的 230 倍。
-  年份   : 美国自 二零零五年到二零零七年的飞行安全度是汽车的 230 倍。
-  数值   : 美国自 二零零五年到二零零七年的飞行安全度是汽车的 两百三十倍。
+  原文   : 会议定在 12 : 30 开始，2011 年 230 倍的量
+  年份   : 会议定在 12 : 30 开始，二零一一年 230 倍的量
+  时间   : 会议定在 十二点三十分 开始，二零一一年 230 倍的量
+  数值   : 会议定在 十二点三十分 开始，二零一一年 两百三十倍的量
   ```
 

@@ -14,6 +14,7 @@ from ..config import (
     http_client,
 )
 from .. import build_info
+from ..engines.factory import refresh_pool_health
 from ..membership import service as member_svc
 
 router = APIRouter()
@@ -101,5 +102,15 @@ async def version():
         git rev-parse --short HEAD        # 两个 sha 必须一致
 
     纯自检端点，不参与业务，容器 healthcheck 不依赖它。
+
+    会先触发一次**池探活**再读快照：`normalizes_loudness` 这类能力是资源在
+    `/api/health` 里**自述**的，适配器初始为保守值、探过活才翻成真值；不探就报的
+    是构造时的保守值，部署自检据此会得到与事实相反的结论（本地 2.0 壳本会把响度
+    归一到 -16、自述 True，却报 False）。探活幂等、带 15s TTL，且内置引擎的探活
+    都不产生合成费用。详见 engines/factory.py:refresh_pool_health。
     """
+    try:
+        await refresh_pool_health()
+    except Exception:  # noqa: BLE001 - 自检端点绝不能因探活失败而 500
+        pass
     return build_info.snapshot()

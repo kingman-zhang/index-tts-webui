@@ -177,3 +177,126 @@ NORM_ABNORMAL_GAIN_DB 12.0    ←→  12.0
 - 本次为**只读审查**，未修改任何代码。
 - 分支 `feat-balance`，未合并 main、未部署。
 - 待用户决定是否执行 P0/P1/P2。
+
+---
+
+## 八、执行记录与**两处更正**（2026-09-30 当日落地）
+
+P0/P1 已按第五节建议执行，P2 只做了「打弃用日志」这一步（不删任何代码）。
+执行过程中发现**本报告两处判断有误，先更正，避免将来照它删掉活代码**。
+
+### 更正 1：`split_pauses` / `_concatenate_wav_segments` **不是死代码**
+
+第三节表格与第五节 P2 把它们列为「tts-server 死代码」，**是错的**：
+
+| 函数 | 实际调用链 | 判定 |
+|---|---|---|
+| `split_pauses` | `/api/synthesize` → `synthesize_line_with_pauses` → `split_pauses`（`podcast_engine.py:552`） | **活**（每次合成都走） |
+| `synthesize_line_with_pauses` | `/api/synthesize`（`server.py:390`） | **活** |
+| `_concatenate_wav_segments` | `synthesize_line_with_pauses` 多子段时（`:579`）、`synthesize_podcast`（`:717`） | **活** |
+
+它们确实「对 backend 路径是空转」（backend 已把文本按 `[pause:N]` 切好再提交），
+但**空转 ≠ 死代码** —— 函数在链路上，删了直接坏掉单段合成。
+
+### 更正 2：「半死」清单里有两个其实有活调用方
+
+| 端点 | 真实调用方 | 判定 |
+|---|---|---|
+| `GET /api/task/{id}` | `queue_worker.py:76`（**历史任务恢复轮询**，正常路径） | **活** |
+| `GET /api/tasks` | `main.py:115`（**启动时同步 TTS 侧任务状态**） | **活** |
+| `GET /api/task/{id}/audio` | `routes/podcast.py:111`（历史任务无本地产物时回退） | 半死（代码路径存在） |
+
+### 真正的死入口只有两个
+
+- `POST /api/podcast`（及其下游 `synthesize_podcast`、backend 的
+  `/api/podcast/generate` ← 前端 `generatePodcast` **无调用者**）
+- `DELETE /api/task/{id}`（backend 侧没有对应路由）
+
+**处置**：这两个只加**一次性弃用告警**（`server._warn_deprecated`），不删代码 ——
+删掉会让「把 backend 回滚到旧版本」这条路断掉。观察一段再决定。
+
+### 已执行清单
+
+| 项 | 落点 | 验证 |
+|---|---|---|
+| P0-1 时间读法提到 backend | 新 `webui-backend/app/time_norm.py` + 接进 `queue_worker` + `build_info` 报 `time_norm_enabled`/`time_norm_max_parts` + 部署自检断言 + `diagnose_text.py` 七道关 | `tests/test_time_norm.py` **93 项**全通过（含 wetext 基线对照） |
+| P0-2 `glossary.yaml` 显式报告 | `tts-server/doctor.py` 新增检查（存在即 WARN + 条目数）+ `ENGINES.md` 新增「两套术语表」章节 | doctor 单跑通过 |
+| P1-1 响度归一去重 | `EngineCapabilities.normalizes_loudness`（本地 True / 云 False / 池取 all）+ `podcast_runner` 跳过 + `factory` 报出 + 部署自检断言 | 见下 |
+| P1-2 语速钳制统一 | tts-server 改链式 `_atempo_chain`（与 backend `atempo_filters` 逐字节等价）+ 超范围打 warning | `test_podcast_text_rules.py` **40 项**（新增时间 20 项 + 变速 10 项） |
+| P2 弃用日志 | `server.py` 两个真死入口 | 编译通过 |
+
+**两处跨模块等价性已固化为断言**：tts-server 的 `_atempo_chain` 与 backend
+`atempo_filters`（10 组输入）、tts-server 的 `_normalize_reading_text` 与 backend
+`normalize_times`（20 条语料）—— 实测 32/32 一致。这两套实现**刻意各留一份**
+（tts-server 要能独立部署在 GPU 机上，不能 import backend），所以一致性只能靠
+测试守住，改动必须同步改两处。
+
+---
+
+## 九、2.5 侧同步与**两处新更正**（2026-09-30 续）
+
+P0-1/P1-2 的**时间读法**改动此前只落在 `tts-server/`（2.0），本轮补齐 `tts-server-2.5/`。
+
+### 2.5 同步内容
+
+| 项 | 落点 |
+|---|---|
+| `_TIME_PATTERN` 收紧（两个否定环同时挡数字与冒号） | `tts-server-2.5/podcast_engine.py` |
+| `_chinese_hour` → `_chinese_under_100`（小时与分钟共用一个读法） | 同上 |
+| `_replace_time` 分钟 ≥10 改规范读法（`12:30` → 十二点三十分，不再是「十二点三零分」） | 同上 |
+| 同步 20 条 `TIME_CASES` + backend 接线校验 | `tts-server-2.5/test_podcast_text_rules.py`（5 → 30 项） |
+
+2.5 **不加**变速用例：它的壳没有 `_apply_speed`/atempo 链，语速走模型侧
+`duration_factor`，本侧没有可对照的实现。
+
+### 更正 3：2.5 的壳**是**会做响度归一的（本报告 P1-1 的前提写错了）
+
+本报告与上一轮结论都写着「`tts-server-2.5/` 只把语速折算成 `duration_factor`、
+**完全不碰响度**」—— **是错的**。事实（代码证据）：
+
+| 位置 | 事实 |
+|---|---|
+| `tts-server-2.5/podcast_engine.py:379` | 每段合成后调 `_apply_loudness(segment_path)` |
+| `tts-server-2.5/podcast_engine.py:290` | `_apply_loudness` 内跑**单遍** `loudnorm=I=-16:TP=-1.5:LRA=11` |
+| `tts-server-2.5/server.py:401` | 单条合成路径也调一次 `_apply_loudness(output_path)` |
+
+**错因**：上一轮用 shell `grep` 核实时返回空结果，据此判定「grep 零命中 = 没有」。
+实际本环境的 `grep` 被 WorkBuddy 的 brokered shim 接管（`/usr/bin/grep` 正常、裸 `grep`
+静默返回空），**那次 grep 是假阴性**。
+
+**结论仍然正确、但理由要换**：2.5 的 `normalizes_loudness` 仍应报 `False` —— 但不是
+「不做归一」，而是「单遍 loudnorm 达不到 -16」（门限效应；2.0 侧同款实现的实测记录是
+-21.7 LUFS）。契约 `normalizes_loudness=True` 的含义是「**已归一到** -16 LUFS」（达标），
+2.5 不满足，所以报 `False` 让 backend 兜底 —— 这是**正确行为**，不是重复劳动。
+相关注释已在 2.5 `server.py`、2.0 `server.py`、`indextts_local.py`、`ENGINES.md` 一并改写。
+
+### 更正 4：`/api/version` 报的「服务自述能力」在**新实例上是保守值**（假失败隐患）
+
+P1-1 把 `normalizes_loudness` 改成「服务自述」（`/api/health`）后，引入一个观测缺陷：
+适配器初始是保守值（`False`），只有**探活过**才会翻真；而 `/api/version` 是**同步**读
+能力快照的 —— **全新启动、尚未合成过**的实例上，本地 2.0 壳本应报 `True`，却报 `False`，
+部署自检据此得出与事实相反的结论。
+
+**修法**：`/api/version` 在读快照前先 `await refresh_pool_health()`
+（`engines/factory.py` 新增；幂等、复用池内 15s TTL 与冷却；内置引擎探活均免费：
+local 打 `/api/health`、302.ai 查一个不存在的 task_id、siliconflow 列 voice、
+autodl.art 只看 Token 是否存在）。任何探活失败都不影响返回（包在 try/except 里）。
+
+⚠️ **副作用（需你确认）**：该改动让 `/api/version` 从「纯读、零副作用」变成
+「可能主动发一次探活 HTTP」；云引擎那一次会打到真实 API（免费，但需要 key）。
+若你不希望运维端点带网络副作用，可改成 `?probe=1` 显式触发 —— 说一声我就改。
+
+### 部署自检断言的相应调整
+
+原断言「**池内全是本地资源 ⇒ `normalizes_loudness` 必须为 True**」在两代本地壳并存后
+必然误报（2.0 自述 True、2.5 自述 False）。已改为只断言**字段存在**（防旧代码），
+实际值打印出来与 tts-server 的 `/api/health` 自述核对。Docker 与裸进程两条路径同改。
+
+### 本轮回归
+
+- `tts-server-2.5/test_podcast_text_rules.py`：**30 项**全通过（新增 20 条时间 + 1 条接线）
+- `tts-server/test_podcast_text_rules.py`：**40 项**全通过
+- `webui-backend/tests/test_time_norm.py` 93 / `test_num_value_norm.py` 129 /
+  `test_year_norm.py` 158 / `test_engine_layer.py` 8：全通过
+- `outputs/run-offline-tests.py`：**TOTAL 24 PASS 24**
+- import 链路（`app.routes.system` ← `app.engines.factory`、`app.main`）：无循环依赖

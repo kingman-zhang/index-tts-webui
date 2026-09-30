@@ -10,9 +10,9 @@ import httpx
 from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
-# import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / num_value_norm /
-# number_norm 的开关是**模块级**读 os.environ 的。顺序反了会落到缺省值。
-from . import name_punct, num_value_norm, number_norm, year_norm
+# import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / time_norm /
+# num_value_norm / number_norm 的开关是**模块级**读 os.environ 的。顺序反了会落到缺省值。
+from . import name_punct, num_value_norm, number_norm, time_norm, year_norm
 from .stores import apply_glossary, load_glossary_for_synthesis
 from . import queue_state as qs
 from .membership import service as member_svc
@@ -206,6 +206,14 @@ async def _execute_task(task_id: str) -> None:
         # 见 app/year_norm.py 顶部的完整说明。
         if year_norm.ENABLED:
             synth_lines = year_norm.apply_year_rules(synth_lines)
+        # 时间读法：`12:30` → 十二点三十分（带空格的 `12 : 30`、小时为 0 的 `0:30`
+        # 会被 TN 读成「比」，见 app/time_norm.py 的实测表）。默认启用。
+        # 这条规则同样原本只在 tts-server（本地 GPU 引擎）里 —— 云引擎链路绕过它，
+        # 与 year_norm 是同一个迁移故事。放在 year_norm 之后、num_value_norm 之前：
+        # 年份规则只认「数字+年」，两者不相交；先换掉冒号形态，后面两层就再也
+        # 看不到那串阿拉伯数字（num_value_norm 本来也把 `12:30` 列为否决）。
+        if time_norm.ENABLED:
+            synth_lines = time_norm.apply_time_rules(synth_lines)
         # 数值读法：单位/量词或幅度词旁边、以及带 % 的阿拉伯数字换汉字。
         # 阿拉伯数字在 IndexTTS 词表里不存在，进模型就是一个 unk（读法随机），
         # 而云端 TN 不可依赖 —— 详见 app/num_value_norm.py 顶部。

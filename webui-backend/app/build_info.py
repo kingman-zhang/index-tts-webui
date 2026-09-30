@@ -68,6 +68,7 @@ REPO_ROOT = BACKEND_ROOT.parent
 WATCHED = (
     "app/name_punct.py",
     "app/year_norm.py",
+    "app/time_norm.py",
     "app/num_value_norm.py",
     "app/number_norm.py",
     "app/stores.py",
@@ -148,7 +149,7 @@ def _data_dir() -> dict:
 def _text_switches() -> dict:
     """文本预处理各道关的开关与词表规模（延迟 import，保证 .env 已加载）。"""
     try:
-        from . import name_punct, num_value_norm, number_norm, stores, year_norm
+        from . import name_punct, num_value_norm, number_norm, stores, time_norm, year_norm
 
         terms = stores.load_global_glossary()
         synth = stores.load_glossary_for_synthesis(None)
@@ -165,6 +166,15 @@ def _text_switches() -> dict:
             # 而 /api/version 看不出差异，只能去读 git 史。
             # 看到 3 = 三位规则在跑；看到 4 = 还是老的四位版，必须重新部署。
             "year_norm_min_digits": year_norm.MIN_DIGITS,
+            # 时间读法（2026-09-30 新增）：`12:30` → 十二点三十分。这条规则以前
+            # 只在 tts-server 里，云引擎链路绕过它 ⇒ 带空格的 `12 : 30` 与小时为 0
+            # 的 `0:30` 会被 TN 读成「比」。出现该字段即说明进程加载的是含
+            # time_norm 的新代码。
+            "time_norm_enabled": time_norm.ENABLED,
+            # 受理的「段数」：2 = 只做 时:分。将来做 时:分:秒 会变成 3。
+            # 报取值域而非只报开关的理由同 year_norm_min_digits：只有布尔开关时，
+            # 「只做时分」与「做时分秒」两版都是 true，端点上分辨不出来。
+            "time_norm_max_parts": time_norm.MAX_PARTS,
             # 数值读法（2026-09-29 新增）：单位/幅度词旁的阿拉伯数字换汉字。
             # 同上，报取值域而非只报开关：num_value_max_digits 是这一版规则的
             # 受理位数上限，部署自检断言它 >= 8。

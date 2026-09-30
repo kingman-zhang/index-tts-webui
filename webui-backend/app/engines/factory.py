@@ -108,5 +108,30 @@ def engine_summary():
              "supports_speed": e.capabilities.supports_speed,
              # speed_guaranteed=True ⇒ 上层不得再变速（v3 起语速只在资源侧应用一次）
              "speed_guaranteed": e.capabilities.speed_guaranteed,
+             # normalizes_loudness=True ⇒ 返回音频已归一到 -16 LUFS，上层不得再归一
+             # （2026-09-30）。本地引擎 True、云引擎 False；池门面取 all()。
+             "normalizes_loudness": e.capabilities.normalizes_loudness,
              "supports_emotion": e.capabilities.supports_emotion,
              "in_cooldown": False} for e in build_registry().engines]
+
+
+async def refresh_pool_health() -> None:
+    """触发一次池探活，让「**服务自述**能力」刷新到当前值（2026-09-30）。
+
+    为什么需要：`normalizes_loudness` 这类能力由**资源自述**（tts-server 的
+    `/api/health`）决定，适配器初始是保守值（`IndexttsLocalEngine` 默认 False），
+    只有探活过才会翻成真值（见 engines/indextts_local.py:_apply_capabilities）。
+    而 `engine_summary()` 是**同步**读能力快照的 —— 若在此调用前从没探过活，
+    `/api/version` 报出来的是**构造时的保守值**：本地 2.0 壳明明会把响度归到
+    -16（自述 True），却报 False。部署自检据此判断就会得到与事实相反的结论。
+
+    幂等且便宜：池门面的 `_refresh_health` 自带 TTL（15s）与冷却，重复调用不会
+    重复探测；内置引擎的探活都不产生合成费用（local 打 `/api/health`、302.ai
+    查一个不存在的 task_id、siliconflow 列 voice 列表、autodl.art 只看 Token
+    是否存在）。**任何探活失败都不影响调用方** —— 能力保持保守值即可。
+    """
+    for engine in build_registry().engines:
+        try:
+            await engine.health()
+        except Exception:  # noqa: BLE001 - 探活失败只意味着能力停在保守值
+            logger.debug("[engine] %s 探活失败，能力保持保守值", engine.name)

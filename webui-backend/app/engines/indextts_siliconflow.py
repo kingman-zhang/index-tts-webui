@@ -89,6 +89,8 @@ class IndexttsSiliconflowEngine:
         max_concurrency=None,    # 读 TTS_CONCURRENCY
         supports_speed=True,     # speed 参数，钳 0.25-4.0
         supports_emotion=True,   # CosyVoice2 用内联富文本提示控制语气
+        # 平台返回的音频做过什么后处理未知 ⇒ 不承诺响度，由 backend 归一（默认 False）
+        normalizes_loudness=False,
     )
 
     def __init__(

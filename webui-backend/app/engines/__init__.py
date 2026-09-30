@@ -18,7 +18,7 @@ from .base import (
     normalize_pcm,
 )
 from .chunker import ART_MAX_CHARS, count_chars, split_for_art
-from .factory import build_registry, engine_summary, reset_registry
+from .factory import build_registry, engine_summary, refresh_pool_health, reset_registry
 from .indextts_302ai import Indextts302aiEngine
 from .indextts_art import IndexttsArtEngine
 from .indextts_local import IndexttsLocalEngine
@@ -52,6 +52,7 @@ __all__ = [
     "fix_wav_header",
     "mark_engine_failed",
     "normalize_pcm",
+    "refresh_pool_health",
     "reset_registry",
     "select_engine",
     "split_for_art",

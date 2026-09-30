@@ -119,6 +119,15 @@ class EngineCapabilities:
     # 池门面恒为 True：不支持的资源由池在规范化时用 ffmpeg atempo 补齐，
     # 每个段恰好变速一次。单引擎适配器默认 False（诚实声明：上层需自行后处理）。
     speed_guaranteed: bool = False
+    # 响度是否已由**下层**保证：True = synthesize_segment 返回的音频已经做过响度
+    # 归一（-16 LUFS、峰值 ≤ -1.5 dBFS），因此**上层不得再归一一次**。
+    #
+    # 背景（2026-09-30）：本地引擎（`/api/synthesize` → `_apply_speed`）必然归一，
+    # 而 backend `podcast_runner._normalize_segment` 又归一一次 —— 两份实现的 6 个
+    # 常量逐项相同，属**完全重复**：第二次测到的已是 ~-16，增益≈0，白跑一次 ffmpeg
+    # 加一次重采样。**云引擎一律 False**：我们不知道它做了什么，宁可多归一次。
+    # 池门面取 all()（混池时保证不了就老实做），与 supports_speed 同一写法。
+    normalizes_loudness: bool = False
     # 是否支持情绪表达。False 表示合成时只能跟随参考音频。
     supports_emotion: bool = True
 
@@ -340,8 +349,19 @@ class EnginePoolFacade:
         self._inflight: dict[str, int] = {cfg.id: 0 for cfg, _ in self.resources}
         self._failures: dict[str, int] = {cfg.id: 0 for cfg, _ in self.resources}
         self._served = {cfg.id: 0 for cfg, _ in self.resources}
-        self.capabilities = self._conservative_capabilities()
         self.name = "pool"
+
+    @property
+    def capabilities(self) -> EngineCapabilities:
+        """池的能力 = 池内资源的**当前**能力的保守合成。
+
+        为什么是 property 而不是 `__init__` 里算一次的实例属性（2026-09-30 改）：
+        资源的能力会随探活更新 —— `IndexttsLocalEngine._apply_capabilities` 按
+        `/api/health` 的自述把 `normalizes_loudness` 从保守的 False 翻成 True。
+        缓存在构造那一刻就取不到了（那时还没探过活），于是「服务自述的能力」永远
+        晚一步、优化永不生效。改成每次读时重算，代价是几次列表推导，可忽略。
+        """
+        return self._conservative_capabilities()
 
     def _conservative_capabilities(self) -> EngineCapabilities:
         if not self.resources:
@@ -357,6 +377,11 @@ class EnginePoolFacade:
             # 池保证语速：原生支持的资源直接传参，其余资源在规范化时由
             # normalize_pcm(atempo) 补齐 ⇒ 上层永远不要再变速。
             speed_guaranteed=True,
+            # 池**不**做响度归一（normalize_pcm 只管重采样与变速），所以这里不能
+            # 恒为 True：只有池内每个资源都保证时才算保证。混池（本地 + 云端）⇒
+            # False ⇒ 上层照旧归一一次，代价是多跑一遍本地段的 ffmpeg，
+            # 换来的是「不依赖运气」—— 宁可多归一次，也不要漏归。
+            normalizes_loudness=all(c.normalizes_loudness for c in caps),
         )
 
     def _available(self, cfg: ResourceConfig) -> bool:
