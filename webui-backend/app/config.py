@@ -50,7 +50,7 @@ _DEFAULT_DATA_DIR = str(BACKEND_ROOT / "data")
 
 parser = argparse.ArgumentParser(description="Podcast WebUI Backend")
 parser.add_argument("--tts-url", default=os.environ.get("TTS_URL"),
-                    help="音色管理面/旧播客端点指向的 tts-server（合成走资源池，不看它）")
+                    help="音色管理与探针指向的 tts-server（该变量不参与合成调度；合成按资源池走）")
 parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"), help="监听地址")
 parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "3001")), help="监听端口")
 parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", _DEFAULT_DATA_DIR),
@@ -153,7 +153,11 @@ def _pool_first_local_url() -> str | None:
     return None
 
 
-# TTS 服务地址：**只有音色管理面与旧播客端点读它，合成链路不读**（合成走资源池）。
+# TTS 服务地址：**只有音色管理面与旧播客端点读这个变量**，合成链路不读它 ——
+# 合成按资源池调度，多台时可能落在任意一台。注意这两件事不矛盾：`TTS_URL` 缺省
+# 就派生自「池里第一个 local」（见 _pool_first_local_url），**所以它通常与池内某台
+# 同址**，那台当然也会参与合成。横幅必须把这点点明，否则「合成不走它」会被读成
+# 「合成不用这台」（2026-09-30 用户实际这样问过）。
 # 优先级（高→低）：--tts-url > 真实环境变量 > .env 的 TTS_URL > 资源池里第一个 local > 内置默认。
 # 最后那条兜底是关键：配好资源列表之后不必再手填 TTS_URL，少一处会配错的地方。
 _explicit_tts_url = args.tts_url
@@ -162,7 +166,8 @@ TTS_URL = (_explicit_tts_url or _derived_tts_url or "http://localhost:8000").rst
 TTS_URL_SOURCE = ("显式配置（--tts-url / 环境变量 / .env）" if _explicit_tts_url
                   else "资源池里第一个 local" if _derived_tts_url
                   else "内置默认")
-logger.info("TTS 服务地址 = %s（来源：%s）；它只服务音色管理与探针，合成走资源池",
+logger.info("TTS 服务地址 = %s（来源：%s）；该变量只给音色管理与探针用 —— "
+            "合成不读它，而是按资源池调度（同一台若在池内，照样会被用到）",
             TTS_URL, TTS_URL_SOURCE)
 
 # TTS 状态栏探测开关：1 = /api/config 才去探 tts-server；0/缺省 = 不探测（前端状态栏静默）

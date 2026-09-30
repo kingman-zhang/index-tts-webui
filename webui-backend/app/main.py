@@ -188,14 +188,27 @@ def run():
     import uvicorn
     try:
         from .engines.factory import config_source, build_registry
-        pool = [cfg.id for cfg, _ in build_registry().engines[0].resources]
+        resources = build_registry().engines[0].resources
+        pool = [cfg.id for cfg, _ in resources]
         source = config_source()
+        # `TTS_URL` 缺省即派生自池里第一个 local ⇒ 通常与池内某台同址。
+        # 必须把这层「同址」点明：否则「合成不读这个变量」会被读成
+        # 「合成不用这台」，而事实恰好相反 —— 那台既管音色、也参与合成
+        # （2026-09-30 用户看到旧文案后就是这样问的）。
+        same = next(
+            (cfg.id for cfg, eng in resources
+             if (getattr(eng, "tts_url", None) or "").rstrip("/") == TTS_URL),
+            None,
+        )
     except Exception as exc:  # noqa: BLE001 - 横幅不能把启动带崩
-        pool, source = [], f"读取失败：{exc}"
+        pool, source, same = [], f"读取失败：{exc}", None
     print(f">> Podcast WebUI Backend")
     print(f"   合成资源池: {pool or '（空！配置有误）'}")
     print(f"   配置来源:   {source}")
-    print(f"   TTS URL:    {TTS_URL}（音色管理面；合成不走它）")
+    print(f"   TTS URL:    {TTS_URL}"
+          f"（音色管理与探针；合成不读这个变量，而是按上面的资源池调度）")
+    if same:
+        print(f"               └ 与池内 {same} 同址：该台同样参与合成，只是不通过这个变量")
     print(f"   Data dir:   {args.data_dir}")
     print(f"   Listen:     {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
