@@ -41,6 +41,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -389,6 +390,132 @@ def check_model_dir(model_dir: Path | None) -> None:
             "tools/prefetch_aux_models.py --cache <DIR> 预下载可避免静默卡住")
 
 
+# ─── JIT 编译前置条件 ────────────────────────────────────────
+# `--deepspeed` / `--cuda-kernel` 都是现场编译 CUDA 扩展，需要 ninja + 与 torch 匹配的 nvcc。
+# 缺依赖的失败方式非常隐蔽：模型**整体**加载失败，但进程照常监听、/api/health 仍返回 200，
+# 只是 model_loaded=false ⇒ backend 探活判该资源不可用 ⇒ 合成全部溢出到云端（在花钱）。
+# 2026-09-30 实际踩到（spacehpc 新机器缺 ninja，排查了一圈才发现），所以单列一项体检。
+
+_JIT_FLAGS = (("--deepspeed", "DeepSpeed"), ("--cuda-kernel", "BigVGAN CUDA kernel"))
+
+
+def _jit_flags_in_start_scripts(tts_dir: Path) -> dict[str, list[str]]:
+    """扫同目录的 start*.sh，看哪些脚本打开了需要 JIT 编译的开关。
+
+    朴素匹配「赋值行右值里是否出现该 flag」—— 这几个脚本本来就写成
+    `DEEPSPEED="--deepspeed"`，够用；漏判的代价只是少提醒一次。
+    """
+    found: dict[str, list[str]] = {}
+    for script in sorted(tts_dir.glob("start*.sh")):
+        try:
+            lines = script.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            rhs = stripped.split("=", 1)[1]
+            for flag, name in _JIT_FLAGS:
+                if flag in rhs:
+                    found.setdefault(name, []).append(script.name)
+    return found
+
+
+def _find_exe(name: str) -> tuple[str | None, str]:
+    """找可执行文件，返回 (路径, 来源)。来源区分「在 PATH 上」与「只在 venv/bin 里」。
+
+    这个区分是必要的：ninja/nvcc 都是被当**子进程**调用的（按 PATH 查找），而启动脚本
+    直接调用 venv 的 python、并没有 activate venv ⇒ 装在 venv/bin 里但不在 PATH 上，
+    依然是「找不到」。
+    """
+    on_path = shutil.which(name)
+    if on_path:
+        return on_path, "PATH"
+    venv_bin = Path(sys.executable).parent / name
+    if venv_bin.is_file():
+        return str(venv_bin), "venv"
+    return None, ""
+
+
+def _nvcc_version(nvcc: str) -> str | None:
+    """解析 `nvcc --version` 里的 release 版本（如 12.1）；解析不出返回 None。"""
+    try:
+        out = subprocess.run([nvcc, "--version"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"release\s+(\d+)\.(\d+)", out)
+    return f"{m.group(1)}.{m.group(2)}" if m else None
+
+
+def check_jit_toolchain(tts_dir: Path) -> None:
+    enabled = _jit_flags_in_start_scripts(tts_dir)
+    names = "、".join(f"{n}({','.join(s)})" for n, s in enabled.items())
+    # 没开这些开关时，缺 ninja/nvcc 完全无害 ⇒ 降为 OK，避免制造无谓告警
+    bad = FAIL if enabled else OK
+
+    ninja, ninja_src = _find_exe("ninja")
+    if ninja and ninja_src == "PATH":
+        add(OK, "JIT 编译", "ninja 就位", ninja,
+            f"启动脚本开着 {names} 时靠它编译 CUDA 扩展" if enabled else "")
+    elif ninja:  # 只在 venv/bin 里
+        add(bad, "JIT 编译", "ninja 装了但不在 PATH 上", ninja,
+            "它是被当**子进程**调用的（PATH 查找），启动脚本又没 activate venv ⇒ "
+            "照样报「Ninja is required to load C++ extensions」。二选一："
+            f'export PATH="{Path(ninja).parent}:$PATH"，或 ln -sf {ninja} /usr/local/bin/ninja')
+    elif enabled:
+        venv_bin = Path(sys.executable).parent
+        add(FAIL, "JIT 编译", f"没装 ninja，而启动脚本开着 {names}", "",
+            f"{venv_bin}/pip install ninja && ln -sf {venv_bin}/ninja /usr/local/bin/ninja"
+            "（⚠ 必须让它出现在 PATH 上，见下一项）。不装就关掉加速项："
+            "USE_DEEPSPEED=0 —— --deepspeed 没有兜底，会拖垮整个模型加载")
+    else:
+        add(OK, "JIT 编译", "没装 ninja（当前 start*.sh 也没开需要它的开关）",
+            "无需处理：--deepspeed / --cuda-kernel 都关着", "")
+
+    # nvcc：与 torch 的 CUDA 版本是否匹配
+    nvcc, nvcc_src = _find_exe("nvcc")
+    if nvcc is None:
+        cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+        cand = Path(cuda_home) / "bin" / "nvcc" if cuda_home else None
+        if cand and cand.is_file():
+            nvcc, nvcc_src = str(cand), "CUDA_HOME"
+    torch_cuda = None
+    if importlib.util.find_spec("torch") is not None:
+        try:
+            import torch  # noqa: PLC0415
+
+            torch_cuda = torch.version.cuda
+        except Exception:
+            torch_cuda = None
+    if nvcc is None:
+        title = "没有 nvcc（CUDA toolkit）" if enabled else \
+                "没有 nvcc（当前也没开需要它的开关）"
+        add(bad, "JIT 编译", title,
+            f"CUDA_HOME={os.environ.get('CUDA_HOME') or '未设置'}",
+            "编译 CUDA 扩展需要它与 torch 版本匹配。装 cudatoolkit 或把 CUDA_HOME 指向 "
+            "/usr/local/cuda；本机不具备就把 --deepspeed / --cuda-kernel 关掉")
+        return
+
+    nvcc_ver = _nvcc_version(nvcc)
+    src = f"（来源：{nvcc_src}）"
+    if not (nvcc_ver and torch_cuda):
+        add(OK, "JIT 编译", "nvcc 就位", f"{nvcc} {src}",
+            "版本没解析出来，自行核对是否与 torch 的 CUDA 匹配")
+    elif nvcc_ver.split(".")[0] != torch_cuda.split(".")[0]:
+        add(FAIL, "JIT 编译", f"nvcc {nvcc_ver} 与 torch 的 CUDA {torch_cuda} 大版本不一致",
+            f"{nvcc} {src}",
+            "扩展编译一定失败（torch 会直接报 CUDA version mismatch）。把 CUDA_HOME 指向与 "
+            "torch 匹配的那套 toolkit，或关掉 --deepspeed / --cuda-kernel")
+    elif nvcc_ver != torch_cuda:
+        add(WARN, "JIT 编译", f"nvcc {nvcc_ver} 与 torch 的 CUDA {torch_cuda} 小版本不同",
+            f"{nvcc} {src}",
+            "一般只是警告，但编译产物可能不兼容；有异常就换成完全匹配的 toolkit")
+    else:
+        add(OK, "JIT 编译", f"nvcc {nvcc_ver} 与 torch 的 CUDA {torch_cuda} 匹配",
+            f"{nvcc} {src}")
+
+
 def check_deps() -> None:
     absent: list[str] = []
     present: list[str] = []
@@ -583,6 +710,7 @@ def main() -> int:
     check_interpreter()
     torch_ok = check_torch(deep=args.deep)
     check_indextts(indextts_home, deep=args.deep and torch_ok)
+    check_jit_toolchain(tts_dir)
     check_model_dir(model_dir)
     check_deps()
     check_ffmpeg()

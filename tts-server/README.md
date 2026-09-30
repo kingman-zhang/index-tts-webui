@@ -44,6 +44,44 @@ export PORT=8000
 /root/index-tts/.venv/bin/python /opt/tts-server/server.py
 ```
 
+## 可选加速项与它们的 JIT 依赖（踩过坑）
+
+`--deepspeed`、`--cuda-kernel`（`start_spacehpc.sh` 里默认都开着）不是「填个参数就好」的开关：
+它们要在**启动时现场编译 CUDA 扩展**，因此需要 `ninja` 和与本机 torch 匹配的 `nvcc`。
+
+缺依赖的失败方式非常隐蔽 —— **模型整体加载失败**，但进程照常监听、`/api/health` 仍返回 200，
+只是 `status=no_model`、`model_loaded=false`；backend 探活据此判该资源不可用，于是**合成全部溢出
+到云端**。2026-09-30 在 spacehpc 新机器上就是这样烧了一轮钱才发现。
+
+```bash
+# 先体检（会单独列一组「JIT 编译」）
+/root/index-tts/.venv/bin/python doctor.py --deep
+
+# 要保留加速项：装 ninja，并让它出现在 PATH 上
+/root/index-tts/.venv/bin/pip install ninja
+ln -sf /root/index-tts/.venv/bin/ninja /usr/local/bin/ninja
+# ⚠ 光是 pip install 不够：ninja 是被当**子进程**调用的（按 PATH 查找），
+#   而启动脚本直接调用 venv 的 python、并没有 activate venv。
+
+# 不想为这点加速折腾：关掉即可（不用改文件）
+USE_DEEPSPEED=0 bash start_spacehpc.sh
+USE_DEEPSPEED=0 USE_CUDA_KERNEL=0 bash start_spacehpc.sh
+```
+
+两者的兜底能力不同，选关哪个时注意：
+
+| 开关 | 建不起来时的行为 | 代价 |
+|------|------------------|------|
+| `--cuda-kernel` | 自己打印 fallback 并降级回 torch（`infer_v2.py:117-126`） | 稍慢，能跑 |
+| `--deepspeed` | **没有兜底**（`infer_v2.py:115` 未捕获）⇒ 整个模型加载失败 | 服务 `no_model`，合成全走云端 |
+
+`server.py` 会在加载失败时打印定位、本次开关、以及体检命令；启动脚本也会在编译前预检
+`ninja` / `nvcc`。
+
+⚠ 关于 `--deepspeed` 值不值得修：**2.5 那边已经明确不用它**（`tts-server-2.5/start.sh:14`：
+DeepSpeed 把 max tokens 限制为 1024，GPT 生成超限后概率 nan 会触发 CUDA assert，2.5 改用
+accel engine）。2.0 这边的收益**没有实测数据**，所以两条路都不算错 —— 想省事就直接关掉。
+
 ## API 接口
 
 | 方法 | 路径 | 说明 |

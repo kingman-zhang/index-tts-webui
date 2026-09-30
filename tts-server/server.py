@@ -92,6 +92,56 @@ print(
 )
 print(f">> loading model (this may take a while)...")
 
+# 加载失败时的可操作提示。失败被下面的 except 捕获后进程**照常监听**
+# （/api/health 仍返回 200，只是 status=no_model），所以这句话往往是唯一的线索 ——
+# 值得翻译成人能照着做的动作，而不是原样抛一句第三方库的英文。
+# 四个签名覆盖了实际见过的成因，首例就是 2026-09-30 spacehpc 上缺 ninja。
+_LOAD_FAILURE_HINTS: tuple[tuple[str, str, str], ...] = (
+    ("ninja is required",
+     "缺少 ninja（JIT 编译 CUDA 扩展用）",
+     "装：{bin}/pip install ninja。⚠ 必须让 ninja 出现在 PATH 里 —— 它是被当**子进程**"
+     "调用的（PATH 查找），而启动脚本直接调用 {py}、并没有 activate venv，"
+     "所以只装不软链仍会报同一个错：ln -sf {bin}/ninja /usr/local/bin/ninja。"
+     "--deepspeed 没有兜底（不像 --cuda-kernel），它一失败就是整个模型加载失败"),
+    ("no cuda runtime is found",
+     "找不到 CUDA 运行时（nvcc / CUDA_HOME）",
+     "JIT 编译需要与本机 torch 匹配的 CUDA toolkit。装 cudatoolkit 或设 "
+     "CUDA_HOME=/usr/local/cuda；本机不具备就把 --deepspeed / --cuda-kernel 关掉"),
+    ("detected cuda version",
+     "nvcc 版本与 torch 的 CUDA 版本不一致",
+     "本机 torch 编译用的 CUDA = {torch_cuda}，而找得到的 nvcc 是另一个版本 —— 扩展编译必失败。"
+     "让 CUDA_HOME 指向与 torch 匹配的那套 toolkit，或关掉加速项"),
+    ("out of memory",
+     "显存不足（OOM）",
+     "DeepSpeed 默认按 90% 显存做预算，与别的进程挤在一起就会 OOM。"
+     "先 nvidia-smi 看占用；也可以关掉 --deepspeed 用普通推理"),
+)
+
+
+def _explain_load_failure(exc: BaseException) -> None:
+    """把模型加载失败翻译成「下一步做什么」。只打印，不改行为。"""
+    py = sys.executable
+    bin_dir = str(Path(py).parent)
+    try:
+        import torch  # noqa: PLC0415
+
+        torch_cuda = torch.version.cuda or "无"
+    except Exception:
+        torch_cuda = "未知"
+    text = repr(exc).lower()
+    hit = next((h for h in _LOAD_FAILURE_HINTS if h[0] in text), None)
+    if hit:
+        print(f"!! ─ 定位：{hit[1]}")
+        print("!!   " + hit[2].format(bin=bin_dir, py=py, torch_cuda=torch_cuda))
+    else:
+        print("!! ─ 定位：没匹配到已知签名（ninja / nvcc / 版本不匹配 / OOM），看下面体检结果")
+    print(f"!! ─ 本次开关：deepspeed={args.deepspeed} cuda_kernel={args.cuda_kernel} "
+          f"fp16={args.fp16} accel={args.accel} torch_compile={args.torch_compile}")
+    print(f"!! ─ 逐项体检：{py} {Path(__file__).resolve().parent / 'doctor.py'} --deep")
+    print("!! ─ 后果：backend 探活会看到 model_loaded=false → 判该资源不可用 → "
+          "合成全部溢出到云端（在花钱）")
+
+
 try:
     from indextts.infer_v2 import IndexTTS2
     tts = IndexTTS2(
@@ -107,6 +157,7 @@ try:
     print(">> model loaded successfully")
 except Exception as e:
     print(f"!! WARNING: model load failed: {e}")
+    _explain_load_failure(e)
     print("!! server will start, but inference will not work until model is available")
     tts = None
 
