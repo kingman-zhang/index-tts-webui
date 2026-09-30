@@ -187,6 +187,10 @@ def _text_switches() -> dict:
             # 受理位数上限，部署自检断言它 >= 8。
             "num_value_normalize": num_value_norm.ENABLED,
             "num_value_max_digits": num_value_norm.MAX_DIGITS,
+            # 「两/二」的语境表（2026-09-30 新增）。初版把「单个 2 一律读两」收得太宽，
+            # 用户报 `第2章` 被读成「第两章」。**同样是取值域**：这张表里有没有「第」，
+            # 直接说明进程加载的是修过的那一版还是初版 —— 开关两者都是 true，看不出。
+            "num_value_ordinal_markers": list(num_value_norm.ORDINAL_MARKERS),
             "number_norm_enabled": number_norm.ENABLED,
             "glossary_sep_variants": stores.GLOSSARY_SEP_VARIANTS,
             "glossary_sep_variants_max": stores.MAX_SEP_VARIANTS,

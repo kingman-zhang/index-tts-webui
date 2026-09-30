@@ -50,10 +50,25 @@
 `105`→一百零五、`1200米`→一千二百米、`2000次`→两千次、`30%`→百分之三十…），
 本层的输出与之逐字比对。
 
-**但「两」的用法刻意不复刻**：TN 自带 lexicon，`2元/2个/2米`→两、`2倍/2年/2月/2号`→二，
-按词不按位。本层用一套自洽规则 —— **最高位是 2 且落在百/千位、或独立的一个 2 ⇒ 两**
-（`2`→两、`200`→两百、`2000`→两千、`2200`→两千二百、`1200`→一千二百；`20`→二十）。
-比对时做 **「两 ≡ 二」等价化**，否则会假失败。
+### 「两」的适用面很窄（2026-09-30 修正）
+
+初版把「单个 2 一律读两」收得太宽，用户报 `第2章` 被读成「第两章」——**中文里没有
+「第两」这个组合**。补齐语境后，规律与 TN 完全一致：
+
+| 语境 | 读法 | 例 |
+|---|---|---|
+| **单个 2 + 计数性量词** | **两** | `2个`→两个、`2张`→两张、`2年`→两年、`2倍`→两倍、`2元`→两元 |
+| **多位数的百/千位**（不论语境） | **两** | `200`→两百、`2000`→两千、`第200章`→第两百章、`-200度`→负两百度 |
+| 序数（**第** N） | 二 | `第2章`→第二章、`第2次`→第二次、`第2部分`→第二部分 |
+| 序数性量词（月/号/楼/班/年级） | 二 | `2月`→二月、`2号`→二号、`2楼`→二楼、`2年级`→二年级 |
+| 小数 / 百分数 / 正负号 | 二 | `2.5`→二点五、`2%`→百分之二、`-2度`→负二度 |
+
+**「两」的判定只作用于「单个的 2」（`n == 2`）**；`pos in (3, 2)` 那条（200/2000）
+不受语境影响 —— 这就是上表第 2 行的由来，也是 `第200章` 与 `第2章` 读法不同的原因。
+
+仍然**刻意不复刻 TN 的两处**（保留更自然的口语）：
+- `2年`/`2倍`/`2次`/`2期`/`2届`/`2成` ⇒ 两（TN 给「二年/二倍/二次…」）；
+- 比对时对这几条做 **「两 ≡ 二」等价化**，其余序数/小数/百分号用例**必须逐字相同**。
 
 ## 与 year_norm 的顺序耦合（有意为之）
 
@@ -109,6 +124,9 @@ _SMALL_UNITS = ("", "十", "百", "千")
 VALUE_EXTRA_UNITS = (
     "位", "届", "期", "款", "条", "项", "种", "类", "张", "把", "支", "间",
     "座", "家", "辆", "门", "股", "份", "笔", "级", "档", "例", "起", "场", "局",
+    # 「班」是给「2班 → 二班」用的；它也是序数性量词（见 _ER_UNITS），
+    # 缺了它会让 `2班` 连候选都进不来（右邻不在单位表 ⇒ 不命中）。
+    "班",
 )
 VALUE_UNITS = tuple(dict.fromkeys(UNITS + VALUE_EXTRA_UNITS))
 
@@ -117,6 +135,26 @@ _RUN_SEPS = "-–—－~～/:.,"
 # 正负号：`-5度` → 负五度、`+5度` → 正五度（与 TN 一致）。
 _SIGN_CHARS = "-−+＋"
 _SIGN_WORD = {"-": "负", "−": "负", "+": "正", "＋": "正"}
+
+# 「二」的语境（2026-09-30 补）。初版把「单个 2 一律读两」收得太宽，用户在
+# `第2章` 上撞到「第两章」—— 中文没有这个组合。
+#
+# 分两类，**都只作用于「单个的 2」**（`n == 2`）：多位数里的 200/2000 仍是「两百/
+# 两千」（`第200章` → 「第两百章」、`-200度` → 「负两百度」，与 TN 一致）。
+_ER_PREFIXES = ("第",)  # 序数：第二个、第二次、第二年、第二章、第二部分…
+# 序数性量词（表示编号/次序，不是计数）。「号线」由「号」覆盖。**刻意不收「期/届/
+# 次/年/倍/成」** —— 那几个「两次/两年/两倍/两期」都是自然口语，TN 给「二次/二年…」
+# 反而生硬，属于上一节声明的「不复刻 TN」范围。
+_ER_UNITS = ("月", "号", "楼", "班", "年级")
+# 数位单位：`2万` 里的 2 是数量的组成部分，不因前面有「第」而改读「二」
+# （`第2万章` → 第两万章、`2千万` → 两千万，与 TN 一致）。
+_NUMERAL_UNITS = ("万", "亿", "千", "百", "十")
+
+# 「序数标志」的完整清单，供 /api/version 报出 —— **取值域，不是开关**。
+# 理由见模块末尾「版本可观测」：布尔开关证明不了「是哪一版规则」
+# （2026-09-30 又踩了一次 —— 初版与新版的 `num_value_normalize` 都是 true，
+# 只有把这张表报出来才能一眼看出「终于是修过的那一版」）。改表即变。
+ORDINAL_MARKERS = _ER_PREFIXES + _ER_UNITS
 
 # 候选数字。两分支：带千分位 / 不带。`(\s*)` 负责吃掉「数字 ↔ 单位」之间的空格
 # （用户从网页粘贴的文本经常带空格，TN 正是被这个空格打挂的）。
@@ -127,8 +165,13 @@ _CANDIDATE = re.compile(
 )
 
 
-def _read_below_10000(n: int, top: bool = False) -> str:
-    """0~9999 的数值读法。`top=True` 表示这是整个数的最高段（决定单个 2 读「两」）。"""
+def _read_below_10000(n: int, top: bool = False, use_er: bool = False) -> str:
+    """0~9999 的数值读法。
+
+    `top=True` 表示这是整个数的最高段（决定单个 2 读「两」）。
+    `use_er=True` 表示处于「该读二」的语境（序数 / 小数 / 百分号 / 正负号）——
+    **只影响单个的 2**，百/千位上的 2 照旧读「两」（`第200章` → 第两百章）。
+    """
     parts: list[str] = []
     zero_pending = False
     for pos in (3, 2, 1, 0):
@@ -140,9 +183,10 @@ def _read_below_10000(n: int, top: bool = False) -> str:
         if zero_pending:
             parts.append("零")
             zero_pending = False
-        if d == 2 and not parts and top and (pos in (3, 2) or n == 2):
+        if d == 2 and not parts and top and (pos in (3, 2) or (n == 2 and not use_er)):
             # 最高段且最高位是 2，落在百/千位 → 「两」（200 → 两百、2000 → 两千、
-            # 2200 → 两千二百）；独立的一个 2（`2元`/`第2名`）也读「两」。
+            # 2200 → 两千二百）；独立的一个 2（`2元`/`2个`）也读「两」，**但序数、
+            # 小数、百分号、正负号语境除外**（`第2章` → 第二章、`2.5` → 二点五）。
             # 其余一律「二」：十位上的 2（20 → 二十）、**非最高段**的 2
             # （22000 → 两万二千，不是「两万两千」）、非最高位的 2
             # （1200 → 一千二百）。
@@ -155,29 +199,34 @@ def _read_below_10000(n: int, top: bool = False) -> str:
     return "".join(parts)
 
 
-def _read_int(digits: str) -> str:
+def _read_int(digits: str, use_er: bool = False) -> str:
     """整数 → 汉字（千分位会被忽略）。最高 8 位，只用到「万」分段。"""
     n = int(digits.replace(",", ""))
     if n == 0:
         return "零"
     wan, ge = divmod(n, 10000)
     if wan == 0:
-        return _read_below_10000(ge, top=True)
+        return _read_below_10000(ge, top=True, use_er=use_er)
+    # 万段**不传 use_er**：`第2万章` / `2万` 都读「两万」（与 TN 一致）；
+    # 「二」的语境只针对万以下的单个 2。
     text = _read_below_10000(wan, top=True) + "万"
     if ge == 0:
         return text
     if ge < 1000:
         text += "零"  # 10005 → 一万零五；25000 → 两万五千（不补零）
-    return text + _read_below_10000(ge)
+    return text + _read_below_10000(ge, use_er=use_er)
 
 
-def read_value(raw: str) -> str:
-    """数值串 → 汉字：`230` → `两百三十`、`3.5` → `三点五`、`1,234` → `一千二百三十四`。"""
+def read_value(raw: str, use_er: bool = False) -> str:
+    """数值串 → 汉字：`230` → `两百三十`、`3.5` → `三点五`、`1,234` → `一千二百三十四`。
+
+    `use_er=True` 见 `_read_below_10000`。
+    """
     s = raw.replace(",", "")
     if "." in s:
         int_part, _, frac = s.partition(".")
-        return _read_int(int_part) + "点" + "".join(_CN_DIGITS[int(c)] for c in frac)
-    return _read_int(s)
+        return _read_int(int_part, use_er=use_er) + "点" + "".join(_CN_DIGITS[int(c)] for c in frac)
+    return _read_int(s, use_er=use_er)
 
 
 def _nonspace_before(text: str, i: int) -> str:
@@ -233,6 +282,24 @@ def _four_digit_year(text: str, start: int, end: int) -> bool:
     return after.startswith("年") and len(text[start:end].replace(",", "")) == 4
 
 
+def _should_use_er(raw: str, sign: str | None, percent: str, before: str, after: str) -> bool:
+    """这个数字里的**单个 2** 该读「二」还是「两」。
+
+    三档优先级（与 TN 实测行为一致）：
+    1. **符号 / 小数 / 百分号** ⇒ 二：`-2度`→负二度、`2.5万`→二点五万、`2%`→百分之二。
+       这三类都是「数值读法」，`两` 不参与。
+    2. **后面紧跟数位单位（万/亿/千/百/十）** ⇒ 两：`第2万章`→第两万章、`2千万`→两千万。
+       这里的 2 是数量的一部分，不因前面有「第」而变（TN 同此）。
+    3. 其余看序数语境（前缀「第」或序数性量词）⇒ 二，否则两。
+    """
+    if sign or percent or "." in raw:
+        return True
+    if after.startswith(_NUMERAL_UNITS):
+        return False
+    return any(before.endswith(p) for p in _ER_PREFIXES) or any(
+        after.startswith(u) for u in _ER_UNITS)
+
+
 def _replace(match: re.Match) -> str:
     sign = match.group(1)
     raw = match.group(2)
@@ -252,17 +319,23 @@ def _replace(match: re.Match) -> str:
     if _four_digit_year(text, num_start, num_end):
         return match.group(0)
 
+    before = _context_before(text, num_start)
+    after = text[num_end:num_end + 6].lstrip(" \t")
+
     # 命中：紧跟百分号（百分号要前置成「百分之」，不是「三十%」）；
     # 或右邻单位/量词；或左语境窗口末尾是幅度词。
     if percent:
-        word = "百分之" + read_value(raw)
-    elif any(text[num_end:num_end + 4].lstrip(" \t").startswith(u) for u in VALUE_UNITS):
-        word = read_value(raw)
-    elif any(_context_before(text, num_start).endswith(p) for p in NUMERIC_PREFIXES):
-        word = read_value(raw)
+        pass
+    elif any(after.startswith(u) for u in VALUE_UNITS):
+        pass
+    elif any(before.endswith(p) for p in NUMERIC_PREFIXES):
+        pass
     else:
         return match.group(0)
 
+    word = read_value(raw, use_er=_should_use_er(raw, sign, percent, before, after))
+    if percent:
+        word = "百分之" + word
     return (_SIGN_WORD.get(sign, "") if sign else "") + word
 
 

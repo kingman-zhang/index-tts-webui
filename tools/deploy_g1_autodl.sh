@@ -115,7 +115,7 @@ print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossar
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
 print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >=", tp.get("time_norm_max_parts"))
-print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"))
+print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 eng = ((v.get("engines") or {}).get("registered")) or []
@@ -144,6 +144,11 @@ assert (tp.get("year_norm_min_digits") or 9) <= 3, (
 # 字段缺失 = 镜像里还没有这层（`230 倍` 会以阿拉伯数字进模型、读成「二三零」）。
 assert (tp.get("num_value_max_digits") or 0) >= 8, (
     "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 这类会原样进模型变 unk")
+# num_value_ordinal_markers 是 2026-09-30「序数读二」引入的新符号（用户报 `第2章` 被读成
+# 「第两章」）。仍然报**取值域**：初版与修正版的 num_value_normalize 都是 true，
+# 只有把这张表列出来才知道进程跑的是哪一版。
+assert "第" in (tp.get("num_value_ordinal_markers") or []), (
+    "!! 数值层缺序数规则（字段缺失或表里没有「第」）—— 第2章 会被读成「第两章」")
 # engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
 # pool_schema_version=3 / speed_guaranteed 是 2026-09-29「语速只在资源侧应用一次」
@@ -329,7 +334,7 @@ print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("gloss
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
 print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >=", tp.get("time_norm_max_parts"))
-print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"))
+print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
