@@ -384,11 +384,100 @@ class ConfigTests(unittest.TestCase):
                 self.assertTrue(summary['speed_guaranteed'])
                 self.assertFalse(summary['supports_speed'])
 
-    def test_multi_local_requires_shared_paths(self):
-        specs = [dict(id='l1', provider='local'), dict(id='l2', provider='local')]
+    def test_multi_local_needs_no_declaration(self):
+        """多台 local 不再需要声明 shared_voice_paths（2026-09-30 删除该字段）。
+
+        某台服务器缺哪个音色，由 voice_sync 在提交前按需补传 —— 共享挂载只是
+        「省掉每台首次上传」的优化手段，不是必填配置。
+        """
+        specs = [dict(id='l1', provider='local', base_url='http://a:8000'),
+                 dict(id='l2', provider='local', base_url='http://b:8000')]
         with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs)}, clear=True):
-            with self.assertRaises(ValueError):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1', 'l2'])
+            self.assertTrue(all(cfg.tier == 'local' and cfg.max_concurrency == 1
+                                for cfg, _ in pool.resources))
+
+    def test_removed_and_unknown_fields_fail_with_hint(self):
+        """报错必须直接指向要改的那一行，而不是一句「资源列表无效」。"""
+        legacy = [dict(id='l1', provider='local', shared_voice_paths=True)]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(legacy)}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
                 factory.build_registry(force=True)
+            self.assertIn('shared_voice_paths', str(ctx.exception))
+            self.assertIn('voice_sync', str(ctx.exception))
+        typo = [dict(id='c1', provider='302ai', api_key_env='A', base_ur='http://x')]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(typo), 'A': 'fake'}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+            self.assertIn('base_ur', str(ctx.exception))
+
+    def test_missing_resource_file_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = str(Path(directory) / 'nope.json')
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': missing}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    factory.build_registry(force=True)
+                self.assertIn('不存在', str(ctx.exception))
+
+    def test_config_file_hot_reload(self):
+        """改 TTS_RESOURCES_FILE 即生效、不用重启 —— 「加减一台 tts-server」的主路径。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.json'
+            one = [dict(id='c1', provider='302ai', api_key_env='A')]
+            path.write_text(json.dumps(one))
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path), 'A': 'fake'}, clear=True):
+                first = factory.build_registry(force=True).engines[0]
+                self.assertEqual([cfg.id for cfg, _ in first.resources], ['c1'])
+                # 配置没动时必须复用同一个池实例（不能每个请求都重建）
+                self.assertIs(factory.build_registry().engines[0], first)
+                # 加一条资源 → 下一次取池自动重建
+                path.write_text(json.dumps(one + [dict(id='c2', provider='302ai', api_key_env='A')]))
+                second = factory.build_registry().engines[0]
+                self.assertIsNot(second, first)
+                self.assertEqual([cfg.id for cfg, _ in second.resources], ['c1', 'c2'])
+
+    def test_broken_config_file_keeps_previous_pool(self):
+        """写坏一个字符不该让合成链路停摆：沿用旧池并打 ERROR，改好自动恢复。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.json'
+            spec = [dict(id='c1', provider='302ai', api_key_env='A')]
+            path.write_text(json.dumps(spec))
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path), 'A': 'fake'}, clear=True):
+                good = factory.build_registry(force=True).engines[0]
+                path.write_text('{ 这不是 JSON')
+                self.assertIs(factory.build_registry().engines[0], good)
+                path.write_text(json.dumps(spec + [dict(id='c2', provider='302ai', api_key_env='A')]))
+                self.assertEqual(
+                    [cfg.id for cfg, _ in factory.build_registry().engines[0].resources], ['c1', 'c2'])
+
+    def test_tts_url_falls_back_to_pool_local(self):
+        """TTS_URL 不再要求手填：未显式配置时取池里第一个 local 的地址。"""
+        from app import config
+        specs = [dict(id='c1', provider='302ai', api_key_env='A'),
+                 dict(id='gpu', provider='local', base_url='http://gpu-host:8000')]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs)}, clear=True):
+            self.assertEqual(config._pool_first_local_url(), 'http://gpu-host:8000')
+        cloud_only = [dict(id='c1', provider='302ai', api_key_env='A')]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(cloud_only)}, clear=True):
+            self.assertIsNone(config._pool_first_local_url())
+        with patch.dict(os.environ, {'TTS_RESOURCES': '{ 坏 JSON'}, clear=True):
+            self.assertIsNone(config._pool_first_local_url())
+
+    def test_summary_reports_config_source(self):
+        """排障要能一眼看出「池是按哪份配置起的」。"""
+        specs = [dict(id='gpu', provider='local', base_url='http://a:8000')]
+        with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs)}, clear=True):
+            self.assertIn('TTS_RESOURCES', factory.engine_summary()[0]['config_source'])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.json'
+            path.write_text(json.dumps(specs))
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
+                source = factory.engine_summary()[0]['config_source']
+                self.assertIn('TTS_RESOURCES_FILE', source)
+                self.assertIn('热加载', source)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIn('旧式', factory.engine_summary()[0]['config_source'])
 
 
 if __name__ == '__main__':

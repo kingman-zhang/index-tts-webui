@@ -60,9 +60,8 @@ async def get_config():
 async def backend_health():
     """后端自身存活探针（容器 healthcheck 用）。
 
-    与 /api/tts/health 的区别：不探测本地 tts-server——云端引擎部署
-    （TTS_ENGINE_PREFERRED=indextts_302ai 等）没有本地 GPU 服务，
-    探 TTS_URL 会恒 503 导致容器永远 unhealthy。
+    与 /api/tts/health 的区别：不探测本地 tts-server——纯云端引擎部署
+    （服务器没有本地 GPU TTS 服务）探 TTS_URL 会恒 503 导致容器永远 unhealthy。
     """
     return {
         "status": "ok",

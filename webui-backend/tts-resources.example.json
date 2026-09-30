@@ -1,0 +1,7 @@
+[
+  {"id": "gpu-a", "provider": "local", "base_url": "http://127.0.0.1:8000"},
+  {"id": "gpu-b", "provider": "local", "base_url": "http://127.0.0.1:8001"},
+  {"id": "art", "provider": "art", "api_key_env": "AUTODL_API_TOKEN"},
+  {"id": "ai302", "provider": "302ai", "api_key_env": "INDEXTTS302_API_KEY", "max_concurrency": 3},
+  {"id": "siliconflow", "provider": "siliconflow", "api_key_env": "SILICONFLOW_API_KEY", "max_concurrency": 3}
+]

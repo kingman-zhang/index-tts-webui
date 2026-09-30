@@ -77,6 +77,8 @@ WATCHED = (
     "app/engines/base.py",
     "app/engines/factory.py",
     "app/engines/selector.py",
+    # 资源池配置源（2026-09-30）：TTS_URL 派生、资源列表三态来源都在这里
+    "app/config.py",
     # 参考音频按需同步（2026-09-30 新增）：**这个文件在 source_mtimes 里出现本身
     # 就证明新代码已上线** —— 旧版本没有它，字段会是 null。这是「版本可观测」
     # 最省事的落点，不必再额外造一个开关字段。
@@ -200,8 +202,10 @@ def _engines() -> dict:
     """注册了哪些引擎、各自能力、是否在熔断冷却中。
 
     这几项回答的是「**这次为什么走了这个引擎**」—— 此前完全不可见，
-    只能靠猜（`TTS_ENGINE_PREFERRED` 是否生效、有没有 Key、探活结果如何）。
+    只能靠猜（池里注册了谁、有没有 Key、探活结果如何）。
     出现 `engines` 字段本身也说明进程加载的是含能力声明的新代码。
+    `config_source` 进一步说明池是按哪份配置起的（内联 / 文件 / 旧式变量），
+    排「配了却不生效」时先看它。
     """
     try:
         from .engines.factory import engine_summary

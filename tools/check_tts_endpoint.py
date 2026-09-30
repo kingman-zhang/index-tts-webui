@@ -204,12 +204,12 @@ def main() -> int:
         )
     if total_missing_auto:
         problems.append(
-            f"有 {total_missing_auto} 个预设音色尚未上传（选中时前端会自动上传，"
-            "但要求 backend 的 TTS_URL 指向同一台服务器）"
+            f"有 {total_missing_auto} 个预设音色尚未上传"
+            "（合成前会由 voice_sync 自动补传，此处只是提前预置省一次等待）"
         )
     if not problems:
         print("   ✅ 未发现阻断项，可以接入资源池")
-        print("   下一步：把该服务器写进 backend 的 TTS_RESOURCES（provider=local）")
+        print("   下一步：把该服务器写进资源列表（provider=local；文件形态改完不用重启）")
     else:
         for p in problems:
             print(f"   ⚠️ {p}")

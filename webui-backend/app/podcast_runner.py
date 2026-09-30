@@ -2,8 +2,8 @@
 
 背景（2026-09-20）：播客任务原先 POST 到 tts-server /api/podcast（GPU 本地），
 要求 tts-server 在线。迁移后与 mono 一致：由 backend 内的引擎适配层合成
-（默认注册顺序 自建 → 302.ai → SiliconFlow → autodl.art，`TTS_ENGINE_PREFERRED`
-可调序），云引擎（302.ai 等）下不再依赖本地 tts-server。
+（资源池：自建优先、云端溢出，见 webui-backend/ENGINES.md），
+云引擎（302.ai 等）下不再依赖本地 tts-server。
 
 引擎差异（2026-09-29）：本模块**不判断引擎名**。切片阈值与并发度都取自
 `engine.capabilities`（此前是 `engine_name == "indextts_art"` 与

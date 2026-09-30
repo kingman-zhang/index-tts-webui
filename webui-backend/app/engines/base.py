@@ -81,7 +81,6 @@ class ResourceConfig:
     max_concurrency: int = 1
     weight: float = 1.0
     tier: str = "cloud"
-    shared_voice_paths: bool = False
 
     def __post_init__(self):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.id):

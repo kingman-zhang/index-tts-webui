@@ -6,20 +6,60 @@
 
 `TTS_RESOURCES` 为非空 JSON 列表；也可通过 `TTS_RESOURCES_FILE` 指向 JSON 文件（前者优先）。Docker 可使用现有数据卷中的 `/app/data/config/tts-resources.json`，路径与账号 key 配在挂载的 backend `.env` 中，JSON 不放密钥。摘要 `pool_schema_version=3` 标识池结构版本（v3 = 语速只在资源侧应用一次，`speed_guaranteed=true`）。
 
-配置错误、空列表、重复 id、缺凭据直接失败，不静默退回其它账号。示例不含密钥：
+### 三类服务，一种写法（2026-09-30 收敛）
+
+自建 tts-server、302.ai、SiliconFlow、autodl.art 在池里是**同一条资源**，差别只在
+`provider` 一个字段 —— 没有第二套变量名要记，也没有「这个平台用哪组变量」要背。
+字段全表：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `id` | ✅ | 资源唯一名；字母数字下划线短横线（进缓存路径，别改来改去） |
+| `provider` | ✅ | `local` / `302ai` / `siliconflow` / `art` |
+| `base_url` | local 必填 | 那一台的地址；`art` 填服务根地址；两个云平台可省（走官方） |
+| `api_key_env` | 云端必填 | **环境变量名**，值写在 `.env`；本地资源不填 |
+| `max_concurrency` | — | 仅云端；缺省读 `TTS_CONCURRENCY`。local 恒为 1 |
+| `weight` | — | 分流倾斜（默认 1.0） |
+
+配置错误、空列表、重复 id、缺凭据、**未知字段**都直接失败，不静默退回其它账号。
+未知字段的报错会点名到具体字段（typo 的 `base_ur` 会立刻被抓住，而不是悄悄退回默认值）。
+示例不含密钥：
 
 ```json
 [
-  {"id":"gpu-1","provider":"local","base_url":"http://127.0.0.1:8000","shared_voice_paths":true},
-  {"id":"gpu-2","provider":"local","base_url":"http://127.0.0.1:8001","shared_voice_paths":true},
-  {"id":"cloud-a","provider":"302ai","api_key_env":"TTS_ACCOUNT_A","max_concurrency":2,"weight":1},
-  {"id":"cloud-b","provider":"302ai","api_key_env":"TTS_ACCOUNT_B","max_concurrency":4,"weight":2}
+  {"id":"gpu-a","provider":"local","base_url":"http://127.0.0.1:8000"},
+  {"id":"gpu-b","provider":"local","base_url":"http://127.0.0.1:8001"},
+  {"id":"art","provider":"art","api_key_env":"AUTODL_API_TOKEN"},
+  {"id":"ai302","provider":"302ai","api_key_env":"INDEXTTS302_API_KEY","max_concurrency":2},
+  {"id":"sf","provider":"siliconflow","api_key_env":"SILICONFLOW_API_KEY","weight":2}
 ]
 ```
 
+模板：`webui-backend/tts-resources.example.json`。
+
 provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划线、短横线。云端 tier=cloud，本地强制 tier=local、max_concurrency=1。base_url 不允许内嵌凭据或查询参数。art 的 base_url 指服务根地址。
 
-未配置 TTS_RESOURCES 时，TTS_URL、INDEXTTS302_API_KEY、SILICONFLOW_API_KEY、AUTODL_API_TOKEN、原 base URL/model 变量转译为同一个池；无凭据云端不注册。旧 TTS_CONCURRENCY 是每个云资源默认容量（1–8）。TTS_ENGINE_PREFERRED 弃用并告警，不允许优先级破坏本地利用和公平性。
+### 配置放哪里：三种来源与「改完要不要重启」
+
+| 来源 | 怎么配 | 加减一台 tts-server | 出处 |
+| --- | --- | --- | --- |
+| `TTS_RESOURCES_FILE`（**推荐**） | `.env` 一行指向一个 JSON 文件 | **改文件即生效**（下一次任务） | `config.py:resources_source` |
+| `TTS_RESOURCES` | `.env` 里一整行内联 JSON | 必须重启 backend | 同上 |
+| 旧式分散变量（`TTS_URL` + 各平台 Key） | 什么都没配时的兼容路径 | 必须重启 backend | `factory.py:_resource_specs` |
+
+**热加载**（`factory.build_registry`）：每次取池前比一次配置源指纹（`TTS_RESOURCES_FILE`
+的 `mtime_ns + size`），变了就重建池并打一条 `资源池配置已热加载，当前资源：[...]`。
+两条边界要记住：
+
+- **只对文件形态生效**：环境变量（含 `.env` 里的内联 `TTS_RESOURCES`）在进程内改不了，
+  启动读一次就固定了；
+- **重建失败不推翻现有池**：手滑写坏一个字符时沿用上一次的配置并打 ERROR（并记下这个
+  坏版本，避免每个请求都重试刷日志），把内容改回去即自动恢复 —— 运行期的一次手误不该
+  让整条合成链路停摆。首次构建失败仍然抛出（配置错就是起不来）。
+
+排障看 `/api/version` 的 `engines.registered[].config_source`：它直接写明池是按哪份配置起的。
+
+未配置资源列表时，`TTS_URL`、`INDEXTTS302_API_KEY`、`SILICONFLOW_API_KEY`、`AUTODL_API_TOKEN`、原 base URL/model 变量转译为同一个池；无凭据云端不注册。旧 `TTS_CONCURRENCY` 是每个云资源默认容量（1–8）。`TTS_ENGINE_PREFERRED` 已**失效**（填了只打一条 warning，可直接删除该行），不允许优先级破坏本地利用和公平性。
 
 缓存按资源 id + provider/endpoint/凭据指纹隔离，凭据轮换也不复用旧音色 URI；不自动迁移旧共享缓存，首次上传可能产生原有平台上传费用。不要把同一账号或同一物理 GPU 用多个 id 重复声明，否则无法识别隐藏的共享配额。
 
@@ -59,23 +99,34 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 **自动轮流接段**，不需要额外配置。local 的 `max_concurrency` 恒为 1
 （`ResourceConfig.__post_init__` 强制，`base.py:93`），两台 = 两个并行槽位。想调倾斜度用 `weight`。
 
-### 音色：`shared_voice_paths` 是形式声明，正确性由 `voice_sync` 保证
+### 音色：不再需要声明共享挂载（2026-09-30 删除 `shared_voice_paths`）
 
 `/api/synthesize` 接受的是**服务端路径**，不是字节流 —— 只配多个 URL 不能让节点共享文件。
+所以「多台 local 时音色怎么对齐」曾经靠一个 `shared_voice_paths=true` 的声明来提醒。
 
-多 local 配置必须**逐个**显式 `shared_voice_paths=true`（`factory.py:39-40` 校验，缺一个启动即
-`ValueError`）。但要注意它现在**只有一个读取点，就是那条校验**，合成链路上没有任何地方读它：
+那个字段现在**删掉了**（连同 `factory.py` 里「多 local 必须逐个声明」的校验）。理由：
 
-| 情形 | 写 `true` 后能否工作 | 代价 |
+- 它**只有一个读取点，就是那条校验** —— 合成链路没有任何地方读它，不改变任何行为；
+- 它**证明不了任何事**：远端文件在不在，配置里写 `true` 也不会去验；
+- 它把「服务器怎么做（挂不挂载同一个目录）」写进了 backend 的配置，而那是**服务器行为**。
+
+代价是每条 local 配置多一个会配错、且配错就起不来的必填项 —— 与「减少配错的机会」相反。
+
+正确性由 `voice_sync` 保证（下节），而它是**按台自愈**的：请求落到哪一台，就查那一台的
+`/api/voices`，缺什么补什么。于是「两台共享挂载、第三台没有」这种混合拓扑天然可用 ——
+共享的那两台命中即零回传，没共享的那台首次各传一次。
+
+| 拓扑 | 能否工作 | 代价 |
 | --- | --- | --- |
-| 真做了共享挂载（NFS / 对象存储 / 同机多实例） | ✅ | 首选：零重复存储，命中不回传 |
-| **没做共享挂载** | ✅ | 每台各存一份（`voice_sync` 按台补传）；磁盘按节点数增长，每台首次各传一次 |
+| 真做了共享挂载（NFS / 对象存储 / 同机多实例） | ✅ | 零重复存储，命中不回传 |
+| **没做共享挂载** | ✅ | 每台各存一份（`voice_sync` 按台补传）；磁盘按节点数增长 |
+| 混合（部分共享、部分没有） | ✅ | 同上，逐台结算 |
 
-所以它今天的含义是「**我知道多节点不再自动共享音色、每台会各存一份**」，而不是「你必须先做共享挂载」。
-正确性由 `voice_sync` 兜住（下节）；共享挂载仍值得做，理由是**省掉每台的首次上传**。
+共享挂载仍然值得做，理由只是**省掉每台的首次上传**，而它再也不是一个配置项。
 
-**历史决定（2026-09-29，用户确认）**：多本地节点优先用**共享挂载**解决音色文件；
-不在同一存储域时，2026-09-30 起由 `voice_sync` 按需补传，或用户自行 rsync。
+**历史决定（2026-09-29 用户确认，2026-09-30 修订）**：多本地节点的音色文件优先用共享挂载
+解决；不在同一存储域时由 `voice_sync` 按需补传（或用户自行 rsync）。**共享与否不影响配置** ——
+配置里只需要写清楚有哪几台。
 
 ## 参考音频的按需同步（`voice_sync`，2026-09-30）
 
@@ -86,7 +137,7 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 | | 拉（tts-server → backend） | **推（backend → tts-server）** |
 | --- | --- | --- |
-| 前提 | backend 要有 GPU 机器可达的入口 | 无（`TTS_URL` 早就配好了） |
+| 前提 | backend 要有 GPU 机器可达的入口 | 无（backend 出网即可，不需要额外配置） |
 | 实际 | ❌ backend 常跑在开发机/内网（NAT 后），GPU 机器连不上它 | ✅ 方向本来就是出流量 |
 | 新端点 | 需要一个「按名下载音频」的端点 + 鉴权 | **复用已有的 `/api/voices` 与 `POST /api/voices/upload`** |
 | 新配置 | tts-server 要知道 backend 地址 | 无 |
@@ -282,16 +333,15 @@ curl -s http://127.0.0.1:8000/api/health
 
 1. 服务器上跑 `doctor.py` → 消掉所有 `[ ✗ ]`
 2. 启动 tts-server → `curl /api/health` 确认 `model_loaded: true`
-3. backend 侧改 `TTS_URL` + `TTS_RESOURCES`（见下一节）→ 重启 backend
+3. backend 侧把这一台加进资源列表（见下一节；文件形态不用重启 backend）
 4. backend 侧跑 `tools/check_tts_endpoint.py --probe-synth` → 确认两类检查都过
 
 ## 接入远程 tts-server（实操，2026-09-29）
 
 tts-server 默认 `--host 0.0.0.0`，本身就是 HTTP API —— 所以「公开接口」不缺口子，缺的是网络通道、池配置，以及**音色路径对齐**。
 
-流程对**单台与多台完全通用**，差别只在第 2 小节的配置写法：单台填一行 `TTS_URL`；**再加一台**就把所有
-local 列进 `TTS_RESOURCES` 并给每个加 `shared_voice_paths=true`（新机器上的音色由 `voice_sync` 自动补，
-不用手工同步）。
+流程对**单台与多台完全通用**：单台可以先什么都不配（走旧式转译，见第 2 小节）；
+**再加一台**就往资源列表里加一条 —— 新机器上的音色由 `voice_sync` 自动补，不用手工同步。
 
 ### 1. 网络：不要让 8000 裸奔到公网
 
@@ -303,46 +353,64 @@ tts-server **没有任何鉴权**（无 API Key，CORS `allow_origins=["*"]`）�
 
 端口：2.0 = 8000（`tts-server/`），2.5 = 8001（`tts-server-2.5/`），HTTP 契约相同，适配器与配置格式都不用变。
 
-### 2. 配置：`TTS_URL` 与 `TTS_RESOURCES` 的分工
+### 2. 配置：一份资源列表 + `TTS_URL`（后者一般不用填）
 
-**`TTS_URL` 是单值，只能指一台**，而它不只是「池的地址」—— 它还是**音色管理面**的地址：
+先把职责分清 —— 这也是最容易配错的地方：
 
-| 用途 | 走哪个配置 | 多台时 |
+| 用途 | 读哪个配置 | 多台时 |
 | --- | --- | --- |
-| **合成（池调度）** | `TTS_RESOURCES` 的 local 条目 | 所有 local 自动轮转（本地优先） |
+| **合成（池调度）** | 资源列表里的 `local` 条目 | 所有 local 自动轮转（本地优先） |
 | 预设音色上传 `/api/preset-voices/upload-to-tts` | `TTS_URL` | **只传这一台**，其余靠 `voice_sync` 补 |
 | 音色库增删改 / 试听（`routes/voices.py:99`–`301`） | `TTS_URL` | **只作用于这一台** |
 | `/api/tts/health` 探针 | `TTS_URL` | **只探这一台** |
 
-前端选**预设音色**时，backend 会把文件上传到 `TTS_URL` 那台，并把**服务器返回的路径**存进任务（`SpeakerPanel.tsx:124` / `MonoVoiceCard.tsx:75`）。所以 `TTS_URL` 仍指旧地址时，音色会被传到旧机器 —— 表现为「网络通了、资源池也进去了，一合成就 400 参考音频不存在」。
+**关键事实：合成链路完全不读 `TTS_URL`。** 它只服务上面那三件事（音色管理面 + 遗留的
+旧播客端点）。「backend 是不是太依赖 `TTS_URL`」的答案是：**只依赖在管理面上，合成侧不依赖**。
 
-**单台**（默认形态，什么都不用加）：
+**而且它现在一般不用填**：未显式配置时，`TTS_URL` 自动取资源列表里**第一个 local** 的
+`base_url`（`config.py:_pool_first_local_url`）。维护的唯一真理源就是资源列表 —— 再加一台
+机器不必回来改第二个地方。优先级仍是
+`--tts-url` > 真实环境变量 > `.env` 的 `TTS_URL` > 池里第一个 local > 内置默认。
+
+**单台**（最省事：连资源列表都不用建，走旧式转译）：
 
 ```ini
 TTS_URL=http://<TTS_HOST>:8000
 ```
 
-**加第二台起**：把所有 local 列进 `TTS_RESOURCES`，`TTS_URL` 指向你在 UI 里希望「管音色」的那台：
+**加第二台起**：只需要写清楚「有哪几台」，`TTS_URL` 可以不填。
 
 ```ini
-TTS_URL=http://host-a:8000
-TTS_RESOURCES=[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000","shared_voice_paths":true},{"id":"gpu-b","provider":"local","base_url":"http://host-b:8000","shared_voice_paths":true}]
+# 推荐：写进文件 —— 加减服务器不用重启 backend
+TTS_RESOURCES_FILE=data/config/tts-resources.json
 ```
 
-⚠️ 多个 local 条目**每个都要** `shared_voice_paths=true`，否则 backend 启动即 `ValueError`。
-第二台上一开始什么音色都没有 —— **不用手动同步**，合成分到它时由 `voice_sync` 自动补传（下节）。
-配完必须**重启 backend**（`TTS_RESOURCES` 在进程启动时读一次），然后跑
+```json
+[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000"},
+ {"id":"gpu-b","provider":"local","base_url":"http://host-b:8000"}]
+```
+
+```ini
+# 或者内联一行（改完必须重启 backend）
+TTS_RESOURCES=[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000"},{"id":"gpu-b","provider":"local","base_url":"http://host-b:8000"}]
+```
+
+新增的那台上**一开始什么音色都没有 —— 不用手动同步**：合成分到它时由 `voice_sync` 自动
+补传（下节）。也**不需要声明共享挂载**（该字段 2026-09-30 已删除）。配完跑
 `tools/check_tts_endpoint.py --tts-url <新地址>` 逐台自检。
 
+**只有内联 `TTS_RESOURCES` 需要重启；文件形态改完即生效**（热加载，见「配置放哪里」一节）。
+
 **优先级陷阱（2026-09-30 实际踩到）**：`TTS_URL` 有四个来源，从左到右覆盖 ——
-`--tts-url` 命令行 > 真实环境变量 > **`webui-backend/.env`** > 内置默认 `http://localhost:8000`
-（`app/config.py:52`）。所以**只要启动器传了 `--tts-url`，`.env` 就彻底不生效**。
+`--tts-url` 命令行 > 真实环境变量 > **`webui-backend/.env`** > 池里第一个 local > 内置默认
+`http://localhost:8000`（`app/config.py`）。所以**只要启动器传了 `--tts-url`，`.env` 就彻底不生效**。
 当时 `webui-backend/start.sh` 写死了 `--tts-url http://localhost:8000`，症状是
 「`.env` 明明改了地址，`/api/tts/health` 却永远回 `无法连接 TTS 服务: http://localhost:8000`、
 `/api/version` 里本地资源恒 `unavailable`」（云引擎照常可用，很容易误判成网络问题）。
 `start.sh` 已改为不传该参数。**排查口诀：配置改了不生效，先 `pgrep -fl server.py` 看进程 cmdline 有没有被传参覆盖。**
 
-`TTS_RESOURCES` 在进程启动时读取，改完 `docker compose restart backend`。若 backend 所在机器设了 `HTTP_PROXY`，httpx 默认 `trust_env` 会把该地址也丢给代理（探活会返回代理的 502/`upstream connect failed`）—— 给 TTS 地址配 `NO_PROXY`。
+若 backend 所在机器设了 `HTTP_PROXY`，httpx 默认 `trust_env` 会把 TTS 地址也丢给代理
+（探活会返回代理的 502 / `upstream connect failed`）—— 给 TTS 地址配 `NO_PROXY`。
 
 ### 3. 音色对齐：自检 + 按需同步
 
@@ -371,12 +439,14 @@ python tools/check_tts_endpoint.py --tts-url http://<TTS_HOST>:8000 --probe-synt
 
 ## 摘要与日志
 
-engine_summary 的 pool.resources 提供 id/provider/tier/capacity/weight/inflight/in_cooldown/health/health_age_sec；health 为 unknown/reachable/unavailable/unverified。不返回 API key、凭据环境变量内容、endpoint URL 或缓存指纹。探测/隔离日志只标记资源 id 和状态，不打印异常响应正文。
+engine_summary 的 `config_source` 写明池是按哪份配置起的（内联 / 文件路径 / 旧式变量），排「配了却不生效」时先看它。`pool.resources` 提供 id/provider/tier/capacity/weight/inflight/in_cooldown/health/health_age_sec；health 为 unknown/reachable/unavailable/unverified。不返回 API key、凭据环境变量内容、endpoint URL 或缓存指纹。探测/隔离日志只标记资源 id 和状态，不打印异常响应正文。
 
 ## 离线回归
 
 新增 tests/test_resource_pool.py，覆盖探测合并、TTL、离线本地跳过、恢复、权重公平、跨任务容量、忙态健康、取消、nonretryable、双 runner、异构 PCM、旧 env、缓存隔离、摘要脱敏、多节点契约和空配置；v3 增补语速专项：原生资源不叠加、非原生资源恰好补一次、播客层语速让位给资源层、atempo 链覆盖 0.25×/4×。
 
-测试必须在 import app 前屏蔽 .env 的读取，并使用临时 DATA_DIR 和 fake 凭据；provider 测试用 httpx MockTransport，禁止运行 tools 下 live 测试。配置更新需要重启进程；不得在仍有租约时 reset_registry。
+2026-09-30 增补配置专项：多 local **不再需要**任何声明即可共存、已删字段 `shared_voice_paths` 与 typo 字段都报出**可读的**字段名、`TTS_RESOURCES_FILE` 指向不存在文件时明确报错、**改文件自动重建池**、**写坏文件沿用旧池且改回后自动恢复**、`TTS_URL` 缺省从池内首个 local 派生、`config_source` 三态。
+
+测试必须在 import app 前屏蔽 .env 的读取，并使用临时 DATA_DIR 和 fake 凭据；provider 测试用 httpx MockTransport，禁止运行 tools 下 live 测试。内联 `TTS_RESOURCES` 与旧式变量的更新需要重启进程；文件形态由热加载覆盖。不得在仍有租约时 reset_registry。
 
 `tests/test_voice_sync.py`（41 项）专门覆盖按需音色同步：目录分类、命名规则（含「已带后缀不叠加」与 owner 净化）、音色表 TTL 缓存、以及预检的六条分支（命中 / 本地有则上传 / 两边都缺则明确报错 / 探不到表则降级 / 409 竞态 / 隔离名缺失回退原名）。它把模块用的音色目录换成临时目录，用假 client，**不触网、不依赖 tts-server**。

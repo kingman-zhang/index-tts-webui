@@ -49,8 +49,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_DATA_DIR = str(BACKEND_ROOT / "data")
 
 parser = argparse.ArgumentParser(description="Podcast WebUI Backend")
-parser.add_argument("--tts-url", default=os.environ.get("TTS_URL", "http://localhost:8000"),
-                    help="TTS 服务端地址")
+parser.add_argument("--tts-url", default=os.environ.get("TTS_URL"),
+                    help="音色管理面/旧播客端点指向的 tts-server（合成走资源池，不看它）")
 parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"), help="监听地址")
 parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "3001")), help="监听端口")
 parser.add_argument("--data-dir", default=os.environ.get("DATA_DIR", _DEFAULT_DATA_DIR),
@@ -66,7 +66,94 @@ logger = logging.getLogger("webui-backend")
 if _ENV_LOADED_COUNT:
     logger.info(".env 已加载 %d 项配置（真实环境变量优先）", _ENV_LOADED_COUNT)
 
-TTS_URL = args.tts_url.rstrip("/")
+# ─── 资源池配置源（2026-09-30 收敛为「一份配置」）─────────────
+# 自建 tts-server / 302.ai / SiliconFlow / autodl.art 都是**同一种东西**：池里的一条资源。
+# 所以它们只有一种写法（一个 JSON 列表），没有第二套变量名要记。
+#
+# 三种形态（优先级即此顺序，见 engines/factory.py:_resource_specs）：
+#   "env"    TTS_RESOURCES 内联 JSON          —— 启动读一次，改它必须重启
+#   "file"   TTS_RESOURCES_FILE 指向的 JSON   —— **支持热加载**，改文件即生效（推荐）
+#   "legacy" 两者都没有                        —— 用旧式分散变量转译（TTS_URL + 各平台 Key）
+def resources_source() -> tuple[str, str | None]:
+    """资源池配置的来源：`(kind, 路径)`。kind ∈ {"env", "file", "legacy"}。
+
+    ⚠️ `TTS_RESOURCES` 只要**存在**就算配置了（哪怕值是空串）：空值会在解析时明确报错，
+    而**不是**静默退到 legacy —— 否则「手滑写成空」会悄悄换一套账号去合成，
+    这与「配置错误直接失败，不静默退回其它账号」的原则一致。
+    """
+    if "TTS_RESOURCES" in os.environ:
+        return "env", None
+    path = (os.environ.get("TTS_RESOURCES_FILE") or "").strip()
+    if path:
+        return "file", path
+    return "legacy", None
+
+
+def resource_file_path() -> Path | None:
+    """`TTS_RESOURCES_FILE` 解析成绝对路径（非 file 形态返回 None）。
+
+    相对路径按 **backend 根**解析、不按 cwd：`DATA_DIR` 曾经缺省成 cwd 相对的
+    `./data`，从错误的目录启动会静默读另一份（空的）data，症状是「配了却不生效」。
+    同一个坑不踩第二次 —— `data/config/tts-resources.json` 这种写法在
+    「cd webui-backend && python server.py」与容器 `WORKDIR=/app` 下都指同一处。
+    """
+    _, raw = resources_source()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else (BACKEND_ROOT / p)
+
+
+def read_resources_text() -> str | None:
+    """读取资源池配置正文；`legacy` 形态返回 None（由调用方按旧变量转译）。"""
+    kind, _ = resources_source()
+    if kind == "env":
+        return os.environ.get("TTS_RESOURCES", "")
+    if kind == "file":
+        p = resource_file_path()
+        if p is None or not p.is_file():
+            raise ValueError(f"TTS_RESOURCES_FILE 指向的文件不存在：{p}")
+        return p.read_text(encoding="utf-8")
+    return None
+
+
+def _pool_first_local_url() -> str | None:
+    """资源池里第一个 local 资源的 base_url —— 音色管理面的默认目标。
+
+    为什么要有这个：多台 tts-server 时，用户维护的**唯一真理源**应该是资源列表；
+    再单独填一条 `TTS_URL` 描述「哪一台管音色」是重复配置，也最容易配错 ——
+    典型症状是音色被传到了旧机器，合成时 400「参考音频不存在」。
+    所以 `TTS_URL` 没显式配置时，直接取池里第一个 local 的地址。
+    """
+    try:
+        raw = read_resources_text()
+    except ValueError:
+        return None   # 文件缺失/读不了：让 factory 去报那条更明确的错
+    if not raw:
+        return None
+    try:
+        items = json.loads(raw)
+    except ValueError:
+        return None   # 非法 JSON 同上
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if isinstance(item, dict) and item.get("provider") == "local" and item.get("base_url"):
+            return str(item["base_url"])
+    return None
+
+
+# TTS 服务地址：**只有音色管理面与旧播客端点读它，合成链路不读**（合成走资源池）。
+# 优先级（高→低）：--tts-url > 真实环境变量 > .env 的 TTS_URL > 资源池里第一个 local > 内置默认。
+# 最后那条兜底是关键：配好资源列表之后不必再手填 TTS_URL，少一处会配错的地方。
+_explicit_tts_url = args.tts_url
+_derived_tts_url = _pool_first_local_url()
+TTS_URL = (_explicit_tts_url or _derived_tts_url or "http://localhost:8000").rstrip("/")
+TTS_URL_SOURCE = ("显式配置（--tts-url / 环境变量 / .env）" if _explicit_tts_url
+                  else "资源池里第一个 local" if _derived_tts_url
+                  else "内置默认")
+logger.info("TTS 服务地址 = %s（来源：%s）；它只服务音色管理与探针，合成走资源池",
+            TTS_URL, TTS_URL_SOURCE)
 
 # TTS 状态栏探测开关：1 = /api/config 才去探 tts-server；0/缺省 = 不探测（前端状态栏静默）
 TTS_STATUS_POLL = os.environ.get("TTS_STATUS_POLL", "0") == "1"

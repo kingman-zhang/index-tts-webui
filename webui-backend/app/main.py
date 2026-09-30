@@ -186,8 +186,16 @@ async def on_startup():
 
 def run():
     import uvicorn
+    try:
+        from .engines.factory import config_source, build_registry
+        pool = [cfg.id for cfg, _ in build_registry().engines[0].resources]
+        source = config_source()
+    except Exception as exc:  # noqa: BLE001 - 横幅不能把启动带崩
+        pool, source = [], f"读取失败：{exc}"
     print(f">> Podcast WebUI Backend")
-    print(f"   TTS URL:  {TTS_URL}")
-    print(f"   Data dir: {args.data_dir}")
-    print(f"   Listen:   {args.host}:{args.port}")
+    print(f"   合成资源池: {pool or '（空！配置有误）'}")
+    print(f"   配置来源:   {source}")
+    print(f"   TTS URL:    {TTS_URL}（音色管理面；合成不走它）")
+    print(f"   Data dir:   {args.data_dir}")
+    print(f"   Listen:     {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
