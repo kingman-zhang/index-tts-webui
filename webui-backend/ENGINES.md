@@ -56,6 +56,91 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 **当前决定（2026-09-29，用户确认）**：多本地节点先用**共享挂载**（NFS / 对象存储挂载 / 同一台机器多实例）解决音色文件；不在同一存储域时由用户自行上传同步。**音色上传接口列为后续待办**，实施前不要假设「只填 URL 就能多机共用音色」。
 
+## 在 GPU 服务器上启动 tts-server（实操，2026-09-30）
+
+### 0. 先纠正认知：tts-server 不是独立服务
+
+`tts-server` **没有自己的运行环境**，它是 index-tts 源码的 HTTP 壳。`server.py` 启动只做三件事：
+
+1. `sys.path.insert(0, <--indextts-home>)` → `from indextts.infer_v2 import IndexTTS2`
+2. 用 `<--model-dir>/config.yaml` 加载模型权重
+3. uvicorn 监听 `<--host>:<--port>`
+
+所以问题不是「要不要另找一台有 index-tts 环境的机器」，而是「**这台机器上的 index-tts 环境是否完整**」。已经能跑 IndexTTS2 的机器直接复用，不要另起一套。
+
+### 1. 四道前置关
+
+| # | 关卡 | 判据 | 缺了会怎样 |
+| --- | --- | --- | --- |
+| ① | index-tts 源码 + venv | `--indextts-home` 下有 `indextts/infer_v2.py`，且 `.venv/bin/python` 里 `import torch` 成功 | `import indextts` 直接失败 |
+| ② | 模型权重 | `--model-dir` 下有 `config.yaml`，且它引用的 checkpoint 文件都在 | **进程照样起来**，`model_loaded=false` |
+| ③ | 4 个额外依赖 | `fastapi` / `uvicorn[standard]` / `pydantic` / `python-multipart` 装在**同一个 venv** | 起不来（ImportError） |
+| ④ | 参考音频目录 | `--voices-dir` 里有 backend 会用到的音色，**路径与 backend 侧一致** | 合成 400 参考音频不存在 |
+
+第 ③ 关安装（venv 必须是第 ① 关那个）：
+
+```bash
+/root/index-tts/.venv/bin/pip install -r tts-server/requirements.txt
+```
+
+### 2. 上机前先体检
+
+`tts-server/doctor.py`（**只读**，不装东西不改文件）把上面四关 + CUDA/ffmpeg/端口/显存/磁盘一次查完，并把结论翻译成下一条命令：
+
+```bash
+# 用 index-tts 的 venv 跑（推荐，才能查到 torch/CUDA）
+/root/index-tts/.venv/bin/python doctor.py
+
+# 路径自动探测不准时手动指定
+/root/index-tts/.venv/bin/python doctor.py \
+  --indextts-home /root/index-tts \
+  --model-dir /mnt/storage/index-tts-data/checkpoints \
+  --voices-dir /mnt/storage/index-tts-data/voices --port 8000
+```
+
+退出码 `0` = 可启动，`1` = 有告警，`2` = 有阻断。加 `--deep` 会真正 `import indextts.infer_v2`（慢，但能提前暴露缺包/版本冲突）。
+
+### 3. 启动
+
+```bash
+cd <tts-server 目录>
+mkdir -p logs
+nohup env HF_ENDPOINT=https://hf-mirror.com \
+  /root/index-tts/.venv/bin/python server.py \
+  --indextts-home /root/index-tts \
+  --model-dir /mnt/storage/index-tts-data/checkpoints \
+  --voices-dir /mnt/storage/index-tts-data/voices \
+  --output-dir /mnt/storage/index-tts-data/outputs \
+  --device cuda:0 --fp16 --host 0.0.0.0 --port 8000 \
+  > logs/tts-server.log 2>&1 &
+```
+
+仓库里也有现成脚本（改开头 4 个路径后 `bash start.sh`；AutoDL 版是 `start_autodl.sh`）。注意 `start_autodl.sh` 里用的是**裸 `python`** —— 没有激活 venv 时它会用系统 python，然后 import torch 失败；用 `doctor.py` 确认解释器那项，或显式改用 venv 绝对路径。
+
+验证（**这一步不能只看端口通**）：
+
+```bash
+curl -s http://127.0.0.1:8000/api/health
+# 必须看到 "model_loaded": true —— 进程起来 ≠ 能用
+```
+
+### 4. 七个真坑（都有代码依据）
+
+1. **模型加载失败不会让进程退出**。`server.py:108-111` 捕获异常后把 `tts` 置 None，服务照常监听、`/api/health` 照常 200，只是 `status="no_model"`。所以「端口通了」是伪验收，必须看 `model_loaded`。
+2. **必须用 venv 的解释器**。`python server.py` 若指向系统 python，`import torch` / `import indextts` 会失败。
+3. **cwd 决定 HF 缓存位置**。老版 v2.0.0 的 `indextts/infer_v2.py` 头几行硬写 `os.environ['HF_HUB_CACHE'] = './checkpoints/hf_cache'` —— **相对路径 + 直接赋值**：会覆盖你 export 的 `HF_HOME`，且跟着启动时的 cwd 走。所以要么在 tts-server 目录下启动并把 `checkpoints/hf_cache` 软链到数据盘（`start_autodl.sh` 的做法），要么用 `tools/prefetch_aux_models.py --cache <该目录>` 预下载。放着不管会把几 GB 辅助模型下到系统盘。
+4. **首次启动要联网拉 4 个辅助模型**（w2v-bert-2.0 ~2.3GB、MaskGCT semantic codec、CAMPPlus、BigVGAN）。国内设 `HF_ENDPOINT=https://hf-mirror.com`；下齐后可 `HF_HUB_OFFLINE=1` 让启动秒过。别把「静默卡住」当成在加载模型。
+5. **ffmpeg 是双人播客的硬依赖**。`podcast_engine._apply_speed` 里 `shutil.which("ffmpeg")` 找不到直接 `RuntimeError`，整个 `/api/podcast` 任务失败；单段 `/api/synthesize` 不需要。
+6. **端口**：2.0 = 8000（`tts-server/`），2.5 = 8001（`tts-server-2.5/`）。两版同时跑会占两份显存。
+7. **服务零鉴权**。见下一节的网络白名单要求 —— 别因为「终于跑起来了」就直接暴露到公网。
+
+### 5. 端到端顺序
+
+1. 服务器上跑 `doctor.py` → 消掉所有 `[ ✗ ]`
+2. 启动 tts-server → `curl /api/health` 确认 `model_loaded: true`
+3. backend 侧改 `TTS_URL` + `TTS_RESOURCES`（见下一节）→ 重启 backend
+4. backend 侧跑 `tools/check_tts_endpoint.py --probe-synth` → 确认两类检查都过
+
 ## 接入一台远程 tts-server（实操，2026-09-29）
 
 tts-server 默认 `--host 0.0.0.0`，本身就是 HTTP API —— 所以「公开接口」不缺口子，缺的是网络通道、池配置，以及**音色路径对齐**。
