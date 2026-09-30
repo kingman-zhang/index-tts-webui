@@ -21,6 +21,7 @@ with patch.object(Path, 'exists', lambda p: False if p.name == '.env' else _orig
                                   NonRetryableSynthesisError)
     from app.engines import base as engine_base
     from app.engines import factory
+    from app.engines.indextts_local import IndexttsLocalEngine
     from app import mono_runner, podcast_runner
 
 
@@ -163,6 +164,33 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(e.probes, 0)
         self.assertEqual(p.resource_snapshot()[0]['health'], 'unverified')
         self.assertNotIn('offline-secret', json.dumps(p.resource_snapshot()))
+
+    async def test_snapshot_explains_why_local_was_skipped(self):
+        """「所有合成都走 art」时，/api/version 必须说清 local 为什么被跳过。
+
+        「连不上」与「连上了、但模型没加载好」要查的地方完全不同（网络/端口/隧道
+        vs GPU 机器上的模型加载日志），而健康位只有一个 bool —— 2026-09-30 用户就是
+        卡在这里：全部走了云端，端点却只回一个 `unavailable`。
+        """
+        local, cloud = Fake(), Fake()
+        local.online = False
+        local.last_health_note = '模型未加载（status=no_model）'
+        p = EnginePoolFacade([(ResourceConfig('gpu', 'local'), local),
+                              (ResourceConfig('art', 'cloud'), cloud)])
+        await p.synthesize_segment(REQ)                       # local 被跳过 ⇒ 全落云端
+        self.assertEqual((local.calls, cloud.calls), (0, 1))
+        snap = {r['id']: r for r in p.resource_snapshot()}
+        self.assertEqual(snap['gpu']['health'], 'unavailable')
+        self.assertIn('no_model', snap['gpu']['health_note'])
+        self.assertIsNone(snap['art']['health_note'])         # 没失败就不该有原因
+
+        local.online = True
+        local.last_health_note = None
+        p.cooldown_until['gpu'] = 0
+        await p.synthesize_segment(REQ)
+        self.assertEqual(local.calls, 1)
+        # 恢复后必须清掉，否则会长期挂着一条已经过期的解释
+        self.assertIsNone({r['id']: r for r in p.resource_snapshot()}['gpu']['health_note'])
 
     async def test_mixed_pcm(self):
         e = Fake()
@@ -587,6 +615,56 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([i['id'] for i in items],
                          ['gpu-a', 'gpu-b', 'art', 'ai302', 'siliconflow'])
         self.assertTrue(all(i.get('provider') for i in items))
+
+
+class LocalHealthNoteTests(unittest.IsolatedAsyncioTestCase):
+    """探活失败的**原因**必须能分辨：连不上 vs 连上了但模型没加载（2026-09-30）。
+
+    两者的排查方向不同（网络/端口 vs GPU 机器上的模型加载日志），健康位只有一个
+    bool 表达不了 —— 所以原因单独带出来，透出到 `/api/version` 与探活日志。
+    """
+
+    @staticmethod
+    def _engine(handler):
+        import httpx
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        return IndexttsLocalEngine('http://gpu:8000', client), client
+
+    async def test_reason_categories(self):
+        import httpx
+        cases = [
+            (lambda req: httpx.Response(200, json={'status': 'ok', 'model_loaded': True}), None),
+            (lambda req: httpx.Response(200, json={'status': 'no_model', 'model_loaded': False}),
+             '模型未加载'),
+            (lambda req: httpx.Response(503), 'HTTP 503'),
+            (lambda req: httpx.Response(200, text='<html>别的服务</html>'), '不是合法 JSON'),
+        ]
+        for handler, expect in cases:
+            engine, client = self._engine(handler)
+            try:
+                ok = await engine.health()
+            finally:
+                await client.aclose()
+            self.assertEqual(ok, expect is None)
+            if expect is None:
+                self.assertIsNone(engine.last_health_note)
+            else:
+                self.assertIn(expect, engine.last_health_note)
+
+    async def test_connection_error_points_at_network(self):
+        """连不上时原因里要出现异常类型 —— 指向网络/端口/隧道，而不是模型。"""
+        import httpx
+
+        def boom(request):
+            raise httpx.ConnectError('Connection refused')
+
+        engine, client = self._engine(boom)
+        try:
+            self.assertFalse(await engine.health())
+        finally:
+            await client.aclose()
+        self.assertIn('连接失败', engine.last_health_note)
+        self.assertIn('ConnectError', engine.last_health_note)
 
 
 if __name__ == '__main__':

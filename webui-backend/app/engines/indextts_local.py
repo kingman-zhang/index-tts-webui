@@ -46,18 +46,41 @@ class IndexttsLocalEngine:
     def __init__(self, tts_url: str, client: httpx.AsyncClient):
         self.tts_url = tts_url.rstrip("/")
         self.client = client
+        # 最近一次探活失败的原因（成功时 None）。由池读取并透出到 /api/version。
+        # 为什么需要它：健康位只有一个 bool，但「连不上」和「连上了、模型没加载好」
+        # 要查的地方完全不同 —— 前者查网络/端口/隧道，后者必须上 GPU 机器看加载日志。
+        # 2026-09-30 用户遇到「所有合成都走 art」，而 /api/version 只说 unavailable，
+        # 就是这个 bool 把关键信息吞掉的。
+        self.last_health_note: str | None = None
 
     async def health(self) -> bool:
         try:
             # 2s 超时：tts-server 离线时 resolve() 不至于在探活上白等 5s
             resp = await self.client.get(f"{self.tts_url}/api/health", timeout=2.0)
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
-            self._apply_capabilities(data)
-            return bool(data.get("model_loaded", True))
-        except Exception:
+        except Exception as exc:
+            self.last_health_note = f"连接失败：{type(exc).__name__}"
             return False
+        if resp.status_code != 200:
+            self.last_health_note = f"HTTP {resp.status_code}"
+            return False
+        try:
+            data = resp.json()
+        except Exception:
+            self.last_health_note = "响应不是合法 JSON（是不是连到了别的服务？）"
+            return False
+        self._apply_capabilities(data)
+        if not bool(data.get("model_loaded", True)):
+            # 关键分支：tts-server 的模型加载**失败不会退进程**（server.py:108-111
+            # 捕获异常后把 tts 置 None），而且加载是**同步阻塞在 uvicorn 启动之前**的
+            # ⇒ 端口既然能通，加载那一步必然已经跑完。所以 status=no_model 读作
+            # 「加载失败」，而不是「还在加载」。
+            self.last_health_note = (
+                f"模型未加载（status={data.get('status') or 'no_model'}）"
+                " —— 端口是通的，去该服务器看启动日志里的 model load failed"
+            )
+            return False
+        self.last_health_note = None
+        return True
 
     def _apply_capabilities(self, health: dict) -> None:
         """按服务**自述**更新本适配器的能力（2026-09-30）。

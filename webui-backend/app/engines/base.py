@@ -349,6 +349,11 @@ class EnginePoolFacade:
         self.cancel_poll_sec = cancel_poll_sec
         self.cooldown_until: dict[str, float] = {}
         self.health_state: dict[str, tuple[bool, float]] = {}
+        # 最近一次探活失败的**原因**（成功时无键）。健康位只有一个 bool，而
+        # 「连不上」与「连上了但模型没加载好」要查的地方完全不同（网络/端口 vs
+        # GPU 机器上的模型加载日志）—— 2026-09-30 用户看到「全部走 art」却拿不到
+        # 任何线索，就是这个 bool 吞掉的。只透出失败原因，不含 URL 与凭据。
+        self.health_note: dict[str, str] = {}
         self._health_tasks: dict[str, asyncio.Task] = {}
         self._condition = asyncio.Condition()
         self._inflight: dict[str, int] = {cfg.id: 0 for cfg, _ in self.resources}
@@ -411,10 +416,17 @@ class EnginePoolFacade:
         except Exception:
             ok = False
         self.health_state[cfg.id] = (ok, time.monotonic())
+        # 失败原因由引擎自己写（`last_health_note`），池只负责留存与透出。
+        note = None if ok else getattr(engine, "last_health_note", None)
+        if note:
+            self.health_note[cfg.id] = note
+        else:
+            self.health_note.pop(cfg.id, None)
         if not ok:
             self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
-        logger.info("[engine] resource=%s probe=%s", cfg.id,
-                    ("reachable" if getattr(engine, "has_free_probe", True) else "unverified") if ok else "unavailable")
+        verdict = ("reachable" if getattr(engine, "has_free_probe", True) else "unverified") if ok else "unavailable"
+        logger.info("[engine] resource=%s probe=%s%s", cfg.id, verdict,
+                    f" —— {note}" if note else "")
         return ok
 
     async def _refresh_health(self) -> None:
@@ -491,6 +503,7 @@ class EnginePoolFacade:
         except Exception as exc:
             self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
             self.health_state.pop(cfg.id, None)
+            self.health_note.pop(cfg.id, None)   # 与健康位同生共死，别留下过期原因
             logger.warning("[engine] resource=%s 合成失败，隔离 %.0fs，不自动重提交", cfg.id, self.cooldown_sec)
             raise NonRetryableSynthesisError(f"资源 {cfg.id} 合成失败，提交状态可能未知，禁止自动重试") from exc
         finally:
@@ -523,6 +536,9 @@ class EnginePoolFacade:
                            "unverified" if not getattr(engine, "has_free_probe", True) else
                            "reachable" if self.health_state.get(cfg.id, (False, 0))[0] else "unknown"),
                 "health_age_sec": round(now - (self.health_state.get(cfg.id) or (None, now))[1], 2),
+                # 探活失败的原因（成功时为 None）。**只放引擎自述的短句**：
+                # 不含 endpoint URL、凭据、响应正文 —— 脱敏契约不变。
+                "health_note": self.health_note.get(cfg.id),
             }
             for cfg, engine in self.resources
         ]

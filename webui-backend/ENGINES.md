@@ -378,6 +378,8 @@ curl -s http://127.0.0.1:8000/api/health
 ### 4. 七个真坑（都有代码依据）
 
 1. **模型加载失败不会让进程退出**。`server.py:108-111` 捕获异常后把 `tts` 置 None，服务照常监听、`/api/health` 照常 200，只是 `status="no_model"`。所以「端口通了」是伪验收，必须看 `model_loaded`。
+   **在 backend 侧的症状是「所有合成都走了云端」**：池要求 `health()` 为真才把 local 算作可用资源，`model_loaded=false` ⇒ 探活失败 ⇒ 该台冷却 120s 被跳过 ⇒ 全部溢出到云端（**付费**）。这不是误判而是保护 —— 模型没加载，提交过去只会失败。
+   查法：`curl -s localhost:3001/api/version` → `engines.registered[].resources[].health_note` 会直接写「模型未加载（status=no_model）」；日志里对应 `[engine] resource=<id> probe=unavailable —— …`。⚠️ 注意**加载是同步阻塞在 uvicorn 启动之前的**（`server.py:95-111` 是模块级代码），所以端口既然能通，`no_model` 就一定是「已加载完、且失败了」，**不是**「还在加载中」—— 别在那儿等。
 2. **必须用 venv 的解释器**。`python server.py` 若指向系统 python，`import torch` / `import indextts` 会失败。
 3. **cwd 决定 HF 缓存位置**。老版 v2.0.0 的 `indextts/infer_v2.py` 头几行硬写 `os.environ['HF_HUB_CACHE'] = './checkpoints/hf_cache'` —— **相对路径 + 直接赋值**：会覆盖你 export 的 `HF_HOME`，且跟着启动时的 cwd 走。所以要么在 tts-server 目录下启动并把 `checkpoints/hf_cache` 软链到数据盘（`start_autodl.sh` 的做法），要么用 `tools/prefetch_aux_models.py --cache <该目录>` 预下载。放着不管会把几 GB 辅助模型下到系统盘。
 4. **首次启动要联网拉 4 个辅助模型**（w2v-bert-2.0 ~2.3GB、MaskGCT semantic codec、CAMPPlus、BigVGAN）。国内设 `HF_ENDPOINT=https://hf-mirror.com`；下齐后可 `HF_HUB_OFFLINE=1` 让启动秒过。别把「静默卡住」当成在加载模型。
@@ -495,7 +497,7 @@ python tools/check_tts_endpoint.py --tts-url http://<TTS_HOST>:8000 --probe-synt
 
 ## 摘要与日志
 
-engine_summary 的 `config_source` 写明池是按哪份配置起的（内联 / 文件路径 / 旧式变量），排「配了却不生效」时先看它。`pool.resources` 提供 id/provider/tier/capacity/weight/inflight/in_cooldown/health/health_age_sec；health 为 unknown/reachable/unavailable/unverified。不返回 API key、凭据环境变量内容、endpoint URL 或缓存指纹。探测/隔离日志只标记资源 id 和状态，不打印异常响应正文。
+engine_summary 的 `config_source` 写明池是按哪份配置起的（内联 / 文件路径 / 旧式变量），排「配了却不生效」时先看它。`pool.resources` 提供 id/provider/tier/capacity/weight/inflight/in_cooldown/health/health_age_sec/**health_note**；health 为 unknown/reachable/unavailable/unverified。`health_note` 只在探活失败时有值，写的是**失败原因**（如「模型未加载（status=no_model）」/「连接失败：ConnectError」/「HTTP 503」），成功或未探活时为 `null`。不返回 API key、凭据环境变量内容、endpoint URL 或缓存指纹。探测/隔离日志只标记资源 id 和状态，不打印异常响应正文。
 
 ## 离线回归
 
