@@ -19,7 +19,8 @@ FP16="--fp16"         # 不需要 FP16 就删掉这行（改成空字符串）
 #    两者的兜底能力也不同：`--cuda-kernel` 失败会自己降级回 torch（只慢不挂），
 #    `--deepspeed` 失败**没有兜底**，会连带整个模型加载失败。
 #    不想折腾就关掉（不改文件）：USE_DEEPSPEED=0 bash start_spacehpc.sh
-USE_DEEPSPEED="${USE_DEEPSPEED:-1}"
+# USE_DEEPSPEED="${USE_DEEPSPEED:-1}"
+USE_DEEPSPEED=0
 USE_CUDA_KERNEL="${USE_CUDA_KERNEL:-1}"
 DEEPSPEED="";    [ "$USE_DEEPSPEED" = "1" ]    && DEEPSPEED="--deepspeed"
 CUDA_KERNEL="";  [ "$USE_CUDA_KERNEL" = "1" ]  && CUDA_KERNEL="--cuda-kernel"
