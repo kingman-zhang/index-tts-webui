@@ -133,13 +133,36 @@ async def save_voice_favorites(payload: FavoriteVoicesModel, user: Optional[dict
     return {"paths": _save_favorite_paths(payload.paths, _favorites_path_for(user))}
 
 
+def _save_local_copy(name: str, content: bytes, user: Optional[dict]) -> Optional[Path]:
+    """把上传的音色**同时**留一份到 backend 本地（`data/voices/`）。
+
+    为什么必须留：合成时 `voice_sync.ensure_voice_on_server()` 只会**从 backend 本地**
+    取源文件，去补齐「当前这一段落到的那台 tts-server 没有」的音色（见
+    `engines/voice_sync.py` 的 `locate_voice`）。若只转发给 `TTS_URL` 那一台而不留本地
+    副本，这个音色就成了**单点**：某段一旦被调度到池内其它 tts-server，补传无原料
+    ⇒ 抛 `VoiceUnavailable` ⇒ 整单失败（2026-10-01 实测，`NonRetryableSynthesisError`）。
+
+    已存在同名文件时**不覆盖**（可能属于别的用户），返回 None 由调用方记录。
+    """
+    LOCAL_VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    dest = LOCAL_VOICES_DIR / name
+    if dest.exists():
+        return None
+    dest.write_bytes(content)
+    if user:
+        meta = _load_voices_meta()
+        meta[dest.name] = {"owner_id": user["user_id"], "uploaded_at": datetime.now().isoformat()}
+        _save_voices_meta(meta)
+    return dest
+
+
 @router.post("/api/voices/upload")
 async def upload_voice(
     file: UploadFile = File(...),
     name: str = Form(None),
     user: Optional[dict] = Depends(get_optional_user),
 ):
-    """上传参考音频，优先转发 TTS；TTS 不可达时才保存到本地。"""
+    """上传参考音频：转发 TTS 后**仍留一份本地副本**；TTS 不可达时只存本地。"""
     original_name = file.filename or "voice.wav"
     original_path = Path(original_name)
     ext = original_path.suffix.lower() or ".wav"
@@ -180,7 +203,26 @@ async def upload_voice(
         if resp.status_code == 200:
             result = resp.json()
             result["name"] = safe_name
-            logger.info("[voice-upload] completed via tts name=%r", safe_name)
+            # 转发成功**也要**留本地副本 —— 否则该音色只能在 TTS_URL 那一台用，
+            # 落到池内其它 tts-server 时 voice_sync 没有源文件可补传（见 _save_local_copy）。
+            try:
+                local = _save_local_copy(safe_name, content, user)
+            except OSError as exc:
+                logger.error(
+                    "[voice-upload] completed via tts name=%r，但**本地副本写入失败**"
+                    "（其它 tts-server 将无法补传该音色）：%s", safe_name, exc,
+                )
+                return result
+            if local is None:
+                logger.info(
+                    "[voice-upload] completed via tts name=%r；本地已有同名副本，未覆盖", safe_name,
+                )
+            else:
+                result["local_path"] = str(local)
+                logger.info(
+                    "[voice-upload] completed via tts name=%r；已留本地副本 path=%s",
+                    safe_name, local,
+                )
             return result
         if resp.status_code not in (404, 405, 502, 503, 504):
             detail = body_preview or f"TTS 服务返回 HTTP {resp.status_code}"
