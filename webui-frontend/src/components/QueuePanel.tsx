@@ -166,7 +166,13 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   }
 
   const cancel = async (id: string) => {
-    await api.cancelQueueTask(id);
+    // 「取消中」的任务再点删除时，后端有两种结果：没人执行 ⇒ 直接删除；
+    // 仍有执行器 ⇒ 只能维持取消请求。后者要让用户看见，否则会以为按钮坏了。
+    const wasCancelling = !!tasks.find(t => t.id === id)?.cancel_requested;
+    const res = await api.cancelQueueTask(id);
+    if (res?.cancelling && wasCancelling) {
+      window.alert("该任务仍有执行器在运行，已再次请求取消；当前分段合成结束后会自动移除。");
+    }
     load();
   };
 
@@ -475,8 +481,12 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                             <RefreshCw className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        {(task.status === "success" || task.status === "failed" || task.status === "interrupted" || task.status === "cancelled") && (
-                          <button onClick={() => cancel(task.id)} className="p-1 text-gray-400 hover:bg-gray-200 rounded" title="删除">
+                        {(task.status === "success" || task.status === "failed" || task.status === "interrupted" || task.status === "cancelled" || cancelling) && (
+                          <button
+                            onClick={() => cancel(task.id)}
+                            className="p-1 text-gray-400 hover:bg-gray-200 rounded"
+                            title={cancelling ? "删除；若该任务已无执行器在运行则直接移除" : "删除"}
+                          >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}

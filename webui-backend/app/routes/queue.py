@@ -317,7 +317,7 @@ async def get_queue_task(task_id: str, user: Optional[dict] = Depends(get_option
 
 @router.delete("/api/queue/{task_id}")
 async def cancel_queue_task(task_id: str, user: Optional[dict] = Depends(get_optional_user)):
-    """取消/删除队列任务。排队中直接删除，运行中标记取消。"""
+    """取消/删除队列任务。排队中直接删除，运行中标记取消，无人执行则直接删除。"""
     if task_id not in qs.queue_tasks:
         raise HTTPException(404, "任务不存在")
     task = qs.queue_tasks[task_id]
@@ -332,13 +332,28 @@ async def cancel_queue_task(task_id: str, user: Optional[dict] = Depends(get_opt
         qs.persist_task(task_id)
         qs.persist_queue_order()
         return {"cancelled": task_id}
-    elif task["status"] == qs.QueueTaskStatus.RUNNING:
-        # 运行中：标记取消。执行器（mono_runner/podcast_runner）在每个分段启动前
-        # 检查该标记——排队中的分段立即放弃，进行中的分段（≤并发数）合成完后终止。
-        task["cancel_requested"] = True
-        task["message"] = "正在取消，等待进行中的合成结束"
-        qs.persist_task(task_id)
-        return {"cancelling": task_id}
+    elif task["status"] in (qs.QueueTaskStatus.RUNNING, qs.QueueTaskStatus.SYNCING):
+        if task_id in qs.running_ids:
+            # 运行中且确有执行器：只能标记取消，等它在分段边界收尾。
+            # 执行器（mono_runner/podcast_runner）在每个分段启动前检查该标记——
+            # 排队中的分段立即放弃，进行中的分段（≤并发数）合成完后终止。
+            # 不能强杀：已提交的云端分段已经付费。
+            task["cancel_requested"] = True
+            task["message"] = "正在取消，等待进行中的合成结束"
+            qs.persist_task(task_id)
+            return {"cancelling": task_id}
+        # 状态是「运行中」但 running_ids 里没有它 ⇒ 没有任何执行器在管这个任务
+        # （进程重启遗留、或执行器异常退出）。这种情况下再设 cancel_requested
+        # 也永远无人检查：旧代码只标记就返回，用户每次点删除都只是重复打标记，
+        # 任务永远删不掉、还退不了积分（2026-10-02 修）。
+        # `running_ids` 是「有活执行器」的唯一权威标志，用它区分僵尸与真在跑。
+        refund_task_points(task)
+        qs.queue_tasks.pop(task_id, None)
+        qs.delete_persisted_task(task_id)
+        if task_id in qs.queue_order:
+            qs.queue_order.remove(task_id)
+            qs.persist_queue_order()
+        return {"deleted": task_id, "orphan": True}
     else:
         # 已完成/失败：从列表和磁盘删除
         del qs.queue_tasks[task_id]

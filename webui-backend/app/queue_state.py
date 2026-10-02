@@ -144,13 +144,21 @@ def load_persisted_tasks() -> None:
                 queue_order.append(task_id)
             # WebUI 重启后，带 TTS task id 的运行任务由启动逻辑恢复轮询。
             elif data.get("status") in (QueueTaskStatus.RUNNING, QueueTaskStatus.SYNCING):
-                if data.get("kind") == "mono":
-                    # 配音任务在 backend 进程内执行，无法跨重启恢复
-                    data["status"] = QueueTaskStatus.INTERRUPTED
-                    data["message"] = "服务重启中断，可重新提交"
-                else:
+                if data.get("tts_task_id"):
+                    # 遗留的 tts-server 轮询任务：main 的启动逻辑会用 resume_polling 接管
                     data["status"] = QueueTaskStatus.RUNNING
                     data["message"] = data.get("message") or "WebUI 重启后恢复"
+                else:
+                    # 在 backend 进程内合成的任务（mono / podcast）无法跨重启恢复。
+                    #
+                    # ⚠️ 判据必须是 tts_task_id，不能是 kind（2026-10-02 修）。
+                    # podcast 早就改成 backend 进程内合成（_execute_task → run_podcast_task），
+                    # 和 mono 一样没有任何跨重启接管路径；旧代码按 kind 分流，把 podcast
+                    # 任务永远留成 RUNNING —— 启动后没有任何代码再碰它，`cancel_requested`
+                    # 也永远无人检查 ⇒ 前端卡在「取消中」且删除不了（见 routes/queue.py 的
+                    # 孤儿分支）。恢复轮询的唯一真实判据是「有没有 tts_task_id」。
+                    data["status"] = QueueTaskStatus.INTERRUPTED
+                    data["message"] = "服务重启中断，可重新提交"
         except Exception as e:
             logger.warning("[queue] load persisted task failed file=%s error=%s", f, e)
     logger.info("[queue] loaded %d persisted tasks", len(queue_tasks))
