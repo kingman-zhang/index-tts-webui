@@ -15,19 +15,28 @@
 GPU 机器连不上它；而反方向本来就通（`TTS_URL` 已配、`POST /api/voices/upload` 已存在），
 所以由 backend 在**提交前**补齐即可 —— 不需要 backend 对外、不需要新端点、不需要新配置。
 
-## 命名规则（2026-09-30 与用户确认）
+## 命名规则（2026-10-02 修订：用户音色改「id 化」）
 
 | 类别 | 目录 | 归属 | 服务器上的文件名 |
 |---|---|---|---|
 | 预设音色 | `data/preset-voices/`（含 `emotions/`） | 全员共享 | **原名** |
 | BreezeBlue | `data/breezeblue/audio/` | 全员共享（310 条） | **原名** |
-| 用户自上传 | `data/voices/` | **用户独有** | **`{名}__{member_id}{后缀}`** |
+| 用户音色·新结构 | `data/voices/<user_id>/<voice_id>.wav` | **用户独有** | **`{user_id}_{voice_id}{后缀}`** |
+| 用户音色·老结构 | `data/voices/<名>.wav`（平铺） | **用户独有** | **`{名}__{member_id}{后缀}`**（保持旧规则） |
 
-只有第三类需要隔离：共享音色「同名即同内容」，而两个用户可能各有一个名字相同、
-内容不同的自定义音色 —— 直接用原名上传会互相覆盖（谁先传谁占坑，后传的静默改变
-前者的音色）。
+只有用户音色需要隔离：共享音色「同名即同内容」，而两个用户可能各有一个名字相同、
+内容不同的自定义音色 —— 直接用原名上传会互相覆盖。
 
-**未知目录**（既不在上面几处、也不在 `VOICE_FALLBACK_DIRS`）按**用户独有**处理：
+**两种用户结构并存**（用户 2026-10-02 明确选择「存量不迁移」，见 `app/voice_store.py`）：
+判定依据是**文件在不在用户子目录里**（`data/voices/<owner>/x.wav` 相对根目录有两段），
+不需要任何额外元数据：
+
+- 新结构 → `{user_id}_{voice_id}{后缀}`。因为本地文件名就是 `{voice_id}`，
+  **显示名改了也不影响它** ⇒ 重命名不需要碰 tts-server。
+- 老结构 → 保持 `{名}__{member_id}{后缀}` 不变。这条**绝不能改**：老任务里存的是
+  服务器绝对路径，一旦改名，那些任务会全部失配。
+
+**未知目录**（既不在上面几处、也不在 `VOICE_FALLBACK_DIRS`）按**用户独有·老结构**处理：
 安全优先 —— 宁可多占一点磁盘，也不要串音。
 
 ## 与「服务自述能力」的关系
@@ -128,6 +137,9 @@ def locate_voice(voice_path: str) -> VoiceLocation:
     先看 `voice_path` 本身是否可读（此时按它所在目录定类别，这解决了
     「拿到的就是 backend 绝对路径」的正常情形）；读不到再按 basename 在
     backend 的音色目录里找同名替身（这解决了陈旧相对路径与跨机路径）。
+
+    用户音色有**两种落点**：老结构平铺在 `data/voices/` 下，新结构在
+    `data/voices/<user_id>/` 下 —— 后者要再下潜一层才找得到。
     """
     p = Path(voice_path)
     if p.is_file():
@@ -136,25 +148,63 @@ def locate_voice(voice_path: str) -> VoiceLocation:
         cand = base / p.name
         if cand.is_file():
             return VoiceLocation(kind, cand)
+        for sub in _user_subdir_matches(base, p.name):
+            return VoiceLocation(USER, sub)
     return VoiceLocation(UNKNOWN, None)
+
+
+def _user_subdir_matches(base: Path, file_name: str):
+    """在 `data/voices/<owner>/` 里找同名文件（新结构音色）。"""
+    if base != LOCAL_VOICES_DIR:
+        return
+    try:
+        for sub in sorted(base.glob(f"*/{file_name}")):
+            if sub.is_file():
+                yield sub
+    except OSError:
+        return
+
+
+def _is_id_layout(path: Path | None) -> bool:
+    """该文件是不是「新结构用户音色」（`data/voices/<owner>/<file>`）。
+
+    判据 = 相对 `data/voices/` 有两段路径。老结构平铺文件只有一段。
+    """
+    if path is None:
+        return False
+    try:
+        rel = path.resolve().relative_to(LOCAL_VOICES_DIR.resolve())
+    except (ValueError, OSError):
+        return False
+    return len(rel.parts) == 2
 
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
-def target_server_name(local_name: str, kind: str, owner_id: str | None) -> str:
+def target_server_name(
+    local_name: str, kind: str, owner_id: str | None, *, id_layout: bool = False
+) -> str:
     """算出该音色在 tts-server 上**应该**叫什么。
 
-    共享类（预设 / BreezeBlue），或拿不到 owner 信息时 → 原名（与旧行为一致）；
-    独有类（用户自上传 + 未知目录）→ `{名}__{owner}{后缀}`，从命名上杜绝串音。
+    - 共享类（预设 / BreezeBlue），或拿不到 owner 信息 → 原名（与旧行为一致）；
+    - 用户音色·新结构（`id_layout=True`）→ `{owner}_{voice_id}{后缀}`；
+    - 用户音色·老结构 / 未知目录 → `{名}__{owner}{后缀}`（**保持旧规则**，
+      老任务里存的服务器路径才不会失配）。
 
-    已经是「本 owner 的隔离名」时不再叠加后缀 —— 否则二次运行（任务里存的已是
-    服务器路径）会得到 `x__u_1__u_1.wav` 这种永远匹配不上的名字。
+    `id_layout` 由**文件实际落点**判定（见 `_is_id_layout`），不依赖任何元数据。
+
+    已经是目标形态时不再叠加前缀/后缀 —— 否则二次运行（任务里存的已是服务器路径）
+    会得到 `x__u_1__u_1.wav` / `u_1_u_1_x.wav` 这种永远匹配不上的名字。
     """
     if kind == SHARED or not owner_id:
         return local_name
     p = Path(local_name)
     owner = _UNSAFE.sub("_", owner_id).strip("_") or "anon"
+    if id_layout:
+        if p.stem.startswith(f"{owner}_"):
+            return local_name
+        return f"{owner}_{p.stem}{p.suffix}"
     if p.stem.endswith(f"__{owner}"):
         return local_name
     return f"{p.stem}__{owner}{p.suffix}"
@@ -245,7 +295,12 @@ async def ensure_voice_on_server(
 
     name = Path(raw).name
     location = locate_voice(raw)
-    target = target_server_name(name, location.kind, voice.owner_id)
+    # `id_layout` 决定用户音色用哪套服务器命名（新 `{owner}_{id}` / 老 `{名}__{owner}`）。
+    # 判据是**文件实际落点**，所以「任务里存的是服务器路径、backend 也有副本」这种
+    # 常见情形也能正确判定 —— 那时 locate_voice 会在 data/voices/ 下找到替身。
+    target = target_server_name(
+        name, location.kind, voice.owner_id, id_layout=_is_id_layout(location.local_file)
+    )
 
     try:
         table = await _load_server_voices(client, tts_url)

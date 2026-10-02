@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -12,7 +10,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
 
 from ..config import (
     DATA_DIR,
@@ -26,10 +23,24 @@ from ..config import (
 from ..models import FavoriteVoicesModel, SynthesizeRequestModel
 from ..membership import get_optional_user
 from ..membership import service as member_svc
+from ..engines import voice_fanout
+from ..engines.voice_sync import USER as VOICE_USER
+from ..engines.voice_sync import target_server_name
+from ..voice_store import (
+    UserVoiceStore,
+    VoiceNameTaken,
+    VoiceStoreError,
+    is_voice_id,
+    list_owner_ids,
+)
 
 router = APIRouter()
 
 VOICES_META_PATH = DATA_DIR / "voices_meta.json"  # 本地上传音色的归属记录 {文件名: {owner_id, uploaded_at}}
+
+# 参考音频上传大小上限：45 分钟 48kHz 单声道 wav 也才 ~250MB，而音色参考音频
+# 通常 <10MB。给一个宽松上限只为挡住「误传整张专辑」把后端读进内存打爆。
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 def _isolation_on() -> bool:
@@ -85,23 +96,67 @@ def _save_favorite_paths(paths: list[str], path: Optional[str] = None) -> list[s
     return normalized
 
 
+def _user_voice_records(owner_id: str) -> list[dict]:
+    """新结构用户音色（`data/voices/<user_id>/index.json`）→ 前端 VoiceFile 形态。"""
+    try:
+        records = UserVoiceStore(owner_id).list()
+    except VoiceStoreError as exc:
+        logger.warning("[voices] 读取用户音色库失败 owner=%s: %s", owner_id, exc)
+        return []
+    return [
+        {
+            "name": r["name"],
+            "path": r["path"],
+            "size_kb": r["size_kb"],
+            "source": "custom",
+            "renameable": True,
+            "deletable": True,
+            "scope": "user",          # 「我的音色」只认这个标记
+            "voice_id": r["voice_id"],
+            # 试听走 `/api/audio/{文件名}`；显示名与文件名解耦后必须显式给
+            "preview_name": r["preview_name"],
+        }
+        for r in records
+    ]
+
+
 @router.get("/api/voices")
 async def list_voices(user: Optional[dict] = Depends(get_optional_user)):
-    """列出参考音频：合并 TTS 服务和本地 data/voices/ 的列表。
+    """列出参考音频：三段拼接，并用 `scope` 标明**它属于谁**。
 
-    注意：TTS 服务侧音色库为共享池（tts-server 无用户体系），预置与经 TTS
-    上传的音色对所有用户可见；backend 本地 data/voices/ 下的自定义音色按
-    归属记录（voices_meta.json）过滤，只显示当前用户自己的。
+    2026-10-02 修订（用户需求第 4 条）：**「我的音色」必须只来自 backend**。
+    以前这里把 tts-server 的列表原样并进来，于是「我的音色」里会混着共享池里的
+    预置音色、甚至别的用户早期上传的音色 —— 用户看到一个不属于他的列表。
+
+    所以现在每项都带 `scope`：
+
+    - `"library"` —— tts-server 上的（预置音色、BreezeBlue、历史转发上传的音色）。
+      仍是共享池，任何用户都能选用，但**不再出现在「我的音色」里**。
+    - `"user"` —— backend 本地属于当前用户的音色（新结构 `data/voices/<uid>/`，
+      或老结构 `data/voices/*.wav` + `voices_meta.json` 归属命中）。
     """
     voices = []
-    # 尝试从 TTS 服务获取
+    # ① tts-server 的共享池
     try:
         resp = await http_client.get(f"{TTS_URL}/api/voices", timeout=10.0)
         if resp.status_code == 200:
-            voices.extend(resp.json().get("voices", []))
+            for item in resp.json().get("voices", []) or []:
+                if isinstance(item, dict):
+                    voices.append({**item, "scope": "library"})
     except Exception:
         pass
-    # 合并本地保存的音频（去重；隔离开启时只显示当前用户上传的）
+
+    # ② 新结构用户音色（index.json）
+    if _isolation_on():
+        owners = [user["user_id"]] if user else []
+    else:
+        # 隔离未开启（本地开发）：所有用户的音色都可见，与老结构行为一致
+        owners = list_owner_ids()
+    for owner in owners:
+        voices.extend(_user_voice_records(owner))
+
+    # ③ 老结构平铺音色（data/voices/*.wav + voices_meta.json 归属过滤）
+    #    刻意**保留**：结构不迁移（用户 2026-10-02 决定），存量音色继续可读可删。
     existing_names = {v.get("name") for v in voices}
     if LOCAL_VOICES_DIR.exists():
         for ext in ("*.wav", "*.mp3", "*.flac", "*.ogg", "*.webm"):
@@ -117,6 +172,8 @@ async def list_voices(user: Optional[dict] = Depends(get_optional_user)):
                     "source": "custom",
                     "renameable": True,
                     "deletable": True,
+                    "scope": "user",
+                    "preview_name": f.name,
                 })
     return {"voices": voices, "count": len(voices)}
 
@@ -133,36 +190,27 @@ async def save_voice_favorites(payload: FavoriteVoicesModel, user: Optional[dict
     return {"paths": _save_favorite_paths(payload.paths, _favorites_path_for(user))}
 
 
-def _save_local_copy(name: str, content: bytes, user: Optional[dict]) -> Optional[Path]:
-    """把上传的音色**同时**留一份到 backend 本地（`data/voices/`）。
-
-    为什么必须留：合成时 `voice_sync.ensure_voice_on_server()` 只会**从 backend 本地**
-    取源文件，去补齐「当前这一段落到的那台 tts-server 没有」的音色（见
-    `engines/voice_sync.py` 的 `locate_voice`）。若只转发给 `TTS_URL` 那一台而不留本地
-    副本，这个音色就成了**单点**：某段一旦被调度到池内其它 tts-server，补传无原料
-    ⇒ 抛 `VoiceUnavailable` ⇒ 整单失败（2026-10-01 实测，`NonRetryableSynthesisError`）。
-
-    已存在同名文件时**不覆盖**（可能属于别的用户），返回 None 由调用方记录。
-    """
-    LOCAL_VOICES_DIR.mkdir(parents=True, exist_ok=True)
-    dest = LOCAL_VOICES_DIR / name
-    if dest.exists():
-        return None
-    dest.write_bytes(content)
-    if user:
-        meta = _load_voices_meta()
-        meta[dest.name] = {"owner_id": user["user_id"], "uploaded_at": datetime.now().isoformat()}
-        _save_voices_meta(meta)
-    return dest
-
-
 @router.post("/api/voices/upload")
 async def upload_voice(
     file: UploadFile = File(...),
     name: str = Form(None),
     user: Optional[dict] = Depends(get_optional_user),
 ):
-    """上传参考音频：转发 TTS 后**仍留一份本地副本**；TTS 不可达时只存本地。"""
+    """上传参考音频到**当前用户的音色库**，并广播到池内所有 tts-server。
+
+    2026-10-02 起的行为（用户需求第 1/2 条）：
+
+    1. **落 backend**：`data/voices/<user_id>/<voice_id><ext>` + 该用户的 `index.json`
+       （显示名只在索引里 ⇒ 以后改名不用动文件）；
+    2. **广播**：以 `{user_id}_{voice_id}{ext}` 为名推给池内**所有** local tts-server，
+       失败只记日志、不影响上传结果（漏掉的那台会在首次合成时由 voice_sync 补传）；
+    3. **不再"只转发给 `TTS_URL` 那一台"** —— 那是本项目此前最大的音色单点。
+
+    ⚠️ **必须登录**（用户 2026-10-02 确认）：音色按用户归档，没有"匿名音色"这一档。
+    """
+    if not user:
+        raise HTTPException(401, "请先登录后再上传音色")
+
     original_name = file.filename or "voice.wav"
     original_path = Path(original_name)
     ext = original_path.suffix.lower() or ".wav"
@@ -171,147 +219,178 @@ async def upload_voice(
         raise HTTPException(400, f"仅支持 {allowed} 格式，收到: {ext or '无扩展名'}")
 
     custom_name = (name or "").strip()
-    if custom_name:
-        # 只接受单一文件名，不允许路径分隔符；扩展名统一沿用原始音频扩展名。
-        if Path(custom_name).name != custom_name or re.search(r"[\\\\/:*?\"<>|\x00-\x1f]", custom_name):
-            raise HTTPException(400, "音色名称包含非法文件名字符")
-        custom_stem = Path(custom_name).stem
-        if not custom_stem:
-            raise HTTPException(400, "音色名称不能为空")
-        safe_name = custom_stem + ext
-    else:
-        safe_name = original_path.name
+    display_name = custom_name or original_path.stem or "未命名音色"
 
     content = await file.read()
-    content_type = file.content_type or "application/octet-stream"
+    if not content:
+        raise HTTPException(400, "上传内容为空")
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413, f"音频过大（{len(content) / 1024 / 1024:.1f}MB），上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB"
+        )
+
+    store = UserVoiceStore(user["user_id"])
+    try:
+        record = store.add(content, ext, display_name)
+    except VoiceNameTaken as exc:
+        raise HTTPException(409, str(exc))
+    except VoiceStoreError as exc:
+        raise HTTPException(400, str(exc))
+
     logger.info(
-        "[voice-upload] received original=%r custom_name=%r safe_name=%r ext=%s mime=%s size=%d",
-        original_name, custom_name or None, safe_name, ext, content_type, len(content),
+        "[voice-upload] 已入库 owner=%s id=%s name=%r file=%s size=%d",
+        user["user_id"], record["voice_id"], record["name"], record["file"], len(content),
     )
 
-    try:
-        files = {"file": (safe_name, content, content_type)}
-        form_data = {"name": custom_stem} if custom_name else None
-        resp = await http_client.post(
-            f"{TTS_URL}/api/voices/upload", files=files, data=form_data, timeout=60.0
+    # 广播（尽力而为）：失败不改变上传结果，只回一份明细供排查
+    results = await voice_fanout.broadcast_upload(
+        http_client, Path(record["path"]), record["server_name"]
+    )
+    failed = {url: why for url, why in results.items() if why != "ok" and why != "ok(已存在)"}
+    if results and not failed:
+        logger.info("[voice-upload] 广播完成，%d 台 tts-server 均已就绪", len(results))
+    elif failed:
+        logger.warning(
+            "[voice-upload] 广播有 %d 台未成功（不影响上传；合成时会按需补传）：%s",
+            len(failed), failed,
         )
-        body_preview = resp.text[:1000]
-        logger.info(
-            "[voice-upload] tts-response status=%s target=%s filename=%r body=%s",
-            resp.status_code, TTS_URL, safe_name, body_preview,
-        )
-        if resp.status_code == 200:
-            result = resp.json()
-            result["name"] = safe_name
-            # 转发成功**也要**留本地副本 —— 否则该音色只能在 TTS_URL 那一台用，
-            # 落到池内其它 tts-server 时 voice_sync 没有源文件可补传（见 _save_local_copy）。
-            try:
-                local = _save_local_copy(safe_name, content, user)
-            except OSError as exc:
-                logger.error(
-                    "[voice-upload] completed via tts name=%r，但**本地副本写入失败**"
-                    "（其它 tts-server 将无法补传该音色）：%s", safe_name, exc,
-                )
-                return result
-            if local is None:
-                logger.info(
-                    "[voice-upload] completed via tts name=%r；本地已有同名副本，未覆盖", safe_name,
-                )
-            else:
-                result["local_path"] = str(local)
-                logger.info(
-                    "[voice-upload] completed via tts name=%r；已留本地副本 path=%s",
-                    safe_name, local,
-                )
-            return result
-        if resp.status_code not in (404, 405, 502, 503, 504):
-            detail = body_preview or f"TTS 服务返回 HTTP {resp.status_code}"
-            raise HTTPException(resp.status_code, f"TTS 上传失败: {detail}")
-    except HTTPException:
-        raise
-    except httpx.TimeoutException as exc:
-        logger.warning("[voice-upload] tts-timeout target=%s error=%s; fallback=local", TTS_URL, exc)
-    except httpx.HTTPError as exc:
-        logger.warning("[voice-upload] tts-http-error target=%s error=%s; fallback=local", TTS_URL, exc)
 
-    LOCAL_VOICES_DIR.mkdir(parents=True, exist_ok=True)
-    dest = LOCAL_VOICES_DIR / safe_name
-    if dest.exists():
-        raise HTTPException(409, f"音色名称已存在: {safe_name}")
-    dest.write_bytes(content)
-    if user:
-        meta = _load_voices_meta()
-        meta[dest.name] = {"owner_id": user["user_id"], "uploaded_at": datetime.now().isoformat()}
-        _save_voices_meta(meta)
-    logger.info("[voice-upload] completed locally path=%s size=%d", dest, len(content))
-    return {"name": dest.name, "path": str(dest), "size_kb": round(len(content) / 1024, 1)}
+    return {
+        "voice_id": record["voice_id"],
+        "name": record["name"],
+        "path": record["path"],
+        "size_kb": record["size_kb"],
+        "server_name": record["server_name"],
+        "broadcast_total": len(results),
+        "broadcast_failed": failed,
+    }
+
+
+def _old_style_server_name(file_name: str, owner_id: Optional[str]) -> str:
+    """老结构音色在 tts-server 上的名字（`{名}__{owner}{ext}`）。
+
+    走 `voice_sync.target_server_name` 同一个函数，避免两处规则各写一遍后漂移。
+    """
+    return target_server_name(Path(file_name).name, VOICE_USER, owner_id)
 
 
 @router.post("/api/voices/rename")
 async def rename_voice(request: Request, user: Optional[dict] = Depends(get_optional_user)):
-    """重命名已上传的参考音频。"""
+    """重命名「我的音色」。
+
+    2026-10-02 修订（用户需求第 7 条）：**不再让 tts-server 改名**。
+
+    - **新结构**音色：服务器上的文件名是 `{user_id}_{voice_id}{ext}`，与显示名无关
+      ⇒ 改名只改 `index.json` 里的 `name`，一个文件都不用动。
+    - **老结构**音色：改名只动 backend 本地文件名，并**同步 `voices_meta.json` 的键**
+      （不同步的话归属记录会跟丢，隔离开启时该音色会从列表里消失 —— 这是修掉的一个
+      既有 bug）。服务器上的旧文件**刻意保留**：老任务里存的是服务器绝对路径，
+      改/删它会让那些任务失效；新名字会在下次合成时按需上传。
+    """
     body = await request.json()
-    old_name = body.get("old_name", "")
-    new_name = body.get("new_name", "")
-    if not old_name or not new_name:
+    key = str(body.get("voice_id") or body.get("old_name") or "").strip()
+    new_name = str(body.get("new_name") or "").strip()
+    if not key or not new_name:
         raise HTTPException(400, "缺少参数")
-    # 保留原扩展名
-    ext = Path(old_name).suffix
-    safe_new = Path(new_name).name + ext
-    # 先尝试重命名 TTS 服务器上的自定义音频
-    try:
-        resp = await http_client.post(
-            f"{TTS_URL}/api/voices/rename",
-            json={"old_name": old_name, "new_name": safe_new},
-            timeout=30.0,
-        )
-        if resp.status_code == 200:
-            return resp.json()
-    except Exception:
-        pass
-    # TTS 不可用时，在本地 voices 目录查找
-    old_path = LOCAL_VOICES_DIR / old_name
-    new_path = LOCAL_VOICES_DIR / safe_new
-    if old_path.exists() and not _voice_owner_ok(old_name, user):
+    if not user:
+        raise HTTPException(401, "请先登录后重命名音色")
+
+    if is_voice_id(key):
+        try:
+            record = UserVoiceStore(user["user_id"]).rename(key, new_name)
+        except VoiceNameTaken as exc:
+            raise HTTPException(409, str(exc))
+        except VoiceStoreError as exc:
+            raise HTTPException(404, str(exc))
+        return {
+            "voice_id": record["voice_id"],
+            "name": record["name"],
+            "path": record["path"],
+        }
+
+    # ── 老结构（平铺文件）：只改 backend 本地 ──
+    safe_old = Path(key).name
+    if not safe_old or not _voice_owner_ok(safe_old, user):
         raise HTTPException(404, "音频文件不存在")
+    ext = Path(safe_old).suffix
+    stem = Path(new_name).name
+    if ext and stem.lower().endswith(ext.lower()):
+        stem = stem[: -len(ext)]
+    if not stem:
+        raise HTTPException(400, "音色名称不能为空")
+    safe_new = stem + ext
+    if safe_new == safe_old:
+        return {"name": safe_new, "path": str(LOCAL_VOICES_DIR / safe_new)}
+    old_path = LOCAL_VOICES_DIR / safe_old
+    new_path = LOCAL_VOICES_DIR / safe_new
     if old_path.exists():
         if new_path.exists():
             raise HTTPException(409, "目标名称已存在")
         old_path.rename(new_path)
+        meta = _load_voices_meta()
+        if safe_old in meta:
+            meta[safe_new] = meta.pop(safe_old)
+            _save_voices_meta(meta)
+        logger.info("[voices] 老结构音色改名 %s → %s（服务器上的旧文件保留，不影响老任务）",
+                    safe_old, safe_new)
         return {"name": safe_new, "path": str(new_path)}
     # 在 preset-voices 目录查找（不允许重命名预设）
     for d in [PRESET_VOICES_DIR, PRESET_VOICES_DIR / "emotions"]:
-        p = d / old_name
+        p = d / safe_old
         if p.exists():
             raise HTTPException(400, "预设音色不支持改名，请先上传副本")
-    raise HTTPException(404, f"音频文件不存在: {old_name}")
+    raise HTTPException(404, f"音频文件不存在: {safe_old}")
 
 
-@router.delete("/api/voices/{filename}")
-async def delete_voice(filename: str, user: Optional[dict] = Depends(get_optional_user)):
-    """删除自定义参考音频，禁止删除内置预设。"""
-    safe_name = Path(filename).name
+@router.delete("/api/voices/{key}")
+async def delete_voice(key: str, user: Optional[dict] = Depends(get_optional_user)):
+    """删除「我的音色」（用户需求第 5 条）。
+
+    key 可以是音色 id（`voc_xxxxxxxxxxxx`，新结构）或文件名（老结构）：
+
+    1. **广播删除** tts-server 上的对应文件（池内所有 local 都试一遍，失败只记日志）；
+    2. 删 backend 本地文件；
+    3. 新结构在 `index.json` 里标 `deleted_at`（留痕，列表默认隐藏）；
+       老结构从 `voices_meta.json` 移除归属记录。
+
+    预设音色（`data/preset-voices/`）一律不可删。
+    """
+    safe = Path(key).name
     for d in [PRESET_VOICES_DIR, PRESET_VOICES_DIR / "emotions"]:
-        if (d / safe_name).exists():
+        if (d / safe).exists():
             raise HTTPException(400, "预设音色不支持删除")
-    try:
-        resp = await http_client.delete(f"{TTS_URL}/api/voices/{safe_name}", timeout=30.0)
-        if resp.status_code == 200:
-            return resp.json()
-        if resp.status_code not in (404, 405):
-            raise HTTPException(resp.status_code, resp.json().get("detail", "删除失败"))
-    except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
-        pass
-    target = LOCAL_VOICES_DIR / safe_name
+    if not user:
+        raise HTTPException(401, "请先登录后删除音色")
+
+    if is_voice_id(safe):
+        try:
+            record = UserVoiceStore(user["user_id"]).delete(safe)
+        except VoiceStoreError as exc:
+            raise HTTPException(404, str(exc))
+        broadcast = await voice_fanout.broadcast_delete(http_client, record["server_name"])
+        return {
+            "deleted": safe,
+            "name": record["name"],
+            "server_name": record["server_name"],
+            "broadcast": broadcast,
+        }
+
+    # ── 老结构 ──
+    if not _voice_owner_ok(safe, user):
+        raise HTTPException(404, "自定义音频不存在")
+    target = LOCAL_VOICES_DIR / safe
     if not target.exists() or not target.is_file():
         raise HTTPException(404, "自定义音频不存在")
-    if not _voice_owner_ok(safe_name, user):
-        raise HTTPException(404, "自定义音频不存在")
-    target.unlink()
     meta = _load_voices_meta()
-    meta.pop(safe_name, None)
+    # 服务器上的名字用的是**上传者**的 id（隔离未开启时可能不是当前用户）
+    owner = (meta.get(safe) or {}).get("owner_id") or user["user_id"]
+    server_name = _old_style_server_name(safe, owner)
+    broadcast = await voice_fanout.broadcast_delete(http_client, server_name)
+    target.unlink()
+    meta.pop(safe, None)
     _save_voices_meta(meta)
-    return {"deleted": safe_name}
+    logger.info("[voices] 老结构音色已删除 name=%s 广播=%s", safe, broadcast)
+    return {"deleted": safe, "server_name": server_name, "broadcast": broadcast}
 
 
 @router.post("/api/synthesize")
@@ -349,7 +428,8 @@ async def proxy_audio(filename: str):
             )
     except Exception:
         pass
-    # 本地查找：voices 目录 / breezeblue 音色库 / preset-voices 目录（含 emotions 子目录） / outputs 目录
+    # 本地查找：voices 目录（含新结构的 `<user_id>/` 子目录）/ breezeblue 音色库 /
+    # preset-voices 目录（含 emotions 子目录） / outputs 目录
     search_dirs = [
         LOCAL_VOICES_DIR,
         DATA_DIR / "breezeblue" / "audio",
@@ -361,4 +441,8 @@ async def proxy_audio(filename: str):
         local_path = d / safe_name
         if local_path.exists():
             return FileResponse(local_path, media_type=mime, filename=safe_name)
+        # 新结构用户音色落在 `data/voices/<user_id>/` 下（试听请求带的是文件名本身）
+        for sub in sorted(d.glob(f"*/{safe_name}")):
+            if sub.is_file():
+                return FileResponse(sub, media_type=mime, filename=safe_name)
     raise HTTPException(404, "音频文件不存在")

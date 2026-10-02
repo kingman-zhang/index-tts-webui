@@ -227,9 +227,16 @@ with wave.open("podcast_xxx.wav", "rb") as f:
 ### 音色来源
 
 - TTS 服务器的自定义音色目录：`VOICES_DIR`。
-- WebUI 本地音色目录：`webui-backend/data/voices/`，用于 fallback。
+- WebUI 用户音色库（**「我的音色」的唯一来源**）：`webui-backend/data/voices/<user_id>/`，
+  每个用户一个目录，内含 `index.json`（显示名、音色 id、创建/删除时间）+ `voc_<12hex>.<ext>` 音频文件。
+  上传时同时广播到资源池里所有 `local` tts-server（命名 `{user_id}_{voice_id}{ext}`）。
+- 老结构的平铺文件 `webui-backend/data/voices/*.wav` + `voices_meta.json` **仍然可读可用**
+  （2026-10-02 决定存量不迁移），服务器命名保持 `{名}__{member_id}{ext}`。
 - WebUI 预设音色目录：`webui-backend/data/preset-voices/`。
 - 预设音色通过 `manifest.json` 分为女声、男声、情感参考。
+
+`GET /api/voices` 的每一项都带 `scope`：`user` = backend 里属于当前用户的（即「我的音色」），
+`library` = tts-server 共享池（预置音色 / BreezeBlue / 历史转发上传的音色，可在「音色库」里选用）。
 
 预设音色：
 

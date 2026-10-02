@@ -231,6 +231,11 @@ def _resolve_local_voice(voice_path: str) -> str:
         if cand.is_file():
             logger.warning("[mono] 音色路径本地不可读 %s，改用同名文件 %s", voice_path, cand)
             return str(cand)
+        # 新结构用户音色在 data/voices/<user_id>/ 下，要再下潜一层
+        sub = next((s for s in sorted(d.glob(f"*/{p.name}")) if s.is_file()), None)
+        if sub is not None:
+            logger.warning("[mono] 音色路径本地不可读 %s，改用用户音色 %s", voice_path, sub)
+            return str(sub)
     return voice_path  # 找不到就原样返回，让引擎给出明确报错
 
 

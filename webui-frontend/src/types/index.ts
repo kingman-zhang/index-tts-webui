@@ -77,6 +77,16 @@ export interface PodcastProject {
 
 export type VoiceSource = "custom" | "preset";
 
+/**
+ * 音色归属：
+ * - `user`    = backend 本地属于当前用户的音色（`/api/voices` 里带这个标记的才是「我的音色」）
+ * - `library` = tts-server 共享池里的（预置音色、BreezeBlue、历史转发上传的音色）
+ *
+ * 2026-10-02 起「我的音色」只认 `user`：以前把 tts-server 的列表原样并进来，
+ * 于是别人的音色、共享音色也会出现在「我的音色」里。
+ */
+export type VoiceScope = "user" | "library";
+
 export interface VoiceFile {
   name: string;
   path: string;
@@ -84,6 +94,13 @@ export interface VoiceFile {
   source?: VoiceSource;
   renameable?: boolean;
   deletable?: boolean;
+  /** 归属（见 VoiceScope）；老接口不返回时视为 undefined，按「不在我的音色里」处理 */
+  scope?: VoiceScope;
+  /**
+   * 音色 id（`voc_` + 12 位 hex），**新结构用户音色才有**。
+   * 改名/删除用它当 key（文件名与显示名已解耦）；老结构音色没有，退回用 `name`。
+   */
+  voice_id?: string;
   /** 试听时实际请求的文件名；缺省用 name（BreezeBlue 音色的 name 是显示名，与文件名不同） */
   preview_name?: string;
   /** 预设音色补充元数据（来自 manifest.json） */

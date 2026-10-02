@@ -163,6 +163,18 @@ export function VoicePicker({
     [favoritePaths, allVoices]
   );
 
+  /**
+   * 「我的音色」= **只来自 backend** 的音色（`scope === "user"`）。
+   *
+   * 用户需求 4（2026-10-02）：以前这个 tab 直接用 `voiceFiles`（= `/api/voices` 的
+   * 合并结果），于是 tts-server 上的预置音色、甚至别的用户早期上传的音色都会混进来。
+   * 现在按 scope 过滤：`library`（共享池）仍可在「音色库」里选用，但不属于「我的」。
+   */
+  const myVoices = useMemo(
+    () => voiceFiles.filter(v => v.scope === "user"),
+    [voiceFiles]
+  );
+
   const toggleFavorite = (voice: VoiceFile) => {
     setFavoritePaths(current => {
       const next = current.includes(voice.path)
@@ -224,13 +236,13 @@ export function VoicePicker({
 
   const allInTab: VoiceFile[] = useMemo(() => {
     let list: VoiceFile[] = [];
-    if (tab === "mine") list = voiceFiles;
+    if (tab === "mine") list = myVoices;
     else if (tab === "favorites") list = favoriteVoices;
 
     if (!search.trim()) return list;
     const q = search.toLowerCase();
     return list.filter(f => f.name.toLowerCase().includes(q));
-  }, [tab, search, voiceFiles, favoriteVoices]);
+  }, [tab, search, myVoices, favoriteVoices]);
 
   // 点击外部关闭 ⋮ 菜单
   useEffect(() => {
@@ -244,7 +256,7 @@ export function VoicePicker({
 
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: "library", label: "音色库", count: libVoices.length },
-    { key: "mine", label: "我的音色", count: voiceFiles.length },
+    { key: "mine", label: "我的音色", count: myVoices.length },
     { key: "favorites", label: "收藏音色", count: favoriteVoices.length },
   ];
 

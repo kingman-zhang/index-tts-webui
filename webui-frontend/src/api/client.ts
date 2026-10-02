@@ -59,7 +59,14 @@ export const api = {
     return fetchJSON(`${BASE}/voices`);
   },
 
-  async uploadVoice(file: File, customName?: string): Promise<{ name: string; path: string; size_kb?: number }> {
+  /**
+   * 上传音色：后端存进 `<user_id>/` 用户音色库，并广播到池内所有 local tts-server。
+   * `path` 是 backend 本地绝对路径（合成时由后端按需同步到目标 tts-server）。
+   */
+  async uploadVoice(file: File, customName?: string): Promise<{
+    name: string; path: string; voice_id?: string; server_name?: string;
+    size_kb?: number; broadcast_failed?: Record<string, string>;
+  }> {
     const form = new FormData();
     form.append("file", file);
     if (customName) form.append("name", customName);
@@ -73,16 +80,21 @@ export const api = {
     return fetchJSON(`${BASE}/mono/extract`, { method: "POST", body: form });
   },
 
-  async renameVoice(oldName: string, newName: string): Promise<{ name: string; path: string }> {
+  /**
+   * 重命名音色：`key` 是新结构音色的 `voice_id`（`voc_…`）或老结构的文件名。
+   * 后端只改元数据/本地文件名，**不碰 tts-server**（服务器上的名字由 id 决定）。
+   */
+  async renameVoice(key: string, newName: string): Promise<{ name: string; path: string; voice_id?: string }> {
     return fetchJSON(`${BASE}/voices/rename`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ old_name: oldName, new_name: newName }),
+      body: JSON.stringify({ old_name: key, voice_id: key, new_name: newName }),
     });
   },
 
-  async deleteVoice(name: string): Promise<{ deleted: string }> {
-    return fetchJSON(`${BASE}/voices/${encodeURIComponent(name)}`, { method: "DELETE" });
+  /** 删除音色：key 同上；后端会广播删除到池内所有 local。 */
+  async deleteVoice(key: string): Promise<{ deleted: string; broadcast?: Record<string, string> }> {
+    return fetchJSON(`${BASE}/voices/${encodeURIComponent(key)}`, { method: "DELETE" });
   },
 
   async listVoiceFavorites(): Promise<{ paths: string[] }> {

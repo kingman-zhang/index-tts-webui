@@ -202,6 +202,36 @@ def _text_switches() -> dict:
         return {"error": str(e)}
 
 
+def _voice_management() -> dict:
+    """音色管理的结构版本（2026-10-02 重构）。
+
+    为什么要有这个字段：这次改的是**音色的存储与分发方式**，而改动前后的
+    `/api/voices` 都能正常返回列表、上传也能成功 —— 光看接口通不通分辨不出
+    进程跑的是哪一版：
+
+    - 旧版：上传只转发给 `TTS_URL` 那一台；服务器命名 `{名}__{owner}`；
+      列表里 tts-server 的音色和 backend 的音色混在一起（「我的音色」不纯净）。
+    - 新版（`schema_version = 2`）：上传落 `data/voices/<user_id>/<voice_id>.ext`
+      + 广播到池内所有 local；服务器命名 `{user_id}_{voice_id}{ext}`（与显示名无关
+      ⇒ 改名不用碰 tts-server）；列表用 `scope` 区分「我的」与「共享池」。
+
+    所以报**结构版本**这个取值域，部署自检断言它 >= 2。
+    """
+    try:
+        from .voice_store import USER_VOICES_ROOT
+
+        return {
+            "schema_version": 2,
+            "layout": "data/voices/<user_id>/<voice_id><ext>",
+            "server_naming": "{user_id}_{voice_id}{ext}",
+            "store_root": str(USER_VOICES_ROOT),
+            "legacy_flat_files_supported": True,   # 老结构不迁移，继续可读可删
+        }
+    except Exception as e:  # 自检本身不能把进程带崩
+        logger.warning("[build_info] voice_management 读取失败: %s", e)
+        return {"schema_version": 0, "error": str(e)}
+
+
 def _engines() -> dict:
     """注册了哪些引擎、各自能力、是否在熔断冷却中。
 
@@ -237,5 +267,6 @@ def snapshot() -> dict:
         # 非空 ⇒ 这些文件在进程启动之后被改过，进程里跑的是旧代码
         "stale_sources": stale_sources(),
         "text_pipeline": _text_switches(),
+        "voice_management": _voice_management(),
         "engines": _engines(),
     }

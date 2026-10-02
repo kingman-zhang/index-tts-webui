@@ -180,6 +180,19 @@ def part1_locate() -> None:
         loc = voice_sync.locate_voice("data/voices/根本没有这个.wav")
         check("哪都没有 → unknown + 无本地文件", (loc.kind, loc.local_file), (UNKNOWN, None))
 
+        # ── 新结构用户音色：data/voices/<user_id>/<voice_id>.wav ──
+        sub = t["voices"] / "u_42"
+        sub.mkdir()
+        new_style = sub / "voc_0123456789ab.wav"
+        new_style.write_bytes(b"RIFF")
+        check("新结构子目录 → 仍是 user", voice_sync.locate_voice(str(new_style)).kind, USER)
+        stale = voice_sync.locate_voice("data/voices/voc_0123456789ab.wav")  # 陈旧路径只留文件名
+        check("只给文件名也能下潜找到（新结构）", stale.local_file, new_style)
+        check("下潜找到的仍判 user", stale.kind, USER)
+        check("_is_id_layout 认得子目录", voice_sync._is_id_layout(new_style), True)
+        check("_is_id_layout 不认老结构平铺", voice_sync._is_id_layout(t["voices"] / "mine.wav"), False)
+        check("_is_id_layout 对非用户目录为假", voice_sync._is_id_layout(t["preset"] / "p.mp3"), False)
+
 
 # ─── 2. 命名 ──────────────────────────────────────────────────
 
@@ -207,6 +220,40 @@ def part2_naming() -> None:
         "mine__a_b_c.wav",
     )
     check("无扩展名也能处理", voice_sync.target_server_name("mine", USER, "u_1"), "mine__u_1")
+    # ── 新结构（id 化）用户音色：2026-10-02 起 data/voices/<user_id>/<voice_id>.wav ──
+    check(
+        "新结构 → {user_id}_{voice_id}",
+        voice_sync.target_server_name("voc_0123456789ab.wav", USER, "u_42", id_layout=True),
+        "u_42_voc_0123456789ab.wav",
+    )
+    check(
+        "新结构：已带本 owner 前缀 → 不叠加",
+        voice_sync.target_server_name("u_42_voc_0123456789ab.wav", USER, "u_42", id_layout=True),
+        "u_42_voc_0123456789ab.wav",
+    )
+    check(
+        "新结构：带的是别人前缀 → 仍按自己加（宁可重复也不串音）",
+        voice_sync.target_server_name("u_9_voc_01.wav", USER, "u_42", id_layout=True),
+        "u_42_u_9_voc_01.wav",
+    )
+    check(
+        "id_layout 对共享类无影响",
+        voice_sync.target_server_name("p.mp3", SHARED, "u_42", id_layout=True),
+        "p.mp3",
+    )
+    check(
+        "id_layout 但拿不到 owner → 原名",
+        voice_sync.target_server_name("voc_01.wav", USER, None, id_layout=True),
+        "voc_01.wav",
+    )
+    check(
+        "老结构与新结构不会互相误判（同一 owner）",
+        (
+            voice_sync.target_server_name("mine.wav", USER, "u_42"),
+            voice_sync.target_server_name("mine.wav", USER, "u_42", id_layout=True),
+        ),
+        ("mine__u_42.wav", "u_42_mine.wav"),
+    )
 
 
 # ─── 3. 缓存 ──────────────────────────────────────────────────
@@ -275,6 +322,20 @@ def part4_ensure() -> None:
         b = asyncio.run(voice_sync.ensure_voice_on_server(c, URL, v))
     check("第二次：不再上传/查表", (len(c.uploads), c.list_calls), snapshot)
     check("第二次：返回同一路径", a, b)
+
+    # 4.3b 新结构用户音色（data/voices/<user_id>/<voice_id>.wav）→ {user_id}_{voice_id}
+    voice_sync.reset_cache()
+    with temp_voice_tree() as t:
+        sub = t["voices"] / "u_42"
+        sub.mkdir()
+        local = sub / "voc_0123456789ab.wav"
+        local.write_bytes(b"RIFF")
+        c = FakeClient([])
+        v = VoiceRef(tts_path=str(local), local_path=str(local),
+                     display_name="我的音色A", owner_id="u_42")
+        got = asyncio.run(voice_sync.ensure_voice_on_server(c, URL, v))
+    check("新结构：上传后返回服务器路径", got, "/server/voices/u_42_voc_0123456789ab.wav")
+    check("新结构：上传名 = {user_id}_{voice_id}", c.uploads, ["u_42_voc_0123456789ab.wav"])
 
     # 4.4 本地与服务器都没有 → 明确报错（而不是含糊的 400）
     voice_sync.reset_cache()

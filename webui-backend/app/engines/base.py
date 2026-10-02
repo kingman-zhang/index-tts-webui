@@ -53,8 +53,9 @@ class VoiceRef:
     display_name: str = ""
     # 音色归属（任务里的 member_id）：**只用于本地引擎按需上传时的命名隔离**。
     # 预设音色与 BreezeBlue 是全员共享（同名即同内容），用户自上传音色则是独有的，
-    # 不同用户可能各有一个同名但内容不同的文件 —— 上传到 tts-server 时用
-    # `{音色名}__{owner_id}` 区分，避免互相覆盖（见 engines/voice_sync.py）。
+    # 不同用户可能各有一个同名但内容不同的文件 —— 上传到 tts-server 时按归属加隔离名：
+    # 新结构（`data/voices/<owner>/<voice_id>.wav`）用 `{owner}_{voice_id}`，
+    # 老结构（平铺）保持 `{名}__{owner}`（见 engines/voice_sync.py）。
     # None = 未知/未登录（隔离未开启），此时退化为按原名上传（与旧行为一致）。
     owner_id: Optional[str] = None
 

@@ -118,6 +118,8 @@ print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
+vm = v.get("voice_management") or {}
+print("  音色管理结构   : schema v%s" % vm.get("schema_version"), "|", vm.get("layout"), "| 服务器名", vm.get("server_naming"))
 eng = ((v.get("engines") or {}).get("registered")) or []
 print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
 for e in eng:
@@ -149,6 +151,14 @@ assert (tp.get("num_value_max_digits") or 0) >= 8, (
 # 只有把这张表列出来才知道进程跑的是哪一版。
 assert "第" in (tp.get("num_value_ordinal_markers") or []), (
     "!! 数值层缺序数规则（字段缺失或表里没有「第」）—— 第2章 会被读成「第两章」")
+# voice_management.schema_version 是 2026-10-02「音色 id 化 + 上传广播」引入的新符号。
+# 为什么必须是取值而不是开关：改动前后 `/api/voices` 都能返回列表、上传也都能 200，
+# 光看接口通不通分辨不出来。v2 = 上传落 data/voices/<user_id>/<voice_id> + 广播到池内
+# 所有 local + 服务器命名 {user_id}_{voice_id}；缺字段 = 还是「只转发 TTS_URL 那一台、
+# 文件名即身份」的旧代码（多机池下别的机器拿不到音色，改名会打乱老任务）。
+assert (vm.get("schema_version") or 0) >= 2, (
+    "!! 音色管理还是旧结构（字段缺失或版本 < 2）—— 上传不会广播到池内所有 tts-server，"
+    "多机池下会退化成「只有一台能用」")
 # engines 字段是 2026-09-29 引擎层拆分后的新符号；注册数为 0 意味着任何合成都必然失败
 assert eng, "!! 没有任何 TTS 引擎被注册 —— 所有合成都将失败（检查 .env 里的 API Key / Token）"
 # pool_schema_version=3 / speed_guaranteed 是 2026-09-29「语速只在资源侧应用一次」
@@ -338,6 +348,8 @@ print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
+vm = v.get("voice_management") or {}
+print("  音色管理结构   : schema v%s" % vm.get("schema_version"), "|", vm.get("layout"), "| 服务器名", vm.get("server_naming"))
 eng = ((v.get("engines") or {}).get("registered")) or []
 print("  引擎优先级     :", " → ".join(e.get("name", "?") for e in eng) or "!! 无引擎")
 for e in eng:

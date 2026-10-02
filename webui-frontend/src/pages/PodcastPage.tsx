@@ -10,7 +10,7 @@ import {
   defaultProject, defaultEmotion, defaultParams, defaultSilence,
   textToPodcastSegments, podcastScriptIssues, podcastLinesToScript,
   dialogTextToScript, emotionFromLabel, billableChars, estimatePoints,
-  type PodcastProject, type PodcastLine, type SpeakerConfig,
+  type PodcastProject, type PodcastLine, type SpeakerConfig, type VoiceFile,
 } from "../types";
 import { useAuth, refreshUser } from "@/lib/auth";
 
@@ -90,20 +90,26 @@ export default function PodcastPage() {
     }
   };
 
-  const handleRenameVoice = async (oldName: string, newName: string) => {
-    const result = await api.renameVoice(oldName, newName);
+  const handleRenameVoice = async (voice: VoiceFile, newName: string) => {
+    // 新结构音色用 voice_id 当 key（显示名与文件名已解耦）；老结构退回文件名
+    await api.renameVoice(voice.voice_id ?? voice.name, newName);
     await reloadVoices();
-    showToast(`音频已改名：${result.name}`);
+    // 角色里存的是显示名，改名后同步一下，否则卡片上还显示旧名
+    setVoices(v => ({
+      A: v.A.voice_path === voice.path ? { ...v.A, voice_name: newName } : v.A,
+      B: v.B.voice_path === voice.path ? { ...v.B, voice_name: newName } : v.B,
+    }));
+    showToast(`音频已改名：${newName}`);
   };
 
-  const handleDeleteVoice = async (name: string) => {
-    await api.deleteVoice(name);
+  const handleDeleteVoice = async (voice: VoiceFile) => {
+    await api.deleteVoice(voice.voice_id ?? voice.name);
     await reloadVoices();
-    setVoices(v => ({
-      A: v.A.voice_name === name ? { ...v.A, voice_name: null, voice_path: null } : v.A,
-      B: v.B.voice_name === name ? { ...v.B, voice_name: null, voice_path: null } : v.B,
-    }));
-    showToast(`已删除音色：${name}`);
+    // 按 path 判断（新结构下 voice_name 是显示名，拿它比较会漏掉）
+    const cleared = (c: SpeakerConfig) =>
+      c.voice_path === voice.path ? { ...c, voice_name: null, voice_path: null } : c;
+    setVoices(v => ({ A: cleared(v.A), B: cleared(v.B) }));
+    showToast(`已删除音色：${voice.name}`);
   };
 
   // ─── 项目存档（后端存储；画布文本随项目保存） ───────────────

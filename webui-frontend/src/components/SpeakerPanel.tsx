@@ -22,8 +22,12 @@ interface SpeakerPanelProps {
   onChange: (key: "A" | "B", config: Partial<SpeakerConfig>) => void;
   voiceFiles: VoiceFile[];
   onUpload: (file: File, customName?: string) => Promise<{ name: string; path: string } | null>;
-  onRenameVoice: (oldName: string, newName: string) => Promise<void>;
-  onDeleteVoice: (name: string) => Promise<void>;
+  /**
+   * 改名/删除都传整个 voice：新结构音色的 key 是 `voice_id`（与显示名解耦），
+   * 而调用方清理角色状态时要按 `path` 匹配 —— 只传名字两边都对不上。
+   */
+  onRenameVoice: (voice: VoiceFile, newName: string) => Promise<void>;
+  onDeleteVoice: (voice: VoiceFile) => Promise<void>;
 }
 
 const COLORS = {
@@ -51,8 +55,8 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   onChange: (c: Partial<SpeakerConfig>) => void;
   voiceFiles: VoiceFile[];
   onUpload: (file: File, customName?: string) => Promise<{ name: string; path: string } | null>;
-  onRenameVoice: (oldName: string, newName: string) => Promise<void>;
-  onDeleteVoice: (name: string) => Promise<void>;
+  onRenameVoice: (voice: VoiceFile, newName: string) => Promise<void>;
+  onDeleteVoice: (voice: VoiceFile) => Promise<void>;
   presetVoices: PresetVoices;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -277,11 +281,11 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
         onSelect={handleVoiceSelect} onPreview={preview} playingName={playingName}
         onRename={voice => {
           const next = window.prompt("请输入新的音色名称", voice.name.replace(/\.[^.]+$/, ""));
-          if (next?.trim()) onRenameVoice(voice.name, next.trim()).catch(e => alert("改名失败: " + e.message));
+          if (next?.trim()) onRenameVoice(voice, next.trim()).catch(e => alert("改名失败: " + e.message));
         }}
         onDelete={voice => {
           if (window.confirm(`确定删除音色“${voice.name}”吗？删除后不可恢复。`)) {
-            onDeleteVoice(voice.name).catch(e => alert("删除失败: " + e.message));
+            onDeleteVoice(voice).catch(e => alert("删除失败: " + e.message));
           }
         }} />
 
