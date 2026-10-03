@@ -129,6 +129,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     total: kindTasks.length,
     success: kindTasks.filter(t => t.status === "success").length,
     failed: kindTasks.filter(t => t.status === "failed" || t.status === "interrupted").length,
+    cancelled: kindTasks.filter(t => t.status === "cancelled").length,
     queued: kindTasks.filter(t => t.status === "queued").length,
     paused: kindTasks.filter(t => t.status === "paused").length,
   };
@@ -177,7 +178,9 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   };
 
   const clearFinished = async () => {
-    await api.clearFinishedTasks();
+    // 只清空当前 tab 的类型：双人播客与单人配音各自独立，
+    // 否则在播客页点一下会把配音页的已完成任务一起清掉。
+    await api.clearFinishedTasks(activeKind);
     load();
   };
 
@@ -534,8 +537,10 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
               })}
             </div>
 
-            {/* 清空按钮 */}
-            {(stats.success > 0 || stats.failed > 0) && !activeFilter && (
+            {/* 清空按钮：可见条件必须覆盖后端会清掉的全部终态
+                （success/failed/interrupted/cancelled）——
+                漏一个就会出现「按钮可见却清不掉」或「有任务但按钮不出现」。 */}
+            {(stats.success > 0 || stats.failed > 0 || stats.cancelled > 0) && !activeFilter && (
               <Button variant="outline" size="sm" icon={Trash2} onClick={clearFinished} className="w-full">
                 清空已完成任务
               </Button>

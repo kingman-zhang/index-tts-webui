@@ -353,8 +353,9 @@ export const api = {
   async cancelQueueTask(taskId: string): Promise<any> {
     return fetchJSON(`${BASE}/queue/${taskId}`, { method: "DELETE" });
   },
-  async clearFinishedTasks(): Promise<{ cleared: number; remaining: number }> {
-    return fetchJSON(`${BASE}/queue`, { method: "DELETE" });
+  async clearFinishedTasks(kind?: "podcast" | "mono"): Promise<{ cleared: number; remaining: number }> {
+    const q = kind ? `?kind=${kind}` : "";
+    return fetchJSON(`${BASE}/queue${q}`, { method: "DELETE" });
   },
   async reorderQueue(taskIds: string[], kind?: "podcast" | "mono"): Promise<{ queue_order: string[] }> {
     return fetchJSON(`${BASE}/queue/reorder`, {

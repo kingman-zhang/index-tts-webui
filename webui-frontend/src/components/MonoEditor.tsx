@@ -1083,8 +1083,10 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
           )}
         </div>
 
-        {/* 工具条 */}
-        <div className="shrink-0 border-t border-gray-100 bg-white px-5 py-3 flex items-center gap-2">
+        {/* 工具条：允许换行。子项都是 shrink-0（药丸按钮内部不折行），
+            中列变窄时若不换行会整体溢出、被上层 overflow-hidden 裁掉右侧的
+            「生成配音」——那是主操作，绝不能看不见。 */}
+        <div className="shrink-0 border-t border-gray-100 bg-white px-5 py-3 flex flex-wrap items-center gap-2">
           {speakerNames &&
             (["A", "B"] as const).map(k => (
               <button

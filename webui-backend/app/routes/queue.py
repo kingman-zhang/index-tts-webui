@@ -362,10 +362,18 @@ async def cancel_queue_task(task_id: str, user: Optional[dict] = Depends(get_opt
 
 
 @router.delete("/api/queue")
-async def clear_finished_tasks(user: Optional[dict] = Depends(get_optional_user)):
-    """清空当前用户已完成/失败/取消的任务。"""
+async def clear_finished_tasks(kind: Optional[str] = None, user: Optional[dict] = Depends(get_optional_user)):
+    """清空当前用户已结束的任务（成功/失败/中断/取消）。
+
+    kind 可选（podcast/mono）：只清空该类型的任务（前端按 tab 操作）；
+    缺省时清空全部（兼容旧行为）。
+    终态集合与前端「可删除」的判据保持一致 —— 中断也是终态，此前漏了它，
+    导致「只有中断任务时按钮可见但点了没反应」。
+    """
     to_remove = [tid for tid, t in qs.queue_tasks.items()
-                 if t["status"] in (qs.QueueTaskStatus.SUCCESS, qs.QueueTaskStatus.FAILED, qs.QueueTaskStatus.CANCELLED)
+                 if t["status"] in (qs.QueueTaskStatus.SUCCESS, qs.QueueTaskStatus.FAILED,
+                                    qs.QueueTaskStatus.INTERRUPTED, qs.QueueTaskStatus.CANCELLED)
+                 and (not kind or t.get("kind") == kind)
                  and (not _isolation_on() or (user and t.get("member_id") == user["user_id"]))]
     for tid in to_remove:
         del qs.queue_tasks[tid]
