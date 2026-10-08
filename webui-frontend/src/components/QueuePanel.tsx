@@ -579,25 +579,27 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                   </div>
                 );
               })}
+              {/* 加载更多：后端每个 kind 只回最近 terminalLimit 条终态以省带宽，
+                  被截掉的历史在这里按需取回（不随轮询无限增长，避免又回到 1.16 MB）。
+                  放在**滚动容器内部的最末尾**（不是卡片底部）⇒ 列表滚到底才看到，
+                  样式用超链而不是带边框的按钮。
+                  刻意不用 Button 组件：它的基类带 `whitespace-nowrap shrink-0`，
+                  超长文案既不换行也不缩、会溢出边框；链接允许换行更稳。
+                  文案保持「加载更多历史（共 N 条）」，每类各留 N 条的解释交给 title。
+                  `filteredTasks.length > 0`：筛选后为空时列表显示占位文案，
+                  底下不该再冒出一条「加载更多历史」。 */}
+              {hasMore && filteredTasks.length > 0 && (
+                <button
+                  type="button"
+                  onClick={loadMoreHistory}
+                  className="flex w-full items-center justify-center gap-1 py-1.5 text-[0.75rem] text-indigo-600 transition-colors hover:text-indigo-700 hover:underline"
+                  title={`已加载每个类型的最近 ${terminalLimit} 条，点击再各取 50 条`}
+                >
+                  <History className="w-3 h-3" />
+                  加载更多历史（共 {terminalTotal} 条）
+                </button>
+              )}
             </div>
-
-            {/* 加载更多：后端每个 kind 只回最近 terminalLimit 条终态以省带宽，
-                被截掉的历史在这里按需取回（不随轮询无限增长，避免又回到 1.16 MB）。
-                ⚠️ 文案必须短：Button 基类带 whitespace-nowrap + shrink-0，
-                而这里是 w-full ⇒ 超长文案不能换行、也不缩，会从按钮两侧溢出边框。
-                「每类各留 N 条」这种解释放 title，别再写回可见文案。 */}
-            {hasMore && (
-              <Button
-                variant="outline"
-                size="sm"
-                icon={History}
-                onClick={loadMoreHistory}
-                className="w-full"
-                title={`已加载每个类型的最近 ${terminalLimit} 条，点击再各取 50 条`}
-              >
-                加载更多历史（共 {terminalTotal} 条）
-              </Button>
-            )}
 
             {/* 清空按钮：可见条件必须覆盖后端会清掉的全部终态
                 （success/failed/interrupted/cancelled）——

@@ -1,0 +1,36 @@
+{
+  "top": {
+    "listH": 520,
+    "contentH": 740,
+    "scrollTop": 0,
+    "maxScroll": 220,
+    "overlapPrevRow": 0,
+    "gapPrevRow": 7,
+    "linkRelTop": 707,
+    "linkRelBottom": 740,
+    "fullyVisible": false,
+    "linkWidth": 282,
+    "contentWidth": 185,
+    "btnFontSize": "13.5px",
+    "overflowLeft": 0,
+    "overflowRight": 0,
+    "rem": 18
+  },
+  "bottom": {
+    "listH": 520,
+    "contentH": 740,
+    "scrollTop": 220,
+    "maxScroll": 220,
+    "overlapPrevRow": 0,
+    "gapPrevRow": 7,
+    "linkRelTop": 487,
+    "linkRelBottom": 520,
+    "fullyVisible": true,
+    "linkWidth": 282,
+    "contentWidth": 185,
+    "btnFontSize": "13.5px",
+    "overflowLeft": 0,
+    "overflowRight": 0,
+    "rem": 18
+  }
+}
