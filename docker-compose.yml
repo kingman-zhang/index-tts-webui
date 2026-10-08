@@ -16,6 +16,9 @@ services:
       HOST: 0.0.0.0
       PORT: "3001"
       # 显式环境变量优先于挂载的旧 backend .env；仍允许部署环境自定义或设 0 关闭。
+      # ⚠️ 这两个必须在这里显式透传：挂载进容器的旧 .env 里的 MEMBER_REG_BONUS=100
+      # 会顶掉代码新默认值 500（2026-10-05 调值时的真实教训）。
+      MEMBER_REG_BONUS: "${MEMBER_REG_BONUS:-500}"
       MEMBER_CHECKIN_BONUS: "${MEMBER_CHECKIN_BONUS:-20}"
     volumes:
       # 数据卷：项目存档/会员/队列状态/breezeblue 音色库（165MB）全在这里

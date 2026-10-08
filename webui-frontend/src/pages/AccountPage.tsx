@@ -1,26 +1,27 @@
 /** 个人中心页（/account）：登录/注册、资料编辑、积分（签到/兑换/流水）。 */
 import { useCallback, useEffect, useState } from "react";
 import {
-  Coins, Gift, KeyRound, Loader2, LogIn, Save,
+  Coins, Gift, KeyRound, Loader2, LogIn, Save, ShoppingCart, Sparkles,
   Ticket, UserRound, Zap, History, CheckCircle2,
 } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Textarea, Badge } from "@/components/ui";
 import { Header } from "@/components/Header";
 import { ToastNode, useToast } from "@/hooks/useAppInit";
 import { clearSession, initAuth, navigate, refreshUser, setSession, updateUser, useAuth } from "@/lib/auth";
-import { memberApi, type PointLog } from "@/api/members";
+import { memberApi, type PointLog, type PointsOrder, type PointsPack, type PointsPackList } from "@/api/members";
 import type { MemberUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 let authInited = false;
 
 const KIND_META: Record<PointLog["kind"], { label: string; cls: string }> = {
-  earn:    { label: "获取", cls: "bg-green-100 text-green-700" },
-  checkin: { label: "签到", cls: "bg-green-100 text-green-700" },
-  redeem:  { label: "兑换", cls: "bg-indigo-100 text-indigo-700" },
-  grant:   { label: "调整", cls: "bg-blue-100 text-blue-700" },
-  refund:  { label: "退款", cls: "bg-amber-100 text-amber-700" },
-  spend:   { label: "消费", cls: "bg-gray-100 text-gray-600" },
+  earn:     { label: "获取", cls: "bg-green-100 text-green-700" },
+  checkin:  { label: "签到", cls: "bg-green-100 text-green-700" },
+  redeem:   { label: "兑换", cls: "bg-indigo-100 text-indigo-700" },
+  grant:    { label: "调整", cls: "bg-blue-100 text-blue-700" },
+  refund:   { label: "退款", cls: "bg-amber-100 text-amber-700" },
+  purchase: { label: "充值", cls: "bg-amber-100 text-amber-700" },
+  spend:    { label: "消费", cls: "bg-gray-100 text-gray-600" },
 };
 
 function fmtTime(iso?: string) {
@@ -246,6 +247,8 @@ function MemberPanel({ showToast }: { showToast: (msg: string) => void }) {
         <PointsCard showToast={showToast} />
       </div>
 
+      <ShopCard showToast={showToast} />
+
       <LogsCard />
     </div>
   );
@@ -413,6 +416,178 @@ function PointsCard({ showToast }: { showToast: (m: string) => void }) {
           </div>
         </div>
         <p className="text-[0.6875rem] text-gray-400">积分可在语音合成时抵扣用量，余额 <span className="text-amber-600 font-medium">{user!.points}</span></p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── 积分商城 ───────────────────────────────────────────────
+
+/** 把字数格式化成「N 万字」；不足 1 万时按「N 字」。 */
+function fmtChars(n: number | null): string {
+  if (!n || n <= 0) return "";
+  if (n < 10000) return `${n} 字`;
+  const wan = n / 10000;
+  return `${Number.isInteger(wan) ? wan : wan.toFixed(1)} 万字`;
+}
+
+function fmtYuan(fen: number): string {
+  return `¥${(fen / 100).toFixed(2).replace(/\.00$/, "")}`;
+}
+
+function ShopCard({ showToast }: { showToast: (m: string) => void }) {
+  const [data, setData] = useState<PointsPackList | null>(null);
+  const [orders, setOrders] = useState<PointsOrder[]>([]);
+  const [busyId, setBusyId] = useState("");      // 正在处理的套餐 id
+  const [loadErr, setLoadErr] = useState("");
+
+  const loadOrders = useCallback(async () => {
+    try {
+      const r = await memberApi.orders(0, 5);
+      setOrders(r.orders);
+    } catch { /* 忽略：订单列表不是关键路径 */ }
+  }, []);
+
+  useEffect(() => {
+    memberApi.packs()
+      .then(setData)
+      .catch((e: unknown) => setLoadErr(e instanceof Error ? e.message : "加载失败"));
+    void loadOrders();
+  }, [loadOrders]);
+
+  const buy = async (pack: PointsPack) => {
+    setBusyId(pack.id);
+    try {
+      const { order } = await memberApi.createOrder(pack.id);
+      if (!data?.mock_pay_enabled) {
+        // 真实支付通道未接入：订单先落库，等支付完成后由回调入账
+        await loadOrders();
+        showToast("订单已创建，支付通道接入中，请联系管理员完成付款");
+        return;
+      }
+      // 演示路径：直接模拟「支付成功回调」
+      const r = await memberApi.mockPay(order.order_id);
+      await refreshUser();
+      await loadOrders();
+      showToast(`支付成功，+${r.added} 积分`);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "购买失败");
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  const payPending = async (order: PointsOrder) => {
+    setBusyId(order.order_id);
+    try {
+      const r = await memberApi.mockPay(order.order_id);
+      await refreshUser();
+      await loadOrders();
+      showToast(r.already_paid ? "该订单已入账" : `支付成功，+${r.added} 积分`);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "支付失败");
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  if (loadErr) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-1.5">
+          <ShoppingCart className="w-4 h-4 text-indigo-500" />积分商城</CardTitle></CardHeader>
+        <CardContent><p className="text-xs text-red-500">套餐加载失败：{loadErr}</p></CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex items-center justify-between">
+        <CardTitle className="flex items-center gap-1.5">
+          <ShoppingCart className="w-4 h-4 text-indigo-500" />积分商城
+        </CardTitle>
+        {data && data.points_per_1000_chars > 0 && (
+          <span className="text-[0.6875rem] text-gray-400">
+            1 元 = {data.points_per_yuan} 积分 · 1000 积分 ≈ {fmtChars(1000 * 1000 / data.points_per_1000_chars)}
+          </span>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {!data ? (
+          <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 text-gray-300 animate-spin" /></div>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {data.packs.map(pack => (
+              <div key={pack.id}
+                className={cn("relative rounded-lg border p-3 flex flex-col gap-1 transition-colors",
+                  pack.bonus_points > 0 ? "border-amber-200 bg-amber-50/40" : "border-gray-200")}>
+                {pack.bonus_points > 0 && (
+                  <span className="absolute -top-2 right-2 text-[0.625rem] font-medium px-1.5 py-0.5 rounded-full bg-amber-500 text-white">
+                    多送 {pack.bonus_percent}%
+                  </span>
+                )}
+                <p className="text-xs font-medium text-gray-600">{pack.name}</p>
+                <p className="text-lg font-bold text-amber-600 tabular-nums leading-tight">
+                  {pack.points}
+                  <span className="text-[0.6875rem] font-normal text-gray-400 ml-0.5">积分</span>
+                </p>
+                <p className="text-[0.6875rem] text-gray-400">
+                  {fmtYuan(pack.price_fen)}
+                  {pack.est_chars ? ` · 约 ${fmtChars(pack.est_chars)}` : ""}
+                </p>
+                {pack.bonus_points > 0 && (
+                  <p className="text-[0.625rem] text-amber-600">含赠送 {pack.bonus_points} 积分</p>
+                )}
+                <Button size="sm" className="mt-1 w-full"
+                  icon={busyId === pack.id ? Loader2 : ShoppingCart}
+                  disabled={!!busyId}
+                  onClick={() => void buy(pack)}>
+                  {busyId === pack.id ? "处理中" : "购买"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {data && !data.mock_pay_enabled && !data.pay_channel_ready && (
+          <p className="text-[0.6875rem] text-gray-400">
+            购买后订单会保留，支付通道接入完成后由支付回调自动入账。
+          </p>
+        )}
+        {data?.mock_pay_enabled && (
+          <p className="text-[0.6875rem] text-amber-600 flex items-center gap-1">
+            <Sparkles className="w-3 h-3" />当前为演示模式：点「购买」直接模拟支付成功并入账，未接真实支付通道。
+          </p>
+        )}
+
+        {orders.length > 0 && (
+          <div className="border-t border-gray-100 pt-3">
+            <p className="text-[0.6875rem] font-medium text-gray-500 mb-2">最近订单</p>
+            <div className="divide-y divide-gray-50">
+              {orders.map(o => (
+                <div key={o.order_id} className="flex items-center gap-3 py-2">
+                  <Badge color={o.status === "paid" ? "green" : "gray"}>
+                    {o.status === "paid" ? "已支付" : "待支付"}
+                  </Badge>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-gray-700 truncate">
+                      {o.pack_name} · {o.points} 积分 · {fmtYuan(o.amount_fen)}
+                    </p>
+                    <p className="text-[0.625rem] text-gray-400">{fmtTime(o.paid_at || o.created_at)}</p>
+                  </div>
+                  {o.status === "pending" && data?.mock_pay_enabled && (
+                    <Button size="sm" variant="outline"
+                      icon={busyId === o.order_id ? Loader2 : CheckCircle2}
+                      disabled={!!busyId} onClick={() => void payPending(o)}>
+                      模拟支付
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

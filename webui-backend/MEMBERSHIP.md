@@ -16,6 +16,11 @@
 | 积分流水 | `GET /api/points/logs?offset&limit` | 每笔变动均有记录（earn/spend/redeem/checkin/grant/refund） |
 | 优惠码兑换 | `POST /api/points/redeem` | `{code}`；一码多用/每人一次/过期/停用均有校验 |
 | 每日签到 | `GET/POST /api/points/checkin` | 每日一次，送固定积分 |
+| 积分商城 | `GET /api/points/packs` | 套餐清单（含按当前单价折算的可合成字数）；**无需登录** |
+| 下单 | `POST /api/points/orders` | `{pack_id}` → pending 订单；**此时不发积分**，见「积分购买」节 |
+| 我的订单 | `GET /api/points/orders?offset&limit` | 自己的订单（别人的订单返回 404，不用 403 以免探测） |
+| 模拟支付 | `POST /api/points/orders/{order_id}/mock-pay` | 演示用；与真实回调**同一条入账路径**，同样幂等。开关 `MEMBER_MOCK_PAY` |
+| 支付回调 | `POST /api/pay/notify/{provider}` | **无 Bearer**，靠 HMAC 验签；`PAY_NOTIFY_SECRET` 未配则 503 |
 
 鉴权头：`Authorization: Bearer <token>` 或 `X-Auth-Token: <token>`；token 有效期默认 30 天。
 
@@ -23,12 +28,14 @@
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `MEMBER_REG_BONUS` | 100 | 注册赠送积分（0=关闭） |
+| `MEMBER_REG_BONUS` | **500** | 注册赠送积分（0=关闭）。2026-10-05 由 100 调为 500（= ¥5 ≈ 1 万字）。**Compose 环境变量优先于 backend `.env`** |
 | `MEMBER_CHECKIN_BONUS` | 20 | 每日签到积分（0=关闭）；Compose 环境变量优先于 backend `.env` |
 | `MEMBER_POINTS_PER_1000_CHARS` | 10 | 合成扣费**单价**：每千字扣分（0=关闭按量扣费）。线上 `.env` 实际配 50 ⇒ 50 积分/千字 = ¥5/万字 |
 | `MEMBER_MIN_CHARGE` | 5 | 单次合成最低收费（积分）；0=不设地板。见「计费口径」 |
 | `MEMBER_TOKEN_TTL_DAYS` | 30 | 会话有效期 |
 | `MEMBER_ENFORCE` | 0 | **1=收费模式**：登录才可提交合成任务、预扣积分、失败自动退款；0=不扣费 |
+| `MEMBER_MOCK_PAY` | **1** | 1=开放模拟支付端点。⚠️ **接入真实支付后必须置 0**，否则任何登录用户都能给自己的订单免费入账 |
+| `PAY_NOTIFY_SECRET` | 空 | 真实支付回调验签密钥（HMAC-SHA256）；空=回调端点一律 503 |
 | `MEMBER_ADMIN_TOKEN` | 空 | 管理接口令牌；未设置则管理接口整体禁用 |
 
 **关键设计：`MEMBER_ENFORCE=0`（默认）时，合成链路零行为变化**——老用户无感；带 token 提交也不会扣钱。开启收费只需在 .env 加一行 `MEMBER_ENFORCE=1`。
@@ -80,6 +87,7 @@ python tools/member_admin.py disable --user 某人
 - `point_logs.json` 积分流水（新记录在前；每用户保留最近 500 条）
 - `redeem_codes.json` 优惠码
 - `checkins.json` 签到记录
+- `orders.json` 积分购买订单（`{order_id: {...}}`；含套餐快照与入账流水 id，便于对账）
 
 ### 并发安全（2026-09-29 修）
 
@@ -133,9 +141,46 @@ cost = max(MEMBER_MIN_CHARGE, ceil(字数 × MEMBER_POINTS_PER_1000_CHARS / 1000
 `types/index.ts` 的 `estimatePoints()` / `billableChars()`、以及 `MonoEditor` 内
 显示的字数（同口径）。回归基线：`tests/test_task_cost.py`。
 
+## 六·五、积分购买（2026-10-05；**真实支付通道尚未接入**）
+
+链路（与「谁收钱」无关）：
+
+```
+选套餐 → create_order()  落一条 pending 订单（不碰积分）
+        ↓
+支付成功（真实回调 / 模拟）→ settle_order()  幂等入账
+```
+
+- 定价锚点：**1 积分 = ¥0.01**；合成单价 50 积分/千字 ⇒ **¥5/万字** ⇒ 1000 积分 ≈ 2 万字。
+- 套餐规格见 `app/membership/packs.py`（方案 B 阶梯赠送，**改价只改这一张表**）：
+
+  | 套餐 | 价格 | 到账积分 | 赠送 | 约可合成 |
+  |---|---|---|---|---|
+  | 体验包 | ¥10 | 1000 | — | 2 万字 |
+  | 标准包 | ¥30 | 3200 | +200（6.7%） | 6.4 万字 |
+  | 超值包 | ¥50 | 5750 | +750（15%） | 11.5 万字 |
+  | 尊享包 | ¥100 | 12500 | +2500（25%） | 25 万字 |
+
+  「约可合成」由后端按**当前** `MEMBER_POINTS_PER_1000_CHARS` 现算（`est_chars`），不写死。
+- **入账只认订单里的 `points` 快照**：套餐改名/调价后，历史订单仍看得懂、金额不受影响。
+- **幂等**：同一订单重复通知只发一次积分，判据是积分流水 `ref == "order:<order_id>"` + `kind=purchase`。支付平台重试、用户连点都安全。
+- 回调**不做 Bearer 鉴权**（支付平台不会带我们的 token），安全性完全靠验签 ⇒ `PAY_NOTIFY_SECRET` 未配置时回调端点一律 **503**，不提供「无密钥放行」的降级。
+- 通道差异全部收敛在 `app/membership/pay.py`：`normalize_notify()` 做报文归一化、`verify_notify()` 做验签。**接新通道只改这个文件**，service / routes 不动。
+- 当前 `MEMBER_MOCK_PAY=1` 提供「模拟支付成功」端点用于商城演示；**接入真实支付后必须置 0**。
+
+### 个人收款的现实约束（选型参考）
+
+个人主体拿不到微信/支付宝的官方商户回调。可选路径：
+
+1. **第三方聚合支付**（个人可开通，有异步回调，费率约 2–3%）：对接成本最低，`pay.py` 加一个 provider 分支即可；主要风险是平台跑路/合规。
+2. **平台代收 + 兑换码**（零风险、零费率）：在知识星球/小报童/微店等卖「激活码」，用户在本站 `POST /api/points/redeem` 兑换。**现有能力已支持**，不依赖任何支付接口。
+3. **个人收款码 + 人工确认**：用户转账后提交订单号，管理员用 `tools/member_admin.py grant` 或管理 API 加分。零成本，但纯人工。
+
+（当前落地的是「下单 + 幂等入账 + 回调契约」，1/2/3 任选其一接上即可，业务侧无需改动。）
+
 ## 七、前端入口
 
-- `/account` 页面：登录/注册、资料编辑、改密码、积分余额、每日签到、优惠码兑换、流水列表。
+- `/account` 页面：登录/注册、资料编辑、改密码、积分余额、**积分商城（购买套餐）**、每日签到、优惠码兑换、流水列表。
 - 顶栏右侧用户菜单：未登录显示「登录」，登录后显示昵称+积分余额，下拉可进个人中心/退出。
 - token 存 localStorage（`wb-auth-token`），跨 `/podcast`、`/dubbing` 生效。
 

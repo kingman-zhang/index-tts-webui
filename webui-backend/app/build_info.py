@@ -232,6 +232,35 @@ def _voice_management() -> dict:
         return {"schema_version": 0, "error": str(e)}
 
 
+def _membership() -> dict:
+    """会员/积分模块的结构版本与关键取值（**取值域**，供部署自检）。
+
+    为什么报这些：2026-10-05 加了「注册礼包 100→500」与「积分购买链路」。
+    只报开关证明不了版本 —— 注册礼包必须报**金额**（500 就是新、100 就是旧），
+    购买链路必须报 `schema_version`（1=无购买流程，2=有）与 `packs` 清单
+    （列表非空即说明套餐表已随代码上线）。`mock_pay_enabled` 是**安全项**：
+    接了真实支付却忘了关它 ⇒ 任何登录用户都能白拿积分，必须能一眼看到。
+    """
+    try:
+        from .membership import service as msvc
+
+        return {
+            "schema_version": msvc.MEMBERSHIP_SCHEMA_VERSION,
+            "signup_bonus": msvc.REG_BONUS,
+            "checkin_bonus": msvc.CHECKIN_BONUS,
+            "points_per_1000_chars": msvc.POINTS_PER_1000_CHARS,
+            "min_charge": msvc.MIN_CHARGE,
+            "enforce": msvc.ENFORCE,
+            "require_login": msvc.REQUIRE_LOGIN,
+            "mock_pay_enabled": msvc.MOCK_PAY,
+            "pay_notify_enabled": bool(msvc.PAY_NOTIFY_SECRET),
+            "packs": [p["id"] for p in msvc._packs.sorted_packs()],
+        }
+    except Exception as e:  # 自检本身不能把进程带崩
+        logger.warning("[build_info] membership 读取失败: %s", e)
+        return {"schema_version": 0, "error": str(e)}
+
+
 def _engines() -> dict:
     """注册了哪些引擎、各自能力、是否在熔断冷却中。
 
@@ -268,5 +297,6 @@ def snapshot() -> dict:
         "stale_sources": stale_sources(),
         "text_pipeline": _text_switches(),
         "voice_management": _voice_management(),
+        "membership": _membership(),
         "engines": _engines(),
     }

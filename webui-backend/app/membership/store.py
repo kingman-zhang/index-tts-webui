@@ -6,6 +6,7 @@
   point_logs.json    积分流水（追加列表，新记录在前）
   redeem_codes.json  优惠码 {code: {...}}
   checkins.json      签到记录 {user_id: {"2026-09-19", ...}}
+  orders.json        积分购买订单 {order_id: {...}}（充值链路，2026-10-05 新增）
 
 并发策略：模块级 threading.Lock 串行化读改写；写入采用 tmp+replace 原子替换。
 规模预期（几百~几千用户、几万条流水）下 JSON 文件足够；日后可平滑迁移 SQLite，
@@ -116,6 +117,21 @@ def load_checkins() -> dict:
 def save_checkins(data: dict) -> None:
     with _lock:
         _write(CHECKINS_FILE, data)
+
+
+# ─── 积分购买订单 ───────────────────────────────────────────
+
+ORDERS_FILE = MEMBERS_DIR / "orders.json"
+
+
+def load_orders() -> dict:
+    with _lock:
+        return _read(ORDERS_FILE, {})
+
+
+def save_orders(orders: dict) -> None:
+    with _lock:
+        _write(ORDERS_FILE, orders)
 
 
 # ─── 邮箱验证码 ─────────────────────────────────────────────

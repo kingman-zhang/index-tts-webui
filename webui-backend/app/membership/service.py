@@ -1,7 +1,7 @@
-"""会员模块业务层：注册/登录、资料、积分、优惠码、签到、扣费钩子。
+"""会员模块业务层：注册/登录、资料、积分、优惠码、签到、购买订单、扣费钩子。
 
 配置（环境变量或 .env，均可缺省）：
-  MEMBER_REG_BONUS              注册赠送积分，默认 100；0 表示关闭
+  MEMBER_REG_BONUS              注册赠送积分，默认 500；0 表示关闭
   MEMBER_CHECKIN_BONUS          每日签到积分，默认 20；0 表示关闭
   MEMBER_POINTS_PER_1000_CHARS  合成扣费单价：每 1000 字符扣积分，默认 10；0 = 关闭按量扣费
   MEMBER_MIN_CHARGE             单次合成最低收费（积分），默认 5；0 = 不设地板
@@ -9,6 +9,10 @@
   MEMBER_ENFORCE                1 = 未登录/积分不足时拒绝提交合成任务；默认 0（仅登录用户记账，不强制）
   MEMBER_REQUIRE_LOGIN          1 = 合成提交必须登录（不扣费）；与 MEMBER_ENFORCE 相互独立
   MEMBER_ADMIN_TOKEN            管理接口令牌；未设置则管理接口整体禁用
+  MEMBER_MOCK_PAY               1 = 开放「模拟支付成功」端点（积分商城演示用）；
+                                默认 1。**接入真实支付后必须置 0** ——
+                                开着等于任何登录用户都能给自己的订单免费入账。
+  PAY_NOTIFY_SECRET             真实支付回调验签密钥；未配置则 /api/pay/notify/* 一律 503。
 """
 
 from __future__ import annotations
@@ -26,10 +30,17 @@ from typing import Optional
 from . import store
 from .security import hash_password, new_token, verify_password
 from . import mailer
+from . import packs as _packs
+from . import pay as _pay
+
+# 会员模块的结构版本（供 /api/version 取值域自检）：
+#   1 = 只有注册/登录/签到/优惠码/扣费，**没有**购买流程
+#   2 = 增加积分套餐 + 购买订单 + 支付回调（2026-10-05）
+MEMBERSHIP_SCHEMA_VERSION = 2
 
 # ─── 配置 ───────────────────────────────────────────────────
 
-REG_BONUS = int(os.environ.get("MEMBER_REG_BONUS", "100"))
+REG_BONUS = int(os.environ.get("MEMBER_REG_BONUS", "500"))
 CHECKIN_BONUS = int(os.environ.get("MEMBER_CHECKIN_BONUS", "20"))
 POINTS_PER_1000_CHARS = int(os.environ.get("MEMBER_POINTS_PER_1000_CHARS", "10"))
 MIN_CHARGE = int(os.environ.get("MEMBER_MIN_CHARGE", "5"))
@@ -37,6 +48,11 @@ TOKEN_TTL_DAYS = int(os.environ.get("MEMBER_TOKEN_TTL_DAYS", "30"))
 ENFORCE = os.environ.get("MEMBER_ENFORCE", "0") == "1"
 REQUIRE_LOGIN = os.environ.get("MEMBER_REQUIRE_LOGIN", "0") == "1"
 ADMIN_TOKEN = os.environ.get("MEMBER_ADMIN_TOKEN", "") or None
+# 模拟支付：默认开（当前没有真实支付通道，商城要能演示）。
+# 接真实支付后置 0 —— 否则任何登录用户都能给自己的订单白拿积分。
+MOCK_PAY = os.environ.get("MEMBER_MOCK_PAY", "1") == "1"
+# 真实支付回调验签密钥；空 = 回调端点整体拒收（见 pay.py 的安全边界说明）。
+PAY_NOTIFY_SECRET = os.environ.get("PAY_NOTIFY_SECRET", "") or None
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fa5]{2,24}$")
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
@@ -334,6 +350,10 @@ _user_locks_guard = threading.Lock()
 # 优惠码是**跨用户共享**的资源，同一用户的锁管不住「两个人同时兑同一个单次码」，
 # 所以兑换的读码→占坑→写回再用一把进程级锁串行化（兑换是低频操作，不值得更细的锁）。
 _redeem_lock = threading.RLock()
+# 订单的「读 → 判断状态 → 入账 → 写回状态」同样不能并发：同一个订单被两个回调
+# （用户连点、或支付平台重试推送）同时处理就会重复发积分。订单表是全局共享资源
+# （回调按 out_trade_no 找单，不认用户），所以用一把进程级锁串行化。
+_order_lock = threading.RLock()
 
 
 @contextmanager
@@ -364,7 +384,7 @@ def _apply_delta(user: dict, delta: int, kind: str, reason: str, ref: str = "",
             "user_id": target["user_id"],
             "delta": delta,
             "balance_after": new_balance,
-            "kind": kind,  # earn/spend/redeem/checkin/grant/refund
+            "kind": kind,  # earn/spend/redeem/checkin/grant/refund/purchase
             "reason": reason,
             "ref": ref,
             "created_at": datetime.now().isoformat(),
@@ -484,6 +504,191 @@ def checkin_status(user: dict) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     days = store.load_checkins().get(user["user_id"], [])
     return {"checked_in_today": today in days, "total_days": len(days), "bonus": CHECKIN_BONUS}
+
+
+# ─── 积分购买（套餐 → 订单 → 入账）──────────────────────────
+#
+# 链路（与「谁收钱」无关，见 pay.py 的说明）：
+#
+#     用户选套餐 → create_order()  落一条 pending 订单（不碰积分）
+#                 ↓
+#     支付成功（真实回调 / 模拟）→ settle_order()  幂等入账
+#
+# 三个必须守住的点：
+#   ① 下单**不**给积分 —— 积分只在 settle 时发，否则「下单即可白拿」。
+#   ② settle 必须**幂等** —— 同一订单重复通知只能发一次（支付平台会重试，
+#      用户也会连点）。判据用积分流水：ref == f"order:{order_id}"。
+#   ③ 入账金额以**订单快照**为准，不信回调传来的数字（只用来校验一致性）。
+
+ORDER_ID_PREFIX = "ord_"
+# 订单状态：pending（待支付）/ paid（已支付并已入账）。
+# 刻意不做 closed/expired —— 未支付订单挂着无害，且没有清理任务要维护。
+ORDER_PENDING = "pending"
+ORDER_PAID = "paid"
+
+
+def _est_chars(points: int) -> Optional[int]:
+    """这些积分按**当前**计费单价约可合成多少字（不写死在套餐表里的原因见 packs.py）。"""
+    if POINTS_PER_1000_CHARS <= 0:
+        return None
+    return points * 1000 // POINTS_PER_1000_CHARS
+
+
+def list_packs() -> dict:
+    """积分商城商品清单（含按当前单价折算的可合成字数）。"""
+    items = []
+    for p in _packs.sorted_packs():
+        base = p["points"] - p["bonus_points"]
+        item = dict(p)
+        item["price_yuan"] = f"{p['price_fen'] / 100:.2f}"
+        item["est_chars"] = _est_chars(p["points"])
+        # 展示用百分比，不参与入账计算
+        item["bonus_percent"] = round(p["bonus_points"] / base * 100, 1) if p["bonus_points"] and base > 0 else 0.0
+        items.append(item)
+    return {
+        "packs": items,
+        "currency": "CNY",
+        # 定价锚点：1 积分 = ¥0.01（前端算「兑换比例」用，避免各自硬编码）
+        "points_per_yuan": 100,
+        "points_per_1000_chars": POINTS_PER_1000_CHARS,
+        "mock_pay_enabled": MOCK_PAY,
+        "pay_channel_ready": bool(PAY_NOTIFY_SECRET),
+    }
+
+
+def create_order(user: dict, pack_id: str) -> dict:
+    """按套餐下单，返回 pending 订单。**此处不发积分。**"""
+    pack = _packs.get_pack(pack_id)
+    if not pack:
+        raise MemberError("套餐不存在", 404)
+    order_id = f"{ORDER_ID_PREFIX}{uuid.uuid4().hex[:12]}"
+    order = {
+        "order_id": order_id,
+        "user_id": user["user_id"],
+        # 下单时把套餐信息**快照**进订单：套餐改名/调价后，历史订单仍然看得懂。
+        "pack_id": pack["id"],
+        "pack_name": pack["name"],
+        "points": pack["points"],
+        "amount_fen": pack["price_fen"],
+        "status": ORDER_PENDING,
+        "provider": "",
+        "out_trade_no": order_id,   # 对接真实通道时用它做商户订单号
+        "credit_log_id": "",
+        "created_at": datetime.now().isoformat(),
+        "paid_at": None,
+    }
+    with _order_lock:
+        orders = store.load_orders()
+        orders[order_id] = order
+        store.save_orders(orders)
+    return order
+
+
+def get_order(user: dict, order_id: str) -> dict:
+    order = store.load_orders().get(order_id)
+    # 不区分「不存在」与「不是你的」——避免用订单号探测别人下过什么单。
+    if not order or order.get("user_id") != user["user_id"]:
+        raise MemberError("订单不存在", 404)
+    return order
+
+
+def list_orders(user: dict, offset: int = 0, limit: int = 20) -> dict:
+    orders = [o for o in store.load_orders().values() if o.get("user_id") == user["user_id"]]
+    orders.sort(key=lambda o: o.get("created_at") or "", reverse=True)
+    total = len(orders)
+    page = orders[offset: offset + max(1, min(limit, 100))]
+    return {"total": total, "offset": offset, "orders": page}
+
+
+def _has_order_credit(order_id: str) -> bool:
+    """该订单是否已经入过账（以积分流水为准 —— 它是唯一不会丢的事实）。"""
+    ref = f"order:{order_id}"
+    return any(
+        e.get("ref") == ref and e.get("kind") == "purchase"
+        for e in store.load_point_logs()
+    )
+
+
+def settle_order(order_id: str, provider: str, amount_fen: Optional[int] = None,
+                 out_trade_no: str = "") -> dict:
+    """支付成功入账（**幂等**）。真实回调与模拟支付共用这一条路径。
+
+    - 已支付过（或流水里已有入账记录）→ 直接返回 already_paid，**不再发积分**。
+    - amount_fen 非空时与订单金额比对，不一致则拒（防止回调被篡改金额）。
+    - provider 只用于记录，不参与判断（通道差异在 pay.py 里消化）。
+    """
+    with _order_lock:
+        orders = store.load_orders()
+        order = orders.get(order_id)
+        if not order:
+            raise MemberError("订单不存在", 404)
+        if amount_fen is not None and int(amount_fen) != int(order["amount_fen"]):
+            raise MemberError(
+                f"支付金额与订单不一致（订单 {order['amount_fen']} 分，收到 {amount_fen} 分）", 400
+            )
+        user = store.load_users().get(order["user_id"])
+        if not user:
+            raise MemberError("订单对应用户不存在", 404)
+
+        if order.get("status") == ORDER_PAID:
+            return {"order": order, "added": 0, "balance": user.get("points", 0), "already_paid": True}
+        # 状态没落成 paid、但流水里已有入账 ⇒ 上次崩在「已入账、未改状态」之间，补状态即可。
+        if _has_order_credit(order_id):
+            order["status"] = ORDER_PAID
+            order["paid_at"] = order.get("paid_at") or datetime.now().isoformat()
+            order["provider"] = order.get("provider") or provider
+            orders[order_id] = order
+            store.save_orders(orders)
+            return {"order": order, "added": 0, "balance": user.get("points", 0), "already_paid": True}
+
+        log_id = f"pl_{uuid.uuid4().hex[:12]}"
+        balance = _apply_delta(
+            user, order["points"], "purchase",
+            f"购买{order['pack_name']}（{order['points']} 积分）",
+            ref=f"order:{order_id}", log_id=log_id,
+        )
+        order["status"] = ORDER_PAID
+        order["provider"] = provider
+        order["out_trade_no"] = out_trade_no or order.get("out_trade_no") or order_id
+        order["credit_log_id"] = log_id
+        order["paid_at"] = datetime.now().isoformat()
+        orders[order_id] = order
+        store.save_orders(orders)
+        return {"order": order, "added": order["points"], "balance": balance, "already_paid": False}
+
+
+def settle_by_out_trade_no(out_trade_no: str, provider: str,
+                           amount_fen: Optional[int] = None) -> dict:
+    """按商户订单号找单并入账（真实支付回调入口）。
+
+    找单**扫全表**：真实通道只回传 out_trade_no，不回传我们的内部 order_id，
+    而 out_trade_no 默认就等于 order_id —— 但用户可能在对接后自定义过它。
+    """
+    target = (out_trade_no or "").strip()
+    if not target:
+        raise MemberError("缺少商户订单号", 400)
+    orders = store.load_orders()
+    order = orders.get(target)
+    if not order:
+        order = next(
+            (o for o in orders.values()
+             if o.get("out_trade_no") == target or o.get("order_id") == target),
+            None,
+        )
+    if not order:
+        raise MemberError("订单不存在", 404)
+    return settle_order(order["order_id"], provider, amount_fen=amount_fen, out_trade_no=target)
+
+
+def mock_pay(user: dict, order_id: str) -> dict:
+    """模拟一次「支付成功」——仅用于商城演示，等价于支付平台推了一条成功回调。
+
+    ⚠️ 只允许支付**自己的**订单（get_order 已校验归属）；整体开关见 MOCK_PAY。
+    """
+    if not MOCK_PAY:
+        raise MemberError("模拟支付已关闭", 403)
+    order = get_order(user, order_id)   # 归属校验
+    return settle_order(order["order_id"], provider="mock", amount_fen=order["amount_fen"])
 
 
 # ─── 合成任务扣费钩子（MEMBER_ENFORCE / 记账模式） ──────────
