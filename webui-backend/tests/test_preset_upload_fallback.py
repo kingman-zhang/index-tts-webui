@@ -17,10 +17,15 @@ TCP 是通的、代理在应答 ⇒ **不是 ConnectError**。
   1. 上游非 200（404 HTML / 500 / 502 …）⇒ 200 + `local_only=true` + 本地路径，
      且**绝不把上游正文回给前端**。
   2. 音色表非 200 时**短路**：不再发起上传请求（不白等一次 60s 超时）。
-  3. 连不上（ConnectError）⇒ 同样降级（既有行为，回归保护）。
-  4. 正常路径不被破坏：音色表 200 命中同名 ⇒ 服务器路径；未命中 ⇒ 上传；上传 200
+  3. **上游 200 但正文不是 JSON（或形状不对）⇒ 与「非 200」同待遇**（2026-10-08 收口）。
+     「200 + HTML 报错页」离上线的距离只有代理一行配置；这种正文上 `resp.json()`
+     抛的 `JSONDecodeError` 属于 `ValueError`，**不在 `httpx.*` 异常族里** ⇒ 旧实现
+     直接冒成 500，把「上游返回的是网页」吞成「服务器内部错误」。音色表与上传返回值
+     两处都必须收口。
+  4. 连不上（ConnectError）⇒ 同样降级（既有行为，回归保护）。
+  5. 正常路径不被破坏：音色表 200 命中同名 ⇒ 服务器路径；未命中 ⇒ 上传；上传 200
      ⇒ 用返回值；上传 409 ⇒ 视为成功。这四条都必须仍是 `local_only=false`。
-  5. 输入错误**不能**被降级吞掉：缺 name ⇒ 400；本地无该文件 ⇒ 404。
+  6. 输入错误**不能**被降级吞掉：缺 name ⇒ 400；本地无该文件 ⇒ 404。
 """
 
 from __future__ import annotations
@@ -225,13 +230,56 @@ try:
     check("⑦ local_only=false（409 不是降级）", d.get("local_only") is False, str(d))
     check("⑦ path 来自 409 响应体", d.get("path") == srv, str(d.get("path")))
 
-    # ── ⑧ 输入错误不能被降级吞掉 ────────────────────────────────────────
-    print("⑧ 输入错误仍按原样报错（降级只针对「服务器不可用」）")
+    # ── ⑧ 上游 200 但正文不是 JSON ──────────────────────────────────────
+    # ⚠️ 「200 + HTML 报错页」离上线的距离只有代理的一行配置（AutoDL 实测是 404）。
+    # 这种正文上 `resp.json()` 抛的 `JSONDecodeError` 是 `ValueError`，**不在
+    # httpx.* 异常族里** ⇒ 旧实现直接冒成 500。这一类必须与「非 200」同待遇。
+    print("⑧a 音色表 200 但正文是 HTML → 降级 + 短路（只发 GET）")
+    fc = use(FakeClient(get_resp=FakeResp(200, text=AUTODL_404)))
+    assert_fallback("⑧a", call(), fc)
+    check("⑧a 短路：只发了 GET", [c[0] for c in fc.calls] == ["GET"], str(fc.calls))
+
+    print("⑧b 音色表 200 但顶层不是对象 / voices 不是列表 → 同样降级")
+    # ⚠️ 判据是「**拿不到可信的音色表**」：顶层非对象、或 voices 不是列表。
+    # 而 `{"voices": []}`（服务器上没有音色）是**合法**空表 ⇒ 照常走上传（见 ②/⑥）。
+    for bad in ([1, 2], {"voices": "不是列表"}, {"voices": None}, {"voices": {"a": 1}}):
+        fc = use(FakeClient(get_resp=FakeResp(200, payload=bad)))
+        assert_fallback(f"⑧b[{str(bad)[:34]}]", call(), fc)
+        check(f"⑧b[{str(bad)[:34]}] 短路：只发了 GET", [c[0] for c in fc.calls] == ["GET"], str(fc.calls))
+
+    print("⑧c 上传 200 但正文是 HTML → 降级（GET→POST 都已发生）")
+    fc = use(FakeClient(get_resp=FakeResp(200, payload={"voices": []}),
+                        post_resp=FakeResp(200, text=AUTODL_404)))
+    assert_fallback("⑧c", call(), fc)
+    check("⑧c 确实尝试过上传（GET→POST）",
+          [c[0] for c in fc.calls] == ["GET", "POST"], str(fc.calls))
+
+    print("⑧d 音色表里混入非字典项 → 滤掉后仍能命中同名（不因脏数据丢结果）")
+    fc = use(FakeClient(get_resp=FakeResp(200, payload={
+        "voices": ["垃圾", None, {"name": NAME, "path": srv, "size_kb": 2.0}]})))
+    r = call()
+    d = r.json()
+    check("⑧d HTTP 200", r.status_code == 200, r.text[:160])
+    check("⑧d local_only=false（命中同名）", d.get("local_only") is False, str(d))
+    check("⑧d path 是服务器路径", d.get("path") == srv, str(d.get("path")))
+
+    print("⑧e 命中同名但缺 path / 缺 voices 键 → 不 500，落到上传（409 复用）")
+    for payload in ({"voices": [{"name": NAME, "size_kb": 1.0}]}, {}):
+        fc = use(FakeClient(get_resp=FakeResp(200, payload=payload),
+                            post_resp=FakeResp(409, payload={"path": srv, "size_kb": 2.0})))
+        r = call()
+        d = r.json()
+        check(f"⑧e[{str(payload)[:30]}] HTTP 200（不再是 KeyError→500）",
+              r.status_code == 200, f"{r.status_code} {r.text[:160]}")
+        check(f"⑧e[{str(payload)[:30]}] GET→POST 后拿到服务器路径", d.get("path") == srv, str(d))
+
+    # ── ⑨ 输入错误不能被降级吞掉 ────────────────────────────────────────
+    print("⑨ 输入错误仍按原样报错（降级只针对「服务器不可用」）")
     use(FakeClient(get_resp=FakeResp(404, text=AUTODL_404)))
     r = client.post("/api/preset-voices/upload-to-tts", json={})
-    check("⑧ 缺 name → 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
+    check("⑨ 缺 name → 400", r.status_code == 400, f"{r.status_code} {r.text[:120]}")
     r = call("不存在的音色.mp3")
-    check("⑧ 本地无该文件 → 404", r.status_code == 404, f"{r.status_code} {r.text[:120]}")
+    check("⑨ 本地无该文件 → 404", r.status_code == 404, f"{r.status_code} {r.text[:120]}")
 
 finally:
     presets.http_client = _ORIG_HTTP_CLIENT
