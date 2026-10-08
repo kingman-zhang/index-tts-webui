@@ -120,17 +120,32 @@ async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
             terminal_tasks.append(t)
     # 排队任务按 queue_order 顺序排列
     queued_tasks.sort(key=lambda t: qs.queue_order.index(t["id"]) if t["id"] in qs.queue_order else 999)
-    paused_tasks = [t for t in qs.queue_tasks.values() if t.get("status") == qs.QueueTaskStatus.PAUSED]
+    # 注意：这里是**另外重新遍历全表**收集的，必须自己再加一次成员过滤 ——
+    # 主循环里那条 continue 管不到这个列表（paused 在循环里是被 pass 掉的）。
+    paused_tasks = [t for t in qs.queue_tasks.values()
+                    if t.get("status") == qs.QueueTaskStatus.PAUSED
+                    and (not _isolation_on() or t.get("member_id") == user["user_id"])]
     paused_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     # 终态任务按创建时间倒序
     terminal_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     tasks = running_tasks + queued_tasks + paused_tasks + terminal_tasks
+    # queue_order / current 都是**全局**执行态（含其他用户的任务），响应里必须按成员过滤，
+    # 否则会把别人的 task_id 暴露给前端。
+    my_queued_ids = [tid for tid in qs.queue_order
+                     if (t := qs.queue_tasks.get(tid))
+                     and t.get("status") == qs.QueueTaskStatus.QUEUED
+                     and (not _isolation_on() or t.get("member_id") == user["user_id"])]
+    cur = qs.current_task_id
+    if cur and _isolation_on():
+        ct = qs.queue_tasks.get(cur)
+        if not ct or ct.get("member_id") != user["user_id"]:
+            cur = None  # 正在合成的是别人的任务，不暴露
     return {
         "tasks": tasks,
         "count": len(tasks),
-        "current": qs.current_task_id,
-        "queued": len(qs.queue_order),
-        "queue_order": list(qs.queue_order),
+        "current": cur,
+        "queued": len(my_queued_ids),
+        "queue_order": my_queued_ids,
     }
 
 
@@ -388,6 +403,13 @@ async def reorder_queue(payload: dict, user: Optional[dict] = Depends(get_option
     kind 可选（podcast/mono）：task_ids 只含该类型的排队任务，重排后
     该类型任务按新顺序填回原类型槽位，其余类型任务的相对顺序保持不变；
     缺省时 task_ids 必须覆盖全部排队任务（兼容旧行为）。
+
+    带 kind 时是「尽力重排」，不要求 task_ids 与后端当前排队集合精确相等 ——
+    前端提交的是拖拽开始那一刻的列表快照，而拖拽期间队列会持续推进
+    （任务从 queued 转入 running/success）甚至新增，两边必然发散。
+    因此这里只取交集：new_order 中仍是本类型排队任务的按新顺序排在前，
+    其余本类型排队任务（拖拽期间新提交的）保持原相对顺序排在其后；
+    已不在排队的 id 直接忽略（它们不会再被调度，位置无意义）。
     """
     new_order = payload.get("task_ids", [])
     kind = payload.get("kind")
@@ -397,16 +419,25 @@ async def reorder_queue(payload: dict, user: Optional[dict] = Depends(get_option
         old_queued = [tid for tid in qs.queue_order
                       if (t := qs.queue_tasks.get(tid)) and t.get("status") == qs.QueueTaskStatus.QUEUED]
         if kind:
-            # 部分重排：校验 task_ids 恰好是该类型的全部排队任务
-            kind_queued = [tid for tid in old_queued if qs.queue_tasks[tid].get("kind") == kind]
-            if set(new_order) != set(kind_queued) or len(new_order) != len(kind_queued):
-                raise HTTPException(400, f"任务列表与 {kind} 类型的排队任务不匹配")
-            if _isolation_on():
-                for tid in new_order:
-                    if qs.queue_tasks[tid].get("member_id") != user["user_id"]:
-                        raise HTTPException(404, f"任务 {tid} 不存在")
-            it = iter(new_order)
-            final_order = [next(it) if tid in set(kind_queued) else tid for tid in old_queued]
+            # 本类型 + 本用户可见的排队任务（queue_order 是全局的，必须按成员过滤，
+            # 否则会用当前用户的顺序去占别人的槽位）
+            kind_queued = [tid for tid in old_queued
+                           if (t := qs.queue_tasks.get(tid)) and t.get("kind") == kind
+                           and ((not _isolation_on()) or (user and t.get("member_id") == user["user_id"]))]
+            known = set(kind_queued)
+            ordered, seen = [], set()
+            for tid in new_order:
+                if tid in known and tid not in seen:
+                    seen.add(tid)
+                    ordered.append(tid)
+            rest = [tid for tid in kind_queued if tid not in seen]
+            stale = [tid for tid in new_order if tid not in known]
+            if stale:
+                logger.info("[queue] reorder(%s): 忽略 %d 个已不在排队的 id: %s",
+                            kind, len(stale), stale)
+            # ordered + rest 恰好覆盖全部 kind 槽位，逐槽填回
+            it = iter(ordered + rest)
+            final_order = [next(it) if tid in known else tid for tid in old_queued]
         else:
             # 全量重排（旧行为）
             old_set, new_set = set(old_queued), set(new_order)
