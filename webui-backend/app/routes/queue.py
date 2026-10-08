@@ -92,6 +92,15 @@ async def submit_to_queue(
     return {"task_id": task_id, "status": "queued", "queue_position": len(qs.queue_order)}
 
 
+# 列表接口不返回的重字段。
+# `lines` 是整篇配音稿原文：实测线上 240 条任务时占响应体 945 KB / 1.16 MB（79%）。
+# `params`/`silence`/`voices` 是合成入参，前端同样从不读取。
+# 列表的唯一消费方是前端 QueuePanel（api/client.ts:listQueue），它只用
+# status/progress/project_name/error 这类轻量字段；`getQueueTask`（返回完整任务）
+# 在前端没有任何调用方。所以列表接口无需承担这几个字段的传输成本。
+_LIST_OMIT_FIELDS = frozenset({"lines", "params", "silence", "voices"})
+
+
 @router.get("/api/queue")
 async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
     """列出当前用户可见的队列任务。排序：运行中 → 排队中(按执行顺序) → 终态(按创建时间倒序)。"""
@@ -140,8 +149,10 @@ async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
         ct = qs.queue_tasks.get(cur)
         if not ct or ct.get("member_id") != user["user_id"]:
             cur = None  # 正在合成的是别人的任务，不暴露
+    # ⚠️ 必须**浅拷贝后再剔除**：tasks 里的 dict 就是 qs.queue_tasks 中的实况对象，
+    # 直接 pop 会破坏内存里的任务（合成与持久化都依赖 lines）。
     return {
-        "tasks": tasks,
+        "tasks": [{k: v for k, v in t.items() if k not in _LIST_OMIT_FIELDS} for t in tasks],
         "count": len(tasks),
         "current": cur,
         "queued": len(my_queued_ids),

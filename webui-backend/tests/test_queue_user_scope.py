@@ -14,6 +14,9 @@ task_id 直接吐给前端：
   3. current 字段：原来是全局「正在合成的任务 id」，若是别人的则为 null
   4. paused 列表：它是在主循环外**重新遍历全表**收集的，主循环那条 continue
      管不到它 ⇒ 原来会把别人已暂停的任务整条塞进你的列表（越权泄露）
+  5. 响应体瘦身（2026-10-08 晚）：列表不再返回 lines/params/silence/voices
+     （线上 240 条任务时 lines 占 945 KB / 1.16 MB），但必须**浅拷贝后剔除** ——
+     这些 dict 就是 qs.queue_tasks 里的实况对象，直接 pop 会毁掉内存任务。
 另锁一个语义事实：queue_position 仍是**全局位次**（真实等待位次，不含别人信息）。
 """
 
@@ -148,6 +151,31 @@ def main():
     pos = {t["id"]: t.get("queue_position") for t in r["tasks"]}
     check("p1 在全局第 4 位 ⇒ position = 4（别人占着中间的位置）",
           pos[p1] == 4, str(pos))
+
+    print("── 列表瘦身：不回传重字段，且不能破坏内存中的原对象 ──")
+    # 背景：线上 240 条任务时 /api/queue 响应体 1.16 MB，其中 lines 独占 945 KB（79%），
+    # 而前端 QueuePanel 从不读取这几个字段 ⇒ 列表接口不再返回它们。
+    r = client.get("/api/queue", headers=a1).json()
+    omitted = {"lines", "params", "silence", "voices"}
+    leaked = [t["id"] for t in r["tasks"] if omitted & set(t.keys())]
+    check("列表响应不含 lines/params/silence/voices", not leaked, f"泄漏: {leaked}")
+
+    keep = {"id", "status", "project_name", "kind"}
+    thin = [t["id"] for t in r["tasks"] if not keep <= set(t.keys())]
+    check("前端渲染依赖的轻量字段仍在（防止误删）", not thin, f"缺字段: {thin}")
+
+    # ⚠️ 这是本次改动最关键的回归点：tasks 里的 dict 就是 qs.queue_tasks 的实况对象，
+    # 若用 pop/del 剔除字段，会毁掉内存里的任务（合成与持久化都依赖 lines）。
+    live = qs.queue_tasks[p1]
+    check("内存中原对象仍带 lines（浅拷贝未破坏）",
+          isinstance(live.get("lines"), list) and len(live["lines"]) == 1,
+          f"lines={live.get('lines')!r}")
+    check("内存中原对象仍带 params/voices/silence",
+          all(k in live for k in ("params", "voices", "silence")),
+          str(sorted(live.keys())))
+
+    one = client.get(f"/api/queue/{p1}", headers=a1).json()
+    check("单任务接口仍返回完整字段（含 lines）", "lines" in one)
 
     queue_routes.process_queue = _ORIG_PROCESS_QUEUE
     print(f"\n结果：{PASS} 通过，{FAIL} 失败")

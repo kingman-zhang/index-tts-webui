@@ -72,9 +72,16 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const isDraggingRef = useRef(false);
+  const inFlightRef = useRef(false); // 是否有一个 /api/queue 请求尚未返回
 
-  const load = async () => {
+  const load = async (force = false) => {
     if (isDraggingRef.current) return; // 拖拽中不刷新
+    // 轮询叠加保护：上一次请求还没返回就跳过本次 tick。
+    // 实测线上 /api/queue 单次要 4–24s、1.16MB，而间隔只有 2s ⇒ 稳态下 5–12 个请求
+    // 同时在途、数 MB 数据同时在传，把带宽吃光（音色上传失败、任务提交变慢同源于此）。
+    // 用户主动操作走 load(true) 不受此限，否则点完按钮界面要等十几秒才刷新。
+    if (!force && inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const r = await api.listQueue();
       setTasks(r.tasks);
@@ -107,13 +114,31 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
           }
         }
       }
-    } catch {}
+    } catch {
+      // 网络错误/401 等交给下一轮轮询重试
+    } finally {
+      inFlightRef.current = false;
+    }
   };
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
+    // 自适应轮询：基线 2s；单次响应超过 3s 就按 2×耗时退避（上限 30s）。
+    // 用链式 setTimeout 而非 setInterval —— 只有这样才能按上一次的实际耗时调整间隔，
+    // 让"后端慢"自动转化为"轮询变疏"，而不是请求叠罗汉。
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      const t0 = Date.now();
+      await load();
+      if (cancelled) return;
+      const cost = Date.now() - t0;
+      timer = setTimeout(tick, cost > 3000 ? Math.min(cost * 2, 30000) : 2000);
+    };
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
   }, [refreshKey]);
 
   const kindOf = (t: QueueTask): "podcast" | "mono" => (t.kind === "mono" ? "mono" : "podcast");
@@ -174,19 +199,19 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     if (res?.cancelling && wasCancelling) {
       window.alert("该任务仍有执行器在运行，已再次请求取消；当前分段合成结束后会自动移除。");
     }
-    load();
+    load(true);
   };
 
   const clearFinished = async () => {
     // 只清空当前 tab 的类型：双人播客与单人配音各自独立，
     // 否则在播客页点一下会把配音页的已完成任务一起清掉。
     await api.clearFinishedTasks(activeKind);
-    load();
+    load(true);
   };
 
   const retry = async (id: string) => {
     await api.retryQueueTask(id);
-    load();
+    load(true);
   };
 
   const bulkPause = async () => {
@@ -194,7 +219,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     setBulkBusy(true);
     try {
       await api.pauseQueuedTasks(activeKind);
-      await load();
+      await load(true);
     } catch (e: any) {
       window.alert(`暂停排队任务失败: ${e.message}`);
     } finally {
@@ -207,7 +232,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     setBulkBusy(true);
     try {
       await api.resumePausedTasks(activeKind);
-      await load();
+      await load(true);
     } catch (e: any) {
       window.alert(`恢复暂停任务失败: ${e.message}`);
     } finally {
@@ -228,10 +253,10 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     if (!nextName || nextName === task.project_name) return;
     try {
       await api.updateQueueTaskName(task.id, nextName);
-      load();
+      load(true);
     } catch (e: any) {
       window.alert(`修改任务名称失败: ${e.message}`);
-      load();
+      load(true);
     }
   };
 
@@ -305,7 +330,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       await api.reorderQueue(newKindOrder, activeKind);
     } catch (e: any) {
       window.alert(`排序失败: ${e.message}`);
-      load();
+      load(true);
     }
   };
 
