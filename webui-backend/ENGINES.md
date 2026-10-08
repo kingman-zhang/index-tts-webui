@@ -4,7 +4,7 @@
 
 `select_engine()` 返回进程级 pool 门面；每段 `synthesize_segment()` 单独取得租约，mono/podcast 跨任务共享并发计数。仅支持当前单 backend 进程，不扩展数据库。
 
-`TTS_RESOURCES` 为非空 JSON 列表；也可通过 `TTS_RESOURCES_FILE` 指向 JSON 文件（前者优先）。Docker 可使用现有数据卷中的 `/app/data/config/tts-resources.json`，路径与账号 key 配在挂载的 backend `.env` 中，JSON 不放密钥。摘要 `pool_schema_version=3` 标识池结构版本（v3 = 语速只在资源侧应用一次，`speed_guaranteed=true`）。
+`TTS_RESOURCES` 为非空列表；也可通过 `TTS_RESOURCES_FILE` 指向一个文件（前者优先）。配置格式是 **YAML**（`yaml.safe_load`，**文件扩展名必须是 `.yaml`/`.yml`**）—— 能写注释，见下节。Docker 可使用现有数据卷中的 `/app/data/config/tts-resources.yaml`，路径与账号 key 配在挂载的 backend `.env` 中，配置里不放密钥。摘要 `pool_schema_version=3` 标识池结构版本（v3 = 语速只在资源侧应用一次，`speed_guaranteed=true`）。
 
 ### 三类服务，一种写法（2026-09-30 收敛）
 
@@ -25,43 +25,73 @@
 未知字段的报错会点名到具体字段（typo 的 `base_ur` 会立刻被抓住，而不是悄悄退回默认值）。
 **凭据问题一次列全**（配了三家云只报第一家 = 让人来回重启三次），并且不会把密钥回显进日志。
 
-### 这份文件是**严格 JSON**，不要写注释
+### 配置用 YAML：想停用一台就注释掉（2026-10-08）
 
-有人会想「把备用那台先注释掉、要用了再放开」—— 但 JSON（RFC 8259）**不支持注释**，
-尾随逗号、BOM 同样不允许。
+这份配置是 **YAML**，`#` 注释是合法语法：
 
-**刻意不做宽容解析**（2026-09-30 决定）。兼容注释看起来只是多二十行解析代码，实际代价是：
-这份配置从「JSON」变成「只有本项目认得的一种方言」—— VS Code 的 JSON 校验会标红、
-格式化工具会拒绝、用 jq / 其它语言写的运维脚本读不了，接手的人也无从判断哪部分是规范。
-为迁就一次手滑而扩宽协议，不划算。
-
-**但报错必须说清写错了什么**。`json.loads` 原生只给位置（`Expecting value: line 1 column 1`），
-而「写了注释」和「文件带 BOM」这两种错法**恰好都表现为第 1 行第 1 列**，毫无指向性。
-所以 `factory._diagnose_json_failure` 会把它们直接点名：
-
-```
-资源池配置不是合法 JSON：Expecting value: line 1 column 1 (char 0)。
-第 1 行是**注释**，而 JSON 不支持注释（`//`、`/* */`、`#` 都不行）—— 要暂时停用某条资源，把它从数组里删掉
+```yaml
+- id: gpu-a
+  provider: local
+  base_url: http://host-a:8000
+# 备用机先停用，要用了把下面两行的 # 去掉
+# - id: gpu-b
+#   provider: local
+#   base_url: http://host-b:8000
 ```
 
-诊断只看「行首是不是注释符」：手写注释几乎总是整行，而 URL（`https://…`）永远不会
-出现在行首 ⇒ **零误报**。
+> 为什么不再是 JSON：JSON（RFC 8259）不支持注释，而「先停用一台、要用了再放开」是
+> 真实且频繁的需求。2026-09-30 曾明确否决「给 JSON 加注释兼容」—— 那会把配置变成
+> **只有本项目认得的一种方言**（VS Code 的 JSON 校验标红、`jq` 读不了）。
+> 2026-10-08 换了条正路：**用 YAML**。注释是 YAML 规范的一部分，编辑器、`yq`、
+> 各家 SDK 都认，不产生方言。
 
-想「停用一条」就**真的删掉它**（要找回历史版本靠 git / 另存备份），别指望在 JSON 里注释。
+配套的两条硬约束：
+
+- **文件扩展名必须是 `.yaml` / `.yml`**。YAML 是 JSON 的超集，所以让解析器照读
+  `.json` 也能跑通 —— 但那样一个叫 `.json` 的文件里写着 `#` 注释，两边工具都不认，
+  又回到方言那条路。扩展名不对直接失败，报错里给出该改成什么名字。
+  **文件内容不用动**：现有 JSON 写法就是合法 YAML，`mv` 一下即可。
+- 解析是**严格 YAML**：缩进错了、`键:值` 少了空格、`//` 这种 C 风格注释都会报错。
+  而 YAML 规范本身允许的东西（`#` 注释、BOM、流式写法的尾随逗号）就是允许的 ——
+  那是规范行为，不是我们放宽。
+
+**报错必须说清写错了什么**。`yaml.safe_load` 的报错只给位置（`expected <block end>,
+but found '?'`），对「这里写了 C 风格注释」毫无指向性。所以
+`factory._diagnose_config_failure` 会**点名到行**：
+
+```
+资源池配置不是合法 YAML（第 2 行第 1 列）：while parsing a block collection；
+expected <block end>, but found '?'。第 2 行是 C 风格注释 —— YAML 的注释符是 `#`
+（想停用某台服务器，把那一整条前面逐行加 `#` 即可）
+```
+
+诊断只看「行首是不是 `//` / `/*`」与「**缩进里**有没有 Tab」：手写注释几乎总是整行，
+而 URL（`https://…`）永远不会出现在行首 ⇒ **零误报**；Tab 只查缩进部分，
+避免把引号里合法的 Tab 也报成缩进错误。
 
 示例不含密钥：
 
-```json
-[
-  {"id":"gpu-a","provider":"local","base_url":"http://127.0.0.1:8000"},
-  {"id":"gpu-b","provider":"local","base_url":"http://127.0.0.1:8001"},
-  {"id":"art","provider":"art","api_key_env":"AUTODL_API_TOKEN"},
-  {"id":"ai302","provider":"302ai","api_key_env":"INDEXTTS302_API_KEY","max_concurrency":2},
-  {"id":"sf","provider":"siliconflow","api_key_env":"SILICONFLOW_API_KEY","weight":2}
-]
+```yaml
+- id: gpu-a
+  provider: local
+  base_url: http://127.0.0.1:8000
+- id: gpu-b
+  provider: local
+  base_url: http://127.0.0.1:8001
+- id: art
+  provider: art
+  api_key_env: AUTODL_API_TOKEN
+- id: ai302
+  provider: 302ai
+  api_key_env: INDEXTTS302_API_KEY
+  max_concurrency: 3
+- id: sf
+  provider: siliconflow
+  api_key_env: SILICONFLOW_API_KEY
+  weight: 2
 ```
 
-模板：`webui-backend/tts-resources.example.json`。
+模板：`webui-backend/tts-resources.example.yaml`。
 
 provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划线、短横线。云端 tier=cloud，本地强制 tier=local、max_concurrency=1。base_url 不允许内嵌凭据或查询参数。art 的 base_url 指服务根地址。
 
@@ -69,8 +99,8 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 | 来源 | 怎么配 | 加减一台 tts-server | 出处 |
 | --- | --- | --- | --- |
-| `TTS_RESOURCES_FILE`（**推荐**） | `.env` 一行指向一个 JSON 文件 | **改文件即生效**（下一次任务） | `config.py:resources_source` |
-| `TTS_RESOURCES` | `.env` 里一整行内联 JSON | 必须重启 backend | 同上 |
+| `TTS_RESOURCES_FILE`（**推荐**） | `.env` 一行指向一个 `.yaml` 文件 | **改文件即生效**（下一次任务） | `config.py:resources_source` |
+| `TTS_RESOURCES` | `.env` 里一整行内联（YAML 流式写法） | 必须重启 backend | 同上 |
 | 旧式分散变量（`TTS_URL` + 各平台 Key） | 什么都没配时的兼容路径 | 必须重启 backend | `factory.py:_resource_specs` |
 
 **热加载**（`factory.build_registry`）：每次取池前比一次配置源指纹（`TTS_RESOURCES_FILE`
@@ -454,17 +484,21 @@ TTS_URL=http://<TTS_HOST>:8000
 
 ```ini
 # 推荐：写进文件 —— 加减服务器不用重启 backend
-TTS_RESOURCES_FILE=data/config/tts-resources.json
+TTS_RESOURCES_FILE=data/config/tts-resources.yaml
 ```
 
-```json
-[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000"},
- {"id":"gpu-b","provider":"local","base_url":"http://host-b:8000"}]
+```yaml
+- id: gpu-a
+  provider: local
+  base_url: http://host-a:8000
+- id: gpu-b
+  provider: local
+  base_url: http://host-b:8000
 ```
 
 ```ini
-# 或者内联一行（改完必须重启 backend）
-TTS_RESOURCES=[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000"},{"id":"gpu-b","provider":"local","base_url":"http://host-b:8000"}]
+# 或者内联一行（改完必须重启 backend）；YAML 流式写法，JSON 写法同样能读
+TTS_RESOURCES=[{id: gpu-a, provider: local, base_url: "http://host-a:8000"}, {id: gpu-b, provider: local, base_url: "http://host-b:8000"}]
 ```
 
 新增的那台上**一开始什么音色都没有 —— 不用手动同步**：合成分到它时由 `voice_sync` 自动
@@ -519,6 +553,8 @@ engine_summary 的 `config_source` 写明池是按哪份配置起的（内联 / 
 新增 tests/test_resource_pool.py，覆盖探测合并、TTL、离线本地跳过、恢复、权重公平、跨任务容量、忙态健康、取消、nonretryable、双 runner、异构 PCM、旧 env、缓存隔离、摘要脱敏、多节点契约和空配置；v3 增补语速专项：原生资源不叠加、非原生资源恰好补一次、播客层语速让位给资源层、atempo 链覆盖 0.25×/4×。
 
 2026-09-30 增补配置专项：多 local **不再需要**任何声明即可共存、已删字段 `shared_voice_paths` 与 typo 字段都报出**可读的**字段名、`TTS_RESOURCES_FILE` 指向不存在文件时明确报错、**改文件自动重建池**、**写坏文件沿用旧池且改回后自动恢复**、`TTS_URL` 缺省从池内首个 local 派生、`config_source` 三态。
+
+2026-10-08 配置由 JSON 切 **YAML**，测试同步换成 YAML 语义：`#` 注释可用且能停用某条、`//`/`/* */` 报错点名到行、Tab 缩进报错、`.json` 扩展名被拒且提示改名、`resources:` 包装键给出改法、**全注释掉直接失败不给空池**；同时把两条「规范放宽」也锁住（BOM 与流式尾随逗号现在合法），免得以后有人把它们改回失败。
 
 测试必须在 import app 前屏蔽 .env 的读取，并使用临时 DATA_DIR 和 fake 凭据；provider 测试用 httpx MockTransport，禁止运行 tools 下 live 测试。内联 `TTS_RESOURCES` 与旧式变量的更新需要重启进程；文件形态由热加载覆盖。不得在仍有租约时 reset_registry。
 

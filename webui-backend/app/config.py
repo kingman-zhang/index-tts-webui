@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 import httpx
+import yaml
 
 # ─── .env 加载（零依赖；在解析启动参数前执行，使 .env 成为默认值）───
 # 规则：KEY=VALUE 每行一条，# 开头为注释；不支持行内注释；
@@ -66,14 +67,22 @@ logger = logging.getLogger("webui-backend")
 if _ENV_LOADED_COUNT:
     logger.info(".env 已加载 %d 项配置（真实环境变量优先）", _ENV_LOADED_COUNT)
 
-# ─── 资源池配置源（2026-09-30 收敛为「一份配置」）─────────────
+# ─── 资源池配置源（2026-09-30 收敛为「一份配置」；2026-10-08 切 YAML）───────
 # 自建 tts-server / 302.ai / SiliconFlow / autodl.art 都是**同一种东西**：池里的一条资源。
-# 所以它们只有一种写法（一个 JSON 列表），没有第二套变量名要记。
+# 所以它们只有一种写法（一个列表），没有第二套变量名要记。
+#
+# 格式是 **YAML**（不是 JSON）：YAML 支持注释，于是「先停用一台、要用了再放开」
+# 不用再删条目 —— 把那一行整段用 `#` 注释掉即可，这是当初要 JSON 的主要痛点。
+# （JSON 是 YAML 的子集，所以 JSON 写法照旧能读；但**文件扩展名必须是 .yaml/.yml**，
+#  见 read_resources_text —— 否则一个叫 .json 的文件里写着注释，编辑器会标红。）
 #
 # 三种形态（优先级即此顺序，见 engines/factory.py:_resource_specs）：
-#   "env"    TTS_RESOURCES 内联 JSON          —— 启动读一次，改它必须重启
-#   "file"   TTS_RESOURCES_FILE 指向的 JSON   —— **支持热加载**，改文件即生效（推荐）
-#   "legacy" 两者都没有                        —— 用旧式分散变量转译（TTS_URL + 各平台 Key）
+#   "env"    TTS_RESOURCES 内联（YAML 流式写法，一行）—— 启动读一次，改它必须重启
+#   "file"   TTS_RESOURCES_FILE 指向的 .yaml      —— **支持热加载**，改文件即生效（推荐）
+#   "legacy" 两者都没有                            —— 用旧式分散变量转译（TTS_URL + 各平台 Key）
+RESOURCE_FILE_SUFFIXES = (".yaml", ".yml")
+
+
 def resources_source() -> tuple[str, str | None]:
     """资源池配置的来源：`(kind, 路径)`。kind ∈ {"env", "file", "legacy"}。
 
@@ -94,7 +103,7 @@ def resource_file_path() -> Path | None:
 
     相对路径按 **backend 根**解析、不按 cwd：`DATA_DIR` 曾经缺省成 cwd 相对的
     `./data`，从错误的目录启动会静默读另一份（空的）data，症状是「配了却不生效」。
-    同一个坑不踩第二次 —— `data/config/tts-resources.json` 这种写法在
+    同一个坑不踩第二次 —— `data/config/tts-resources.yaml` 这种写法在
     「cd webui-backend && python server.py」与容器 `WORKDIR=/app` 下都指同一处。
     """
     _, raw = resources_source()
@@ -107,14 +116,16 @@ def resource_file_path() -> Path | None:
 def read_resources_text() -> str | None:
     """读取资源池配置正文；`legacy` 形态返回 None（由调用方按旧变量转译）。
 
-    ⚠️ 这里**不做任何语法宽容**：这份配置就是标准 JSON（RFC 8259）—— 注释、
-    尾随逗号、BOM 都不该出现，出现即报错。理由：一旦开始兼容，它就不再是 JSON 了，
-    而是一种「只有本项目认得」的方言 —— 编辑器的 JSON 校验（VS Code 会直接标红）、
-    格式化工具、其它语言写的运维脚本全部失效，接手的人也读不懂哪部分才是规范。
-    为迁就一次手滑而扩宽协议，代价远大于收益。
+    ⚠️ 解析是**严格 YAML**（`yaml.safe_load`），不做任何宽容化：缩进错了、冒号后少了
+    空格、C 风格注释（`//`）都会报错。但 YAML 规范本身允许的东西（`#` 注释、BOM、
+    尾随逗号）就是允许的 —— 那是规范行为，不是我们放宽。
 
-    但**报错必须说清写错了什么**（json 原生只给 `line 1 column 1`，对「写了注释」
-    这种错法毫无指向性）—— 那部分是 `factory._diagnose_json_failure` 的职责。
+    ⚠️ **扩展名必须是 `.yaml` / `.yml`**（2026-10-08 决定）。理由：YAML 是 JSON 的超集，
+    一个叫 `.json` 的文件里写 `#` 注释也能被解析 —— 但那已经不是 JSON 了，VS Code 会标红、
+    `jq` 会报错，等于又造出一种「只有本项目认得」的方言（2026-09-30 明确否决过这条路）。
+    改名即可，**文件内容不用动**（现有 JSON 写法就是合法 YAML）。
+
+    报错必须说清写错了什么 —— 那是 `factory._diagnose_config_failure` 的职责。
     """
     kind, _ = resources_source()
     if kind == "env":
@@ -122,7 +133,19 @@ def read_resources_text() -> str | None:
     if kind == "file":
         p = resource_file_path()
         if p is None or not p.is_file():
-            raise ValueError(f"TTS_RESOURCES_FILE 指向的文件不存在：{p}")
+            raise ValueError(
+                f"TTS_RESOURCES_FILE 指向的文件不存在：{p}\n"
+                f"（若你是刚从 .json 迁过来的：把配置改名成 .yaml（内容不用动），"
+                f"并同步改 .env 里这一行的指向）"
+            )
+        if p.suffix.lower() not in RESOURCE_FILE_SUFFIXES:
+            raise ValueError(
+                f"资源池配置只认 YAML（{p.suffix or '无扩展名'}）：{p}\n"
+                f"请改名为 {p.with_suffix('.yaml').name}（**文件内容不用动**，"
+                f"JSON 写法就是合法 YAML），并把 .env 里的 TTS_RESOURCES_FILE 一起改掉。\n"
+                f"这么要求是为了「一个 .json 文件里写着 # 注释」那种两边都不认的中间态："
+                f"YAML 支持注释，所以配置文件统一用 .yaml。"
+            )
         return p.read_text(encoding="utf-8")
     return None
 
@@ -138,13 +161,13 @@ def _pool_first_local_url() -> str | None:
     try:
         raw = read_resources_text()
     except ValueError:
-        return None   # 文件缺失/读不了：让 factory 去报那条更明确的错
+        return None   # 文件缺失/扩展名不对：让 factory 去报那条更明确的错
     if not raw:
         return None
     try:
-        items = json.loads(raw)
-    except ValueError:
-        return None   # 非法 JSON 同上
+        items = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return None   # 非法 YAML 同上
     if not isinstance(items, list):
         return None
     for item in items:

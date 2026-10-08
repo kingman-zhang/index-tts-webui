@@ -1,33 +1,37 @@
 """进程级资源池工厂；旧环境变量仅转译配置，不保留旧优先级算法。
 
-## 配置：三类服务，一种写法（2026-09-30 收敛）
+## 配置：三类服务，一种写法（2026-09-30 收敛；2026-10-08 切 YAML）
 
 自建 tts-server、302.ai、SiliconFlow、autodl.art 在池里都是**同一条资源**，
-所以只有一种写法 —— 一个 JSON 列表，`provider` 决定它是什么。增减一台服务器
+所以只有一种写法 —— 一个列表，`provider` 决定它是什么。增减一台服务器
 就是增删一条，不需要记第二套变量名、不需要改代码。
+
+配置是 **YAML**：支持注释 ⇒ 「先停用一台、要用了再放开」把整条用 `#` 注释掉即可。
+JSON 写法照样能读（JSON 是 YAML 子集），但**文件扩展名必须是 `.yaml`/`.yml`**。
 
 三种来源（`config.resources_source()`，优先级即此顺序）：
 
 | 形态 | 怎么配 | 加减一台服务器 |
 | --- | --- | --- |
-| `TTS_RESOURCES` | `.env` 里一行内联 JSON | 改完**要重启** |
-| `TTS_RESOURCES_FILE` | 指向一个 JSON 文件 | **改文件即生效**（热加载，见 `build_registry`） |
+| `TTS_RESOURCES` | `.env` 里一行内联 | 改完**要重启** |
+| `TTS_RESOURCES_FILE` | 指向一个 `.yaml` 文件 | **改文件即生效**（热加载，见 `build_registry`） |
 | 旧式分散变量 | `TTS_URL` + `INDEXTTS302_API_KEY` 等 | 要重启 |
 
-推荐 `TTS_RESOURCES_FILE`：模板见 `webui-backend/tts-resources.example.json`，
-字段说明见 `ENGINES.md`。密钥用 `api_key_env` 引用环境变量名，**不写进 JSON**。
+推荐 `TTS_RESOURCES_FILE`：模板见 `webui-backend/tts-resources.example.yaml`，
+字段说明见 `ENGINES.md`。密钥用 `api_key_env` 引用环境变量名，**不写进配置**。
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
 import threading
 from dataclasses import fields
 from urllib.parse import urlsplit
+
+import yaml
 
 from ..config import (DATA_DIR, TTS_URL, http_client, read_resources_text,
                       resource_file_path, resources_source)
@@ -60,33 +64,38 @@ _DEFAULT_KEY_ENV = {
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-_BOM = "\ufeff"
 
+def _diagnose_config_failure(raw: str, exc: yaml.YAMLError) -> str:
+    """把 YAML 的解析失败翻译成「你实际写错了什么」。
 
-def _diagnose_json_failure(raw: str, exc: ValueError) -> str:
-    """把 json 的解析失败翻译成「你实际写错了什么」。
+    `yaml.safe_load` 的报错格式是
 
-    `json.loads` 的原生报错只有位置（`Expecting value: line 1 column 1`），而手写配置
-    最常犯的两种错 —— **写了注释**、**文件带 BOM** —— 恰恰都表现为第 1 行第 1 列，
-    毫无指向性。这两种又都是 JSON 规范**不允许**的（所以不能靠宽容解析绕过去，
-    见 `config.read_resources_text` 的说明），只能靠报错讲清楚。
+        while parsing a block mapping
+          in "<unicode string>", line 3, column 5
+        expected <block end>, but found '-'
 
-    诊断只看「行首是不是注释符」：手写注释几乎总是整行，而 URL（`https://…`）
-    永远不会出现在行首 ⇒ **零误报**。行尾注释落到通用提示里，不会被误判成别的原因。
+    —— 位置有了，但「该改成什么」没有。所以这里补上最常犯的两种错，并**点名到行**：
+    C 风格注释（YAML 的注释符是 `#`）与 Tab 缩进（YAML 只允许空格）。
+
+    诊断只看「行首是不是 `//` / `/*`」与「**缩进里**有没有 Tab」：手写注释几乎总是
+    整行，而 URL（`https://…`）永远不会出现在行首 ⇒ **零误报**；Tab 只查缩进部分，
+    避免把引号里合法的 Tab 也报成缩进错误。
     """
-    where = f"：{exc}"
-    if raw.startswith(_BOM):
-        return (f"资源池配置不是合法 JSON{where}。文件开头有 UTF-8 **BOM**"
-                f"（字节 EF BB BF）—— RFC 8259 要求 JSON 文本不得带 BOM，"
-                f"请用「UTF-8 无 BOM」重新保存")
+    mark = getattr(exc, "problem_mark", None)
+    where = f"（第 {mark.line + 1} 行第 {mark.column + 1} 列）" if mark is not None else ""
+    parts = [x for x in (getattr(exc, "context", None), getattr(exc, "problem", None)) if x]
+    detail = f"：{'；'.join(parts)}" if parts else f"：{exc}"
+    head = f"资源池配置不是合法 YAML{where}{detail}"
     for lineno, line in enumerate(raw.splitlines(), 1):
         stripped = line.lstrip()
-        if stripped.startswith(("//", "/*", "*")):
-            return (f"资源池配置不是合法 JSON{where}。第 {lineno} 行是**注释**，"
-                    f"而 JSON 不支持注释（`//`、`/* */`、`#` 都不行）—— "
-                    f"要暂时停用某条资源，把它从数组里删掉")
-    return (f"资源池配置不是合法 JSON{where}。常见原因：逗号多写/漏写、"
-            f"引号或括号不配对、写成了注释（JSON 不支持注释）")
+        if stripped.startswith(("//", "/*")):
+            return (f"{head}。第 {lineno} 行是 C 风格注释 —— YAML 的注释符是 `#`"
+                    f"（想停用某台服务器，把那一整条前面逐行加 `#` 即可）")
+        if "\t" in line[:len(line) - len(stripped)]:
+            return (f"{head}。第 {lineno} 行的**缩进**里用了 Tab —— YAML 只允许空格缩进"
+                    f"（把 Tab 换成等宽空格）")
+    return (f"{head}。常见原因：缩进不一致（Tab 与空格混用、同级条目没对齐）、"
+            f"`键: 值` 的冒号后少了空格、列表项的 `-` 与上一级缩进对不上")
 
 
 def _looks_like_a_secret(value: str) -> bool:
@@ -125,9 +134,10 @@ def _credential_hint(spec: ResourceConfig) -> str:
 
 
 def _make_spec(item) -> ResourceConfig:
-    """把一条 JSON 对象变成 ResourceConfig；错误消息必须能直接指向要改的那一行。"""
+    """把一条配置变成 ResourceConfig；错误消息必须能直接指向要改的那一行。"""
     if not isinstance(item, dict):
-        raise ValueError(f"资源列表的每一项都必须是 JSON 对象，收到 {type(item).__name__}")
+        raise ValueError(f"资源列表的每一项都必须是映射（`- id: ...` 或 `- {{id: ...}}`），"
+                         f"收到 {type(item).__name__}")
     unknown = sorted(set(item) - _ALLOWED_FIELDS)
     if unknown:
         detail = "；".join(f"{k} —— {_REMOVED_FIELDS[k]}" if k in _REMOVED_FIELDS else k
@@ -142,14 +152,25 @@ def _make_spec(item) -> ResourceConfig:
 
 
 def _resource_specs() -> list[ResourceConfig]:
-    raw = read_resources_text()   # 文件形态下文件缺失会在这里明确报错
+    raw = read_resources_text()   # 文件形态下文件缺失/扩展名不对会在这里明确报错
     if raw is not None:
         try:
-            items = json.loads(raw)
-        except ValueError as exc:
-            raise ValueError(_diagnose_json_failure(raw, exc)) from None
+            items = yaml.safe_load(raw)
+        except yaml.YAMLError as exc:
+            raise ValueError(_diagnose_config_failure(raw, exc)) from None
+        if items is None:
+            raise ValueError(
+                "资源池配置是空的（只有注释或什么都没有）—— 至少要留一条资源。"
+                "全部注释掉等于没有引擎可用，所以这里直接失败而不是给你一个空池。")
+        if isinstance(items, dict):
+            raise ValueError(
+                f"资源池配置的顶层必须是**列表**（每行以 `- ` 开头），收到的是映射"
+                f"（键：{', '.join(map(str, items)) or '无'}）。"
+                f"如果它套了一层 `resources:` 这样的包装键，把那一行删掉、"
+                f"让 `- id: ...` 直接顶格即可")
         if not isinstance(items, list) or not items:
-            raise ValueError("资源列表必须是非空 JSON 数组")
+            got = "空列表" if isinstance(items, list) else type(items).__name__
+            raise ValueError(f"资源列表必须是非空列表（顶层每行以 `- ` 开头），收到{got}")
         specs = [_make_spec(item) for item in items]
         if len({s.id for s in specs}) != len(specs):
             raise ValueError("资源 id 重复")
@@ -230,8 +251,8 @@ def build_registry(force: bool = False):
 
     热加载只对 `TTS_RESOURCES_FILE` 生效：环境变量在进程里改不了，`.env` 也一样
     （启动时读一次进 `os.environ` 就固定了）。所以「上线/下线一台 tts-server 不用
-    重启 backend」这件事的配法，就是把资源写进 JSON 文件、用
-    `TTS_RESOURCES_FILE` 指过去 —— 加一行、删一行，下一次任务即可用。
+    重启 backend」这件事的配法，就是把资源写进 `.yaml` 文件、用
+    `TTS_RESOURCES_FILE` 指过去 —— 加一条、注释掉一条，下一次任务即可用。
 
     **重建失败不推翻现有池**：手滑写坏一个字符不该让整条合成链路停摆 ——
     沿用上一次的配置并打 ERROR（记下这个坏版本，避免每个请求都重试并刷日志），
@@ -276,7 +297,7 @@ def config_source() -> str:
     if kind == "file":
         return f"TTS_RESOURCES_FILE={resource_file_path()}（支持热加载，改文件即生效）"
     return {
-        "env": "TTS_RESOURCES（内联 JSON，改动需重启）",
+        "env": "TTS_RESOURCES（内联 YAML，改动需重启）",
         "legacy": "旧式环境变量（TTS_URL + 各平台 API Key，改动需重启）",
     }[kind]
 

@@ -5,3 +5,6 @@ pydantic>=2.6.0
 python-multipart>=0.0.9
 python-docx>=1.1.0
 pypdf>=4.0.0
+# 资源池配置（tts-resources.yaml）的解析器。uvicorn[standard] 已间接带入 PyYAML，
+# 但那是它为自己 --log-config 用的 —— 我们直接 import，就显式写出来，不搭便车。
+pyyaml>=6.0

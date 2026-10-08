@@ -26,9 +26,10 @@ services:
       - ./webui-backend/logs:/app/logs
       # .env 挂载而非烘焙进镜像；改配置后 docker compose restart backend 生效
       - ./webui-backend/.env:/app/.env:ro
-      # 可选非敏感资源 JSON 放在 data/config/，已由上面的数据卷挂载。
-      # backend .env 设置 TTS_RESOURCES_FILE=/app/data/config/tts-resources.json
-      # 多账号密钥仍只写 backend .env；不要写入 JSON、镜像或 compose environment。
+      # 可选非敏感资源 YAML 放在 data/config/，已由上面的数据卷挂载。
+      # backend .env 设置 TTS_RESOURCES_FILE=/app/data/config/tts-resources.yaml
+      # （2026-10-08 由 .json 切 YAML：能写注释，停用一台整条 # 掉即可；旧文件 mv 改名就用）
+      # 多账号密钥仍只写 backend .env；不要写入配置、镜像或 compose environment。
     expose:
       - "3001"
     healthcheck:

@@ -12,6 +12,8 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ['DATA_DIR'] = tempfile.mkdtemp(prefix='pool-test-')
 _original_exists = Path.exists
@@ -401,7 +403,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_file_config_and_default_302_url(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'resources.json'
+            path = Path(directory) / 'resources.yaml'
             path.write_text(json.dumps([dict(id='a', provider='302ai', api_key_env='A')]))
             with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path), 'A': 'fake'}, clear=True):
                 pool = factory.build_registry(force=True).engines[0]
@@ -442,16 +444,19 @@ class ConfigTests(unittest.TestCase):
 
     def test_missing_resource_file_fails_clearly(self):
         with tempfile.TemporaryDirectory() as directory:
-            missing = str(Path(directory) / 'nope.json')
+            missing = str(Path(directory) / 'nope.yaml')
             with patch.dict(os.environ, {'TTS_RESOURCES_FILE': missing}, clear=True):
                 with self.assertRaises(ValueError) as ctx:
                     factory.build_registry(force=True)
-                self.assertIn('不存在', str(ctx.exception))
+                msg = str(ctx.exception)
+                self.assertIn('不存在', msg)
+                # 迁移期最容易犯的错就是「改了 .env 忘了改名」（或反之）—— 报错里直接把路指出来
+                self.assertIn('.yaml', msg)
 
     def test_config_file_hot_reload(self):
         """改 TTS_RESOURCES_FILE 即生效、不用重启 —— 「加减一台 tts-server」的主路径。"""
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'resources.json'
+            path = Path(directory) / 'resources.yaml'
             one = [dict(id='c1', provider='302ai', api_key_env='A')]
             path.write_text(json.dumps(one))
             with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path), 'A': 'fake'}, clear=True):
@@ -468,12 +473,12 @@ class ConfigTests(unittest.TestCase):
     def test_broken_config_file_keeps_previous_pool(self):
         """写坏一个字符不该让合成链路停摆：沿用旧池并打 ERROR，改好自动恢复。"""
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'resources.json'
+            path = Path(directory) / 'resources.yaml'
             spec = [dict(id='c1', provider='302ai', api_key_env='A')]
             path.write_text(json.dumps(spec))
             with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path), 'A': 'fake'}, clear=True):
                 good = factory.build_registry(force=True).engines[0]
-                path.write_text('{ 这不是 JSON')
+                path.write_text('{ 这不是 YAML')
                 self.assertIs(factory.build_registry().engines[0], good)
                 path.write_text(json.dumps(spec + [dict(id='c2', provider='302ai', api_key_env='A')]))
                 self.assertEqual(
@@ -498,7 +503,7 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {'TTS_RESOURCES': json.dumps(specs)}, clear=True):
             self.assertIn('TTS_RESOURCES', factory.engine_summary()[0]['config_source'])
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'resources.json'
+            path = Path(directory) / 'resources.yaml'
             path.write_text(json.dumps(specs))
             with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
                 source = factory.engine_summary()[0]['config_source']
@@ -507,53 +512,121 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertIn('旧式', factory.engine_summary()[0]['config_source'])
 
-    # ─── 严格 JSON：不宽容语法，但报错要指出真凶（2026-09-30）───
+    # ─── 配置是 YAML（2026-10-08 由 JSON 切）：注释成了特性，报错仍要点名真凶 ───
 
-    def test_comments_are_rejected_with_a_clear_hint(self):
-        """JSON 不支持注释 —— 报错必须点名「第几行是注释」，而不是只给行列位置。
+    def test_hash_comments_are_allowed_and_can_disable_a_resource(self):
+        """`#` 注释是 YAML 的**特性**，也是这次从 JSON 切过来的唯一理由。
 
-        `Expecting value: line 1 column 1` 对「写了注释」毫无指向性，而宽容解析
-        又会把这份配置变成只有本项目认得的方言（见 ENGINES.md 的说明）。
-        严格拒绝 + 说清原因，是唯一两头都站得住的做法。
+        用户原话：「我切换配置时，使用注释可能更方便一些」—— 想停用某台服务器时
+        整条注释掉，比「删掉、用的时候再凭记忆写回来」安全得多。
         """
-        l1 = json.dumps(dict(id='l1', provider='local', base_url='http://a:8000'))
-        for text in [f"// 备用机\n[{l1}]", f"[\n{l1}\n/* 停用一条 */\n]", f"# 注释\n[{l1}]"]:
+        text = ('# 备用机先停用\n'
+                '- {id: l1, provider: local, base_url: "http://a:8000"}\n'
+                '# - {id: l2, provider: local, base_url: "http://b:8000"}\n')
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
+
+    def test_c_style_comment_is_rejected_with_line_hint(self):
+        """`//` 与 `/* */` 都不是 YAML 注释符 —— 报错必须**点名到行**。
+
+        `yaml.safe_load` 原生只说 `expected <block end>, but found '?'`，对
+        「这里写了 C 风格注释」毫无指向性。
+        """
+        ok = '- {id: l1, provider: local, base_url: "http://a:8000"}'
+        for text in (f'{ok}\n// 这一行是 C 风格注释\n', f'{ok}\n/* 停用一条 */\n'):
             with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
                 with self.assertRaises(ValueError) as ctx:
                     factory.build_registry(force=True)
             msg = str(ctx.exception)
-            self.assertIn('注释', msg)
-            self.assertIn('JSON 不支持注释', msg)
+            self.assertIn('第 2 行', msg)
+            self.assertIn('C 风格注释', msg)
+            self.assertIn('`#`', msg)
 
-    def test_comment_hint_names_the_offending_line(self):
-        """报错给出**行号** —— 「第几行」是定位手写配置最快的线索。"""
-        l1 = json.dumps(dict(id='l1', provider='local', base_url='http://a:8000'))
-        text = "[\n  " + l1 + ",\n  // 这一行是注释\n]"
+    def test_tab_indent_is_rejected_with_line_hint(self):
+        """YAML 只允许**空格**缩进；原生报错 `found character '\\t'...` 看不出是缩进问题。"""
+        text = '- id: l1\n\tprovider: local\n'
         with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
             with self.assertRaises(ValueError) as ctx:
                 factory.build_registry(force=True)
-        self.assertIn('第 3 行', str(ctx.exception))
+        msg = str(ctx.exception)
+        self.assertIn('第 2 行', msg)
+        self.assertIn('Tab', msg)
+        self.assertIn('空格', msg)
 
-    def test_trailing_comma_is_rejected(self):
-        """尾随逗号同样不合法（注释掉末项后最容易留下的就是这个）。"""
+    def test_all_commented_out_fails_loudly(self):
+        """全部注释掉 = 没有引擎可用 ⇒ 直接失败，**不给一个空池**。
+
+        空池的故障会推迟到第一次合成才爆（而且是「没有可用资源」这种绕的报错），
+        不如在配置解析时就拦住。
+        """
+        with patch.dict(os.environ, {'TTS_RESOURCES': '# - {id: l1, provider: local}\n'}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+        self.assertIn('空的', str(ctx.exception))
+
+    def test_top_level_mapping_gets_a_hint(self):
+        """`resources:` 包装键是很自然的误写 —— 报错要点名那个键、并说清怎么改。"""
+        with patch.dict(os.environ,
+                        {'TTS_RESOURCES': 'resources:\n  - {id: l1, provider: local}\n'}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+        msg = str(ctx.exception)
+        self.assertIn('resources', msg)
+        self.assertIn('列表', msg)
+        self.assertIn('顶格', msg)
+
+    def test_flow_style_trailing_comma_is_accepted(self):
+        """YAML 的**流式**写法允许尾随逗号（JSON 不允许）—— 记录规范行为，别当成 bug 去修。
+
+        切 YAML 之后 `[...,]` 不再报错，这正是「规范允许的就不能算我们的放宽」
+        的实例；但块式（`- {...},`）仍然不合法，见下一条。
+        """
         text = '[{"id":"l1","provider":"local","base_url":"http://a:8000"},]'
         with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
+
+    def test_block_style_trailing_comma_is_still_rejected(self):
+        """块式列表项后面的逗号是 YAML 语法错 —— 别把上面的结论推广到这里。"""
+        text = '- {id: l1, provider: local, base_url: "http://a:8000"},\n'
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
             with self.assertRaises(ValueError) as ctx:
                 factory.build_registry(force=True)
-        self.assertIn('不是合法 JSON', str(ctx.exception))
+        self.assertIn('不是合法 YAML', str(ctx.exception))
 
-    def test_bom_is_reported_clearly(self):
-        """文件带 BOM 时必须说出来 —— 否则只是「line 1 column 1」，看不出是编码问题。"""
+    def test_extension_must_be_yaml(self):
+        """`.json` 要被**拒绝**，且报错要说清「改名即可、内容不用动」。
+
+        为什么不干脆让 YAML 解析器照读 `.json` —— 因为 YAML 是 JSON 的超集，
+        那样一个叫 `.json` 的文件里写 `#` 注释也会被接受；可它已经不是 JSON 了，
+        VS Code 会标红、`jq` 会报错，等于又造出一种「只有本项目认得」的方言
+        （2026-09-30 明确否决过这条路）。改名是零成本的，所以要求改名。
+        """
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'resources.json'
-            body = json.dumps([dict(id='l1', provider='local', base_url='http://a:8000')])
-            path.write_bytes(b'\xef\xbb\xbf' + body.encode('utf-8'))
+            path = Path(directory) / 'tts-resources.json'
+            path.write_text('- {id: l1, provider: local, base_url: "http://a:8000"}')
             with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
                 with self.assertRaises(ValueError) as ctx:
                     factory.build_registry(force=True)
         msg = str(ctx.exception)
-        self.assertIn('BOM', msg)
-        self.assertIn('无 BOM', msg)
+        self.assertIn('只认 YAML', msg)
+        self.assertIn('.yaml', msg)
+        self.assertIn('不用动', msg)
+
+    def test_bom_is_tolerated(self):
+        """BOM 是 YAML 规范允许的开头（JSON 不允许）—— 切换后这条限制自然消失。
+
+        2026-09-30 曾专门为「文件带 BOM」写了一条诊断；现在它不再是错误，
+        所以要有一条测试**锁住「不再报错」**，否则以后有人会把合法配置改回失败。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.yaml'
+            body = '- {id: l1, provider: local, base_url: "http://a:8000"}\n'
+            path.write_bytes(b'\xef\xbb\xbf' + body.encode('utf-8'))
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
+                pool = factory.build_registry(force=True).engines[0]
+                self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
 
     def test_url_in_config_is_not_mistaken_for_a_comment(self):
         """⚠️ 诊断不能把 URL 里的 `//` 当注释 —— 合法配置必须照常通过。
@@ -605,13 +678,13 @@ class ConfigTests(unittest.TestCase):
         self.assertIn('已存在 AUTODL_API_TOKEN', msg)
 
     def test_example_config_stays_parsable(self):
-        """仓库里的示例配置必须始终是**严格 JSON** 且可解析 —— 文档一腐烂，用户照抄就报错。
+        """仓库里的示例配置必须始终可解析 —— 文档一腐烂，用户照抄就报错。
 
-        用标准 `json.loads`（不是项目里的任何解析入口）：这条同时守住「示例文件里
-        不许出现注释/尾随逗号」—— 示例自己都不合法，是最坏的示范。
+        用标准 `yaml.safe_load`（不是项目里的任何解析入口）：这条同时守住
+        「示例文件就叫 .yaml」与「示例里的字段名是 `_make_spec` 认得的」。
         """
-        path = Path(__file__).resolve().parents[1] / 'tts-resources.example.json'
-        items = json.loads(path.read_text(encoding='utf-8'))
+        path = Path(__file__).resolve().parents[1] / 'tts-resources.example.yaml'
+        items = yaml.safe_load(path.read_text(encoding='utf-8'))
         self.assertEqual([i['id'] for i in items],
                          ['gpu-a', 'gpu-b', 'art', 'ai302', 'siliconflow'])
         self.assertTrue(all(i.get('provider') for i in items))

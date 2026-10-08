@@ -26,21 +26,22 @@ python server.py --host 0.0.0.0 --port 3001
 合成走「资源池」，池里每条资源都是同一件事：自建 tts-server（`provider=local`）、
 302.ai、SiliconFlow、autodl.art。**加/减一台服务器 = 加/删一条资源**。
 
-推荐用 JSON 文件（改完不用重启，热加载）：
+推荐用 YAML 文件（改完不用重启，热加载；**能写注释** ⇒ 想停用一台就整条 `#` 掉）：
 
 ```bash
-cp tts-resources.example.json data/config/tts-resources.json   # 按需增删条目
+cp tts-resources.example.yaml data/config/tts-resources.yaml   # 按需增删条目
 ```
 
 ```bash
 # .env 里只加这一行（相对路径按 backend 根解析，容器里 /app/data 就是挂载卷）
-TTS_RESOURCES_FILE=data/config/tts-resources.json
+TTS_RESOURCES_FILE=data/config/tts-resources.yaml
 ```
 
-密钥不写进 JSON，JSON 里只写 `api_key_env`（环境变量名），值仍在 `.env`。
+密钥不写进配置，配置里只写 `api_key_env`（环境变量名），值仍在 `.env`。
+**扩展名必须是 `.yaml`/`.yml`** —— 从旧的 `.json` 迁过来 `mv` 一下即可（内容不用动）。
 字段说明见 `.env.example` 顶部与 `ENGINES.md`。
 
-也支持内联（改完要重启）：`TTS_RESOURCES=[{"id":"gpu-a","provider":"local","base_url":"http://host-a:8000"}]`。
+也支持内联（改完要重启）：`TTS_RESOURCES=[{id: gpu-a, provider: local, base_url: "http://host-a:8000"}]`。
 
 **`TTS_URL` 一般不用填**：未配置时自动取池里第一个 `local` 的地址。它只服务
 **音色管理面**（预设音色上传、音色库增删改/试听、`/api/tts/health` 探针）与旧播客端点，

@@ -27,7 +27,7 @@ vim webui-backend/.env
 | 项 | 要求 |
 |---|---|
 | `MEMBER_ADMIN_TOKEN` | **必须换强随机**（本地是 local-admin-token，绝不能上生产） |
-| `TTS_RESOURCES` / `TTS_RESOURCES_FILE` | 池里有谁（local + 云端）。**推荐文件形态**：加减服务器改 JSON 即可，不用重启；别再用已失效的 `TTS_ENGINE_PREFERRED`（有该行可直接删） |
+| `TTS_RESOURCES` / `TTS_RESOURCES_FILE` | 池里有谁（local + 云端）。**推荐文件形态**：加减服务器改 YAML 即可（能写注释 ⇒ 停用一台就整条 `#` 掉），不用重启；别再用已失效的 `TTS_ENGINE_PREFERRED`（有该行可直接删） |
 | `TTS_URL` | 一般**不用填**：缺省取池里第一个 local。它只服务音色管理面与旧播客端点，合成不读 |
 | `TTS_STATUS_POLL` | `0`（服务器无本地 TTS，探测无意义） |
 | `MEMBER_ENFORCE` / `MEMBER_REQUIRE_LOGIN` | 生产按商业化开关决定 |
@@ -149,17 +149,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir \
       "fastapi>=0.110.0" "uvicorn[standard]>=0.29.0" "httpx>=0.27.0" \
-      "pydantic>=2.6.0" "python-multipart>=0.0.9" "python-docx>=1.1.0" "pypdf>=4.0.0"
+      "pydantic>=2.6.0" "python-multipart>=0.0.9" "python-docx>=1.1.0" "pypdf>=4.0.0" \
+      "pyyaml>=6.0"
 EOF
 
-# 自检三项（缺一 backend 起不来/判 unhealthy）
+# 自检四项（缺一 backend 起不来/判 unhealthy）
 docker run --rm podcast-base:with-deps sh -c \
-  "which curl; ffmpeg -version | head -1; python -c 'import fastapi, uvicorn, httpx; print(\"deps OK\")'"
+  "which curl; ffmpeg -version | head -1; python -c 'import fastapi, uvicorn, httpx, yaml; print(\"deps OK\")'"
 ```
+
+> `pyyaml` 其实**早就间接装上了** —— `uvicorn[standard]` 为 `--log-config` 依赖它，
+> 所以「资源池配置切 YAML」（2026-10-08）**不必重建基础镜像**，`docker compose up -d --build`
+> 直接就能跑。上面把它显式加进来是卫生问题：项目代码 `import yaml`，就不该搭别人 extra 的便车
+> （哪天 uvicorn 去掉这个依赖，我们会突然起不来）。容器里一条命令可确认：
+> `docker exec podcast-backend python -c "import yaml;print(yaml.__version__)"`。
 
 | 要求 | 原因 |
 |---|---|
-| `fastapi/uvicorn/httpx/pydantic/python-multipart/python-docx/pypdf` 齐全 | 业务 Dockerfile 不再装依赖，缺哪个启动即 ModuleNotFoundError |
+| `fastapi/uvicorn/httpx/pydantic/python-multipart/python-docx/pypdf/pyyaml` 齐全 | 业务 Dockerfile 不再装依赖，缺哪个启动即 ModuleNotFoundError |
 | `ffmpeg` | 播客段级变速、响度归一、art 通道 mp3 转码 |
 | `curl`（或用新版 compose 的 python healthcheck） | healthcheck 探活；新 compose 已改为 python urllib，不依赖 curl |
 
