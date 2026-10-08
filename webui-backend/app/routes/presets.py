@@ -12,6 +12,30 @@ from ..config import PRESET_VOICES_DIR, TTS_URL, http_client, logger
 router = APIRouter()
 
 
+def _local_path_fallback(name: str, local_path, why: str) -> dict:
+    """TTS 服务器不可用时的降级：返回 backend 本地路径，真上传交给合成时的 voice_sync。
+
+    为什么必须降级而不是报错 —— 本端点只是「预热」（提前把预设音色推到 tts-server），
+    真正的上传由 `engines/voice_sync.ensure_voice_on_server` 在合成时按**实际分到的那台**
+    补做，而它自己就有「取不到音色表就降级返回原路径」的兜底。所以预热失败在语义上
+    等于「TTS 不可用」，不该让用户连音色都选不上：前端 `selectPreset` 写的是
+    `onChange({voice_path: r.path, ...})`，一旦这里抛错，`onChange` 根本不执行 ——
+    表现为「加载预设音色失败」并且**该音色完全无法选中**。
+
+    典型触发场景：AutoDL 实例关机后端口代理返回 `HTTP 404` + 一张 HTML 报错页
+    （TCP 通、代理在应答，所以不是 ConnectError）。旧实现只对「异常」降级、对
+    「非 200 响应」`raise`，于是把那页 HTML 原文当错误详情弹给了用户。
+    """
+    logger.warning("[preset-upload] tts 不可用（%s），降级返回本地路径 name=%s path=%s",
+                   why, name, local_path)
+    return {
+        "name": name,
+        "path": str(local_path),
+        "size_kb": round(local_path.stat().st_size / 1024, 1),
+        "local_only": True,
+    }
+
+
 @router.get("/api/preset-voices")
 async def list_preset_voices():
     """列出预设音色（分类：女声/男声/情感参考）。"""
@@ -65,7 +89,7 @@ async def upload_preset_to_tts(request: Request):
     if not local_path.exists():
         raise HTTPException(404, f"预设音色不存在: {name}")
 
-    # 先查询 TTS 服务器已有的音色列表，避免重复上传
+    # 先查询 TTS 服务器已有的音色列表，避免重复上传。
     try:
         list_resp = await http_client.get(f"{TTS_URL}/api/voices", timeout=10.0)
         if list_resp.status_code == 200:
@@ -74,6 +98,12 @@ async def upload_preset_to_tts(request: Request):
                 if v.get("name") == name:
                     logger.info("[preset-upload] already on tts, skip upload name=%s path=%s", name, v.get("path"))
                     return {"name": name, "path": v["path"], "size_kb": v.get("size_kb", 0), "local_only": False}
+        else:
+            # 非 200 一律视同「服务器不可用」并**直接短路**：音色表都拿不到，上传必然也拿不到，
+            # 没必要再白等一次 60s 超时（实例关机时这就是常态）。
+            return _local_path_fallback(
+                name, local_path, f"音色表 HTTP {list_resp.status_code} {(list_resp.text or '')[:120]!r}"
+            )
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, OSError) as exc:
         logger.warning("[preset-upload] cannot query tts voice list, will try upload name=%s error=%s", name, exc)
 
@@ -92,12 +122,10 @@ async def upload_preset_to_tts(request: Request):
                 return {"name": name, "path": existing.get("path", name), "size_kb": existing.get("size_kb", 0), "local_only": False}
             except Exception:
                 return {"name": name, "path": name, "size_kb": round(local_path.stat().st_size / 1024, 1), "local_only": False}
-        body_preview = resp.text[:500] if resp.text else ""
-        logger.warning("[preset-upload] tts rejected name=%s status=%s body=%s", name, resp.status_code, body_preview)
-        raise HTTPException(resp.status_code, f"上传到 TTS 服务失败: {body_preview or resp.status_code}")
-    except HTTPException:
-        raise
+        # 非 200/409 同样视同「服务器不可用」→ 降级（详见 _local_path_fallback）。
+        # 上游的报错正文只进日志，不再当业务详情回给前端。
+        body_preview = (resp.text or "")[:200]
+        return _local_path_fallback(name, local_path, f"上传 HTTP {resp.status_code} {body_preview!r}")
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError, OSError) as exc:
         # TTS 不可用，返回本地路径
-        logger.warning("[preset-upload] tts unavailable, returning local path name=%s error=%s", name, exc)
-        return {"name": name, "path": str(local_path), "size_kb": round(local_path.stat().st_size / 1024, 1), "local_only": True}
+        return _local_path_fallback(name, local_path, f"上传失败：{type(exc).__name__}")
