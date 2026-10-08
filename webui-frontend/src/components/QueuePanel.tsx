@@ -582,10 +582,20 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
             </div>
 
             {/* 加载更多：后端每个 kind 只回最近 terminalLimit 条终态以省带宽，
-                被截掉的历史在这里按需取回（不随轮询无限增长，避免又回到 1.16 MB）。 */}
+                被截掉的历史在这里按需取回（不随轮询无限增长，避免又回到 1.16 MB）。
+                ⚠️ 文案必须短：Button 基类带 whitespace-nowrap + shrink-0，
+                而这里是 w-full ⇒ 超长文案不能换行、也不缩，会从按钮两侧溢出边框。
+                「每类各留 N 条」这种解释放 title，别再写回可见文案。 */}
             {hasMore && (
-              <Button variant="outline" size="sm" icon={History} onClick={loadMoreHistory} className="w-full">
-                加载更多历史（共 {terminalTotal} 条终态，每类已显示最近 {terminalLimit} 条）
+              <Button
+                variant="outline"
+                size="sm"
+                icon={History}
+                onClick={loadMoreHistory}
+                className="w-full"
+                title={`已加载每个类型的最近 ${terminalLimit} 条，点击再各取 50 条`}
+              >
+                加载更多历史（共 {terminalTotal} 条）
               </Button>
             )}
 
