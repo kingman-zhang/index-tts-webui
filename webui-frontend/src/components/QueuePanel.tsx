@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X } from "lucide-react";
+import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X, History } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
 import { api } from "@/api/client";
 import { cn, audioDownloadName } from "@/lib/utils";
@@ -74,6 +74,14 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   const isDraggingRef = useRef(false);
   const inFlightRef = useRef(false); // 是否有一个 /api/queue 请求尚未返回
 
+  // 终态任务分页：后端每个 kind 只回最近 N 条终态（活跃任务全量返回）。
+  // 用 ref 保存当前值是因为轮询的 tick 闭包捕获的是首次渲染的 load —— 只靠 state
+  // 会出现「点了加载更多、下一次轮询又缩回默认值」。state 只用于按钮文案。
+  const [terminalLimit, setTerminalLimit] = useState(50);
+  const terminalLimitRef = useRef(50);
+  const [hasMore, setHasMore] = useState(false);
+  const [terminalTotal, setTerminalTotal] = useState(0);
+
   const load = async (force = false) => {
     if (isDraggingRef.current) return; // 拖拽中不刷新
     // 轮询叠加保护：上一次请求还没返回就跳过本次 tick。
@@ -83,10 +91,12 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     if (!force && inFlightRef.current) return;
     inFlightRef.current = true;
     try {
-      const r = await api.listQueue();
+      const r = await api.listQueue(terminalLimitRef.current);
       setTasks(r.tasks);
       setCurrent(r.current);
       setQueued(r.queued);
+      setHasMore(r.has_more);
+      setTerminalTotal(r.terminal_total);
       // 任务从进行中转为失败时自动弹出报错详情（首次加载不弹，避免历史失败打扰）
       const prev = prevStatusRef.current;
       if (prev.size > 0) {
@@ -140,6 +150,15 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       if (timer) clearTimeout(timer);
     };
   }, [refreshKey]);
+
+  // 「加载更多历史」：把每个 kind 的终态上限 +50 后立即重取。
+  // 先写 ref 再调 load，否则这一次请求仍在用旧上限。
+  const loadMoreHistory = () => {
+    const next = Math.min(terminalLimitRef.current + 50, 500);
+    terminalLimitRef.current = next;
+    setTerminalLimit(next);
+    void load(true); // 用户主动操作 ⇒ 绕过 in-flight 跳过
+  };
 
   const kindOf = (t: QueueTask): "podcast" | "mono" => (t.kind === "mono" ? "mono" : "podcast");
 
@@ -561,6 +580,14 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                 );
               })}
             </div>
+
+            {/* 加载更多：后端每个 kind 只回最近 terminalLimit 条终态以省带宽，
+                被截掉的历史在这里按需取回（不随轮询无限增长，避免又回到 1.16 MB）。 */}
+            {hasMore && (
+              <Button variant="outline" size="sm" icon={History} onClick={loadMoreHistory} className="w-full">
+                加载更多历史（共 {terminalTotal} 条终态，每类已显示最近 {terminalLimit} 条）
+              </Button>
+            )}
 
             {/* 清空按钮：可见条件必须覆盖后端会清掉的全部终态
                 （success/failed/interrupted/cancelled）——

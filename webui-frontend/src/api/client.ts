@@ -312,8 +312,15 @@ export const api = {
       body: JSON.stringify(req),
     });
   },
-  async listQueue(): Promise<{ tasks: any[]; count: number; current: string | null; queued: number; queue_order: string[] }> {
-    return fetchJSON(`${BASE}/queue`);
+  // terminalLimit：每个 kind 最多取多少条**终态**任务（活跃任务不受限）。
+  // 队列无条数上限也无自动清理，历史任务会反复挤占带宽 ⇒ 默认只取最近一批，
+  // 用户点「加载更多」时放大这个值。响应里的 has_more/terminal_total 驱动该按钮。
+  async listQueue(terminalLimit?: number): Promise<{
+    tasks: any[]; count: number; terminal_total: number; has_more: boolean;
+    current: string | null; queued: number; queue_order: string[];
+  }> {
+    const q = terminalLimit != null ? `?terminal_limit=${terminalLimit}` : "";
+    return fetchJSON(`${BASE}/queue${q}`);
   },
   async getQueueTask(taskId: string): Promise<any> {
     return fetchJSON(`${BASE}/queue/${taskId}`);

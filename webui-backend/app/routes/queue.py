@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .. import queue_state as qs
 from ..config import logger
@@ -100,10 +100,26 @@ async def submit_to_queue(
 # 在前端没有任何调用方。所以列表接口无需承担这几个字段的传输成本。
 _LIST_OMIT_FIELDS = frozenset({"lines", "params", "silence", "voices"})
 
+# 每个 kind 最多返回多少条**终态**任务（活跃任务即 queued/running/syncing/paused 不受限）。
+# 队列没有条数上限、也没有自动清理：线上实测已达 240 条且**全部是终态**，
+# 每次轮询都全量返回等于让"历史"反复挤占"当前任务"的带宽。前端可点「加载更多」放大。
+_TERMINAL_LIMIT_DEFAULT = 50
+_TERMINAL_LIMIT_MAX = 500
+
 
 @router.get("/api/queue")
-async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
-    """列出当前用户可见的队列任务。排序：运行中 → 排队中(按执行顺序) → 终态(按创建时间倒序)。"""
+async def list_queue(
+    terminal_limit: int = Query(
+        _TERMINAL_LIMIT_DEFAULT, ge=0, le=_TERMINAL_LIMIT_MAX,
+        description="每个 kind 最多返回的终态任务条数（活跃任务不受此限）",
+    ),
+    user: Optional[dict] = Depends(get_optional_user),
+):
+    """列出当前用户可见的队列任务。排序：运行中 → 排队中(按执行顺序) → 终态(按创建时间倒序)。
+
+    终态任务按 kind 各截断到 `terminal_limit` 条（活跃任务永远全量），
+    响应里的 `has_more` / `terminal_total` 供前端「加载更多」使用。
+    """
     if _isolation_on() and not user:
         raise HTTPException(401, "请先登录后查看任务队列")
     running_tasks = []
@@ -137,6 +153,17 @@ async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
     paused_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     # 终态任务按创建时间倒序
     terminal_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+    terminal_total = len(terminal_tasks)
+    # 按 kind 分桶各留最近 terminal_limit 条：前端是以 kind 分 tab 展示的，
+    # 若在这里做全局截断，任务多的那个 tab 会把另一个 tab 的历史整片挤掉。
+    # ⚠️ 活跃任务（queued/running/syncing/paused）永不截断 —— 截掉它们等于用户
+    # 看不见自己的队列，而且排队任务拖得动、删得掉都依赖它在列表里。
+    if terminal_total > terminal_limit:
+        buckets: dict[str, list] = {}
+        for t in terminal_tasks:
+            buckets.setdefault(t.get("kind") or "podcast", []).append(t)
+        terminal_tasks = [t for lst in buckets.values() for t in lst[:terminal_limit]]
+        terminal_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     tasks = running_tasks + queued_tasks + paused_tasks + terminal_tasks
     # queue_order / current 都是**全局**执行态（含其他用户的任务），响应里必须按成员过滤，
     # 否则会把别人的 task_id 暴露给前端。
@@ -154,6 +181,9 @@ async def list_queue(user: Optional[dict] = Depends(get_optional_user)):
     return {
         "tasks": [{k: v for k, v in t.items() if k not in _LIST_OMIT_FIELDS} for t in tasks],
         "count": len(tasks),
+        # 终态截断的可见性：terminal_total 是截断前的终态总数，has_more 供前端显示「加载更多」
+        "terminal_total": terminal_total,
+        "has_more": len(terminal_tasks) < terminal_total,
         "current": cur,
         "queued": len(my_queued_ids),
         "queue_order": my_queued_ids,
