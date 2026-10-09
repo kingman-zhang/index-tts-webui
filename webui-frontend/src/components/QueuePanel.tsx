@@ -70,7 +70,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string; cancelling: boolean } | null>(null);
   const [deleting, setDeleting] = useState(false);
   // 清空确认：批量删除、同样不可恢复。条数在点击那一刻快照，用于说明影响面。
-  const [clearConfirm, setClearConfirm] = useState<{ count: number; label: string } | null>(null);
+  const [clearConfirm, setClearConfirm] = useState<{ count: number } | null>(null);
   const [clearing, setClearing] = useState(false);
   const prevStatusRef = useRef<Map<string, string>>(new Map());
   // 行级进度控制台输出去重：仅在进度实际变化时打印
@@ -643,7 +643,6 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                 icon={Trash2}
                 onClick={() => setClearConfirm({
                   count: stats.success + stats.failed + stats.cancelled,
-                  label: activeKind === "mono" ? "单人配音" : "双人播客",
                 })}
                 className="w-full"
                 title="批量删除当前类型已结束的任务（需确认）"
@@ -713,17 +712,18 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
         onConfirm={confirmDelete}
       />
 
-      {/* 清空确认：批量删除，影响面（条数 + 当前类型）必须写清楚 ——
-          这类按钮不在单个任务行上，看不到"删的是谁"，更容易误点。 */}
+      {/* 清空确认：批量删除，影响面（条数）必须写清楚 ——
+          这类按钮不在单个任务行上，看不到"删的是谁"，更容易误点。
+          类型不写进文案：弹窗只在当前 tab 上弹，tab 本身就写着类型。 */}
       <ConfirmDialog
         open={!!clearConfirm}
         busy={clearing}
         title="清空已完成任务？"
         description={
           <>
-            将删除当前类型（{clearConfirm?.label}）的
+            将删除当前
             <span className="font-medium text-gray-800"> {clearConfirm?.count} 条</span>
-            已结束任务 —— 完成、失败、中断、取消都算。
+            已结束任务（完成、失败、中断、取消）。
           </>
         }
         warning="清空后无法恢复。"

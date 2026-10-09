@@ -11,8 +11,9 @@
 //   ④ Esc → 关闭（高风险动作的默认键位落在安全侧）
 //   ⑤ 点遮罩 → 关闭
 //   ⑥ 点确认「删除」→ 才真的发 DELETE；删完自动关框
-//   ⑦ 「清空已完成任务」同样要确认：写明条数与当前类型、取消/Esc 都不发请求、
-//      点「清空」才发 DELETE /api/queue?kind=…（注意与单条删除的路径不同）
+//   ⑦ 「清空已完成任务」同样要确认：写明条数与口径（完成/失败/中断/取消）、
+//      取消/Esc 都不发请求、点「清空」才发 DELETE /api/queue?kind=…
+//      （注意与单条删除的路径不同）
 //
 // 用法（dev server 需已在 :6008 运行）：
 //   NODE_PATH=<node 沙箱>/node_modules <node> outputs/verify-queue-delete-confirm.js [输出前缀]
@@ -314,9 +315,9 @@ const callsOf = (page) => page.evaluate(() => window.__probeCalls || []);
   check('⑨ 点清空 → 只弹确认框，不直接清空',
     (await countDeletes(page)) === nd0, `DELETE 次数 ${nd0} → ${await countDeletes(page)}`);
   check('⑨ 标题为「清空已完成任务？」', cl.title === '清空已完成任务？', `实际「${cl.title}」`);
-  check('⑨ 文案写明条数与当前类型（2 条 / 双人播客）',
-    cl.lines.some(l => l.includes('2 条')) && cl.lines.some(l => l.includes('双人播客')),
-    JSON.stringify(cl.lines));
+  const desc = cl.lines.join('').replace(/\s+/g, '');
+  check('⑨ 文案写明条数与口径（「当前 2 条已结束任务」+ 四态列举）',
+    desc.includes('将删除当前2条已结束任务（完成、失败、中断、取消）。'), desc);
   check('⑨ 带「清空后无法恢复。」', cl.warningVisible === true);
   check('⑨ 确认按钮文案为「清空」、红色、在右',
     cl.buttons.length === 2 && cl.buttons[1].text === '清空' &&
