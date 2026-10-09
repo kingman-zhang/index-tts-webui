@@ -354,7 +354,20 @@ NORM_MAX_GAIN_DB = 24.0
 # 需要提升超过这个量，说明该行原始输出异常偏小，值得重生成
 NORM_ABNORMAL_GAIN_DB = 12.0
 NORM_LEGACY_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
-NORM_MODE = os.environ.get("PODCAST_NORM", "gain").strip().lower()
+# ── 响度归一在本壳已退役（2026-10-09），默认不做 ──
+# 归一现在统一由 backend 的池门面执行（webui-backend/app/audio_norm.py）：所有引擎
+# 的产出都从那里回到 backend，只有放那一层才能同时覆盖「单人/播客 × 本地壳/云 API」
+# 四条路径（此前本壳做一遍、backend 又对云引擎做一遍、单人+云那条根本没人做）。
+# 本壳从此只负责：合成 → 变速 → 统一 24kHz。
+#
+# 保留开关是为了**应急回退**：壳被单独调用（不经过 backend）或池层出问题时，
+# 在启动环境里设 PODCAST_NORM=gain 即可让本壳恢复自己归一。
+# ⚠️ 默认 off —— 与 backend 侧默认 gain 相反，这是刻意的：两侧都归一等于同一段
+#    被处理两遍（幂等，但白跑两次 ffmpeg）。
+# ⚠️ 空值（`PODCAST_NORM=`）按**默认值**处理，不会静默改变行为。
+NORM_MODE = os.environ.get("PODCAST_NORM", "").strip().lower() or "off"
+NORM_OFF_VALUES = ("off", "none", "0", "false", "no")
+NORM_ENABLED = NORM_MODE not in NORM_OFF_VALUES
 # PODCAST_AUDIO_DEBUG=1 时保留每段原始音频（{idx}.raw.wav）供事后核对
 AUDIO_DEBUG = os.environ.get("PODCAST_AUDIO_DEBUG", "").strip() == "1"
 
@@ -418,10 +431,11 @@ def _atempo_chain(speed: float) -> list[str]:
 
 
 def _apply_speed(path: str, speed: float) -> None:
-    """使用 ffmpeg 调整 WAV 速度并做逐行响度归一化；1.0 速度也做归一化防破音。
+    """使用 ffmpeg 调整 WAV 速度并统一输出 24kHz。**默认不做响度归一**。
 
-    归一化策略见 NORM_* 常量：默认按"测量 -> 固定增益 -> 限幅"处理，
-    保证每一行独立落到 NORM_TARGET_LUFS，且峰值不超过 NORM_CEILING_DBFS。
+    响度归一已退役到 backend 池门面（理由见 NORM_MODE 上方注释）。仅当启动环境
+    显式设 `PODCAST_NORM=gain` 应急回退时，本函数才按"测量 → 固定增益 → 限幅"
+    处理，保证每一行独立落到 NORM_TARGET_LUFS 且峰值不超过 NORM_CEILING_DBFS。
 
     语速（2026-09-30 修）：**不再 `max(0.5, min(2.0, speed))` 静默钳制**。
     旧实现在这里把超出 0.5~2.0 的语速吃掉且不留任何日志；而 backend 池用的是链式
@@ -445,7 +459,12 @@ def _apply_speed(path: str, speed: float) -> None:
 
     filters = _atempo_chain(speed)
 
-    if NORM_MODE == "loudnorm":
+    if not NORM_ENABLED:
+        logger.info(
+            "[audio] %s 响度归一已关闭（PODCAST_NORM=%s），只变速",
+            Path(path).name, NORM_MODE or "off",
+        )
+    elif NORM_MODE == "loudnorm":
         filters.append(NORM_LEGACY_FILTER)
     else:
         lufs, _peak = _measure_loudness(ffmpeg, path)
@@ -474,11 +493,13 @@ def _apply_speed(path: str, speed: float) -> None:
                 Path(path).name, lufs, gain, NORM_CEILING_DBFS,
             )
 
-    filter_str = ",".join(filters)
-    result = subprocess.run(
-        [ffmpeg, "-y", "-i", path, "-filter:a", filter_str, "-ar", "24000", tmp],
-        capture_output=True, text=True,
-    )
+    # 关掉归一化且语速=1.0 时 filters 为空：仍要过一遍 ffmpeg 做 24kHz 统一，
+    # 只是不带 -filter:a（ffmpeg 不接受空滤镜串）。
+    command = [ffmpeg, "-y", "-i", path]
+    if filters:
+        command += ["-filter:a", ",".join(filters)]
+    command += ["-ar", "24000", tmp]
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         try:
             os.unlink(tmp)

@@ -300,46 +300,54 @@ tts-server 构造引擎时把 `--model-dir` 当作 `model_dir`，所以只要 GP
 | **时间 `时:分`** | backend `time_norm.py` | ✓ 2026-09-30 从 tts-server 提过来 |
 | 数值读法 / 号码读法 | backend `num_value_norm.py` / `number_norm.py` | ✓ |
 | 情感 4 模式、采样参数、token 诊断、模型加载与 health、GPU 串行锁、音色存储 | **tts-server（引擎侧）** | ✓ 这些只能是引擎的 |
-| 响度归一 -16 LUFS | 2.0 壳：两侧各有一份等价实现（6 常量逐项相同）；2.5 壳：只有单遍 loudnorm、达不到目标 | ⚠️ 见下「响度归一」 |
+| 响度归一 -16 LUFS | **backend 池门面**（`app/audio_norm.py`；2026-10-09 统一为唯一实现） | ✓ 四条路径共用一份 |
 | 变速 | 两侧（钳制范围不一致） | ⚠️ 见下「变速」 |
 
 判据：**规则若与「读什么」有关，必须在 backend**（因为云引擎链路不经过 tts-server，
 规则留在引擎侧就只有本地链路生效）；**与「怎么合成」有关的（情感、采样、GPU、
 音色存储）只能留在引擎侧**。
 
-### 响度归一（`normalizes_loudness`，2026-09-30）
+### 响度归一（2026-10-09 统一到池门面）
 
-**契约**：`normalizes_loudness=True` 表示「返回的音频**已归一到 -16 LUFS**」——是「达标」，
-不只是「做过归一动作」。报 `False` 也不代表「本壳没做归一」，而代表「没达到 -16，请上层兜底」。
+**结论：只有一处实现** —— `app/audio_norm.py`，由池门面
+`EnginePoolFacade.synthesize_segment` 在返回每段音频前调用一次。
 
-`tts-server/`（2.0）的 `/api/synthesize` 内部必经 `_apply_speed`，做的是「ebur128 测量 →
-固定增益 → alimiter 限幅 → 24kHz」，目标 -16 LUFS、峰值 ≤ -1.5 dBFS —— 与 backend
-`podcast_runner._normalize_segment` 是**两份独立实现、6 个常量逐项相同**，于是 2.0 自述
-`True`，backend 跳过自己那一次重复归一（否则白跑一次 ffmpeg + 一次重采样）。
+**为什么必须在池门面**：所有引擎的产出都经池门面回到 backend，那是唯一能同时覆盖
+「单人/播客 × 本地壳/云 API」四条路径的位置。放在 `podcast_runner` 只覆盖播客；
+放在壳里则云引擎（302.ai / autodl.art）根本覆盖不到 —— 它们不会替我们挂 ffmpeg 滤镜。
 
-⚠️ **`tts-server-2.5/` 不是同一回事**：它每段会跑一次 `_apply_loudness`，对每段执行**单遍**
-`loudnorm=I=-16:TP=-1.5:LRA=11`。单遍 loudnorm 的响度统计带门限（gating），实测只到
-**-21.7 LUFS**（同素材，见 2.0 侧 `podcast_engine.py` 的 NORM_* 实测记录）——「动作做了、
-目标没到」。所以 2.5 自述 `False`，让 backend 再走一次它那套把响度拉回 -16（这是正确行为，
-不是重复劳动）。**不要用 `tier == "local"` 推断「是本壳 = 2.0 壳」。**
+**历史（已废除）**：2026-09-30 引入 `normalizes_loudness` 能力声明，让资源自述
+「我已归一」、上层据此跳过自己那次。它有两个后果：
+① 归一的执行者随所选资源漂移 —— 同一篇音频的响度由「选中了哪条资源」决定；
+② 漏掉「单人 + 云 API」整条路径（`mono_runner` 后端不做后处理 + 云引擎自述 False
+   ⇒ 谁都没归一，实测停在约 -34 LUFS）。**2026-10-09 实测**：改为池门面统一后，
+   云风格输入（-34.30 LUFS）与壳风格输入（-16.00 LUFS）在单人与播客两条路径上
+   都落到 -16.0 / -16.1 LUFS。
 
-修法照 `speed_guaranteed` 的思路加**能力声明**，但取值改为**服务自述**：
+**现状**：
 
-- `EngineCapabilities.normalizes_loudness`（默认 `False`）
-- `indextts_local` 的类属性保持保守 `False`，**在探活时按 `/api/health` 自述更新**
-  （`_apply_capabilities`）；云引擎一律 `False`（我们不知道它做了什么）；
-- 池门面 `capabilities` 是 **property**（不再在 `__init__` 里算一次），取池内资源**当前**
-  能力的 `all()` —— 混池（本地 + 云端）⇒ `False` ⇒ 照旧归一。
-- `podcast_runner` 在「资源已保证」时**跳过本层 ffmpeg**，不再重复归一。
+- `EngineCapabilities.normalizes_loudness` **保留但不再驱动任何行为**，仅供
+  `/api/version` 与状态页观测；`podcast_runner` 已不再读它。
+- 壳侧（`tts-server/`）**默认不再归一**（`podcast_engine.NORM_MODE` 默认 `off`），
+  只负责「合成 → 变速 → 统一 24kHz」；`/api/health` 的自述随之报 `False`。
+  它保留 `PODCAST_NORM=gain` 作**应急回退**（正常不需要 —— 会让同一段被处理两遍）。
+- 常量只有一份：`app/audio_norm.py` 的 `NORM_TARGET_LUFS` / `NORM_CEILING_DBFS` /
+  `NORM_LIMITER_MARGIN_DB` / `NORM_MAX_GAIN_DB` / `NORM_ABNORMAL_GAIN_DB`。
+  **改目标响度只改这一处**（此前 backend 与壳各持一份、6 个常量逐项相同）。
+- 开关 `PODCAST_NORM`（backend `.env`）是**唯一**的归一开关，覆盖四条路径。
+- `podcast_runner` 只剩变速职责（`_apply_speed`），且生产路径下恒不触发
+  （池门面 `speed_guaranteed=True`）。
+- **试听与归一无关**（2026-10-09 核对并改）：试听 = `new Audio("/api/audio/{文件名}")`
+  **播放参考音频原文，不合成**（`MonoVoiceCard.tsx` / `SpeakerPanel.tsx`）⇒ 归一化碰不到它。
+  ⚠️ 别把 `routes/voices.py` 的 `POST /api/synthesize` 当试听入口 —— 它是**死端点**（前端零引用）。
+  `GET /api/audio/{filename}` 同日改为**只读 backend 本地**（原为「先打壳、失败回退本地」）：
+  三条音色列表（预设 / BreezeBlue / 用户音色）都给的是 backend 本地的文件名，也就是合成时
+  真正取用的那份；壳上独有的文件 ⇒ 404。收益：不再白等 60s 超时、不会因壳上有同名旧文件播错。
 
-**观测**：`/api/version` 的 `engines.registered[].normalizes_loudness` 报出该能力。因为它是
-「服务自述」值，`/api/version` 会**先触发一次池探活**再读快照（`refresh_pool_health()`，
-幂等、带 15s TTL、内置引擎探活均免费）—— 否则报的是构造时的保守值，部署自检会得到与自己
-相反的结论（本地 2.0 壳明明会归一到 -16，却报 False）。
-
-`tools/deploy_g1_autodl.sh` 只断言该**字段存在**（防旧代码），**不再断言「全 local ⇒ True」**：
-本地壳有两代，2.0 自述 True、2.5 自述 False，硬断言必然有一边误报。实际值打印出来，与
-tts-server 的 `/api/health` 自述核对。
+**观测**：`/api/version` 的 `engines.registered[].normalizes_loudness` 报出各资源的自述值
+（该接口会先触发一次池探活再读快照 —— `refresh_pool_health()`，幂等、15s TTL）。
+`tools/deploy_g1_autodl.sh` 只断言该**字段存在**（防旧代码），**不断言取值**：壳有两代、
+取值本就不同，硬断言必然误报。实际值打印出来，与壳的 `/api/health` 核对。
 
 ### 变速（2026-09-30）
 

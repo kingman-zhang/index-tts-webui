@@ -32,6 +32,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
+# find_ffmpeg / fix_wav_header 的唯一实现在 app/audio_norm.py（响度归一模块）；
+# 这里 import 进来继续供本模块使用，`from .engines.base import find_ffmpeg` 的
+# 老引用路径保持不变。
+from .. import audio_norm
+from ..audio_norm import find_ffmpeg, fix_wav_header
+
 logger = logging.getLogger(__name__)
 
 # IndexTTS2 8 维情感向量的真实顺序（tts-server/podcast_engine.py:26 EMO_VECTOR_LABELS，
@@ -125,14 +131,15 @@ class EngineCapabilities:
     # 池门面恒为 True：不支持的资源由池在规范化时用 ffmpeg atempo 补齐，
     # 每个段恰好变速一次。单引擎适配器默认 False（诚实声明：上层需自行后处理）。
     speed_guaranteed: bool = False
-    # 响度是否已由**下层**保证：True = synthesize_segment 返回的音频已经做过响度
-    # 归一（-16 LUFS、峰值 ≤ -1.5 dBFS），因此**上层不得再归一一次**。
+    # 资源是否自述"我已经做过响度归一"。
     #
-    # 背景（2026-09-30）：本地引擎（`/api/synthesize` → `_apply_speed`）必然归一，
-    # 而 backend `podcast_runner._normalize_segment` 又归一一次 —— 两份实现的 6 个
-    # 常量逐项相同，属**完全重复**：第二次测到的已是 ~-16，增益≈0，白跑一次 ffmpeg
-    # 加一次重采样。**云引擎一律 False**：我们不知道它做了什么，宁可多归一次。
-    # 池门面取 all()（混池时保证不了就老实做），与 supports_speed 同一写法。
+    # ⚠️ 2026-10-09 起**不再驱动任何行为**：响度归一已上提到池门面的
+    # `EnginePoolFacade.synthesize_segment`（实现见 app/audio_norm.py），对
+    # 「单人/播客 × 本地壳/云 API」四条路径无条件执行一次，不再看资源怎么自述。
+    # 保留本字段仅作观测/诊断（resource_snapshot 会透给状态页）。
+    #
+    # 历史（2026-09-30）：曾用它决定"上层是否跳过归一"（本地壳自述 True ⇒ 跳过）。
+    # 那条规则的问题：归一执行者随所选资源漂移，且漏掉「单人 + 云 API」整条路径。
     normalizes_loudness: bool = False
     # 是否支持情绪表达。False 表示合成时只能跟随参考音频。
     supports_emotion: bool = True
@@ -155,46 +162,6 @@ class SynthesisCancelled(RuntimeError):
 NORM_RATE = 24000
 NORM_CHANNELS = 1
 NORM_SAMPLE_WIDTH = 2
-
-
-def find_ffmpeg() -> Optional[str]:
-    """定位 ffmpeg：PATH 优先，兜底常见安装路径（macOS homebrew / Linux 发行版）。
-
-    为什么不能只信 shutil.which：本机与部分容器里 ffmpeg 装在 /opt/homebrew/bin
-    或 /usr/local/bin 但不在 PATH 上，只查 PATH 会误判「没有 ffmpeg」而退化到
-    低质量重采样。
-    """
-    found = shutil.which("ffmpeg")
-    if found:
-        return found
-    for cand in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
-        if Path(cand).is_file():
-            return cand
-    return None
-
-
-def fix_wav_header(data: bytes) -> bytes:
-    """修正 ffmpeg 管道输出的 wav 头：RIFF/data size 是流式占位（0xFFFFFFFF 或 0）。
-
-    wave 模块按头部声明的 size 读取，坏头会导致 readframes 读错帧数、
-    拼接产物错乱（与 302.ai 引擎 _repair_wav 同款问题）。按实际字节数回写。
-    """
-    if len(data) < 44 or data[:4] != b"RIFF":
-        return data
-    b = bytearray(data)
-    pos = 12
-    while pos + 8 <= len(b):
-        cid = bytes(b[pos:pos + 4])
-        size = int.from_bytes(b[pos + 4:pos + 8], "little")
-        remaining = len(b) - pos - 8
-        if size > remaining:  # 占位/坏 size：按实际剩余字节数修正
-            size = remaining
-            b[pos + 4:pos + 8] = size.to_bytes(4, "little")
-        if cid == b"data":
-            b[4:8] = (len(b) - 8).to_bytes(4, "little")
-            return bytes(b)
-        pos += 8 + size + (size & 1)  # chunk 按 2 字节对齐
-    return data
 
 
 def _parse_wav(data: bytes) -> Optional[tuple[int, int, int, bytes]]:
@@ -513,9 +480,14 @@ class EnginePoolFacade:
                 self._condition.notify_all()
         post_speed = 1.0 if native_speed else float(req.speed or 1.0)
         try:
-            return await asyncio.to_thread(normalize_pcm, result, post_speed)
+            result = await asyncio.to_thread(normalize_pcm, result, post_speed)
         except Exception as exc:
             raise NonRetryableSynthesisError("已取得音频但规范化失败，禁止自动重新合成") from exc
+        # 响度归一：**全链路唯一执行点**（实现见 app/audio_norm.py）。放在池门面
+        # 而不是各 runner，是为了让「单人/播客 × 本地壳/云 API」四条路径都恰好
+        # 覆盖一次 —— 此前本地壳自己做、云引擎由 podcast_runner 补做、单人+云没人做。
+        # apply_loudness 内部吞掉所有异常并返回原始音频，不会让整段合成失败。
+        return await asyncio.to_thread(audio_norm.apply_loudness, result)
 
     async def health(self) -> bool:
         await self._refresh_health()

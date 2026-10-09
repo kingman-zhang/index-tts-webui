@@ -16,18 +16,16 @@
       末行 → 0；
       说话人切换 → silence.speaker_switch；同行连续 → silence.between_lines；
     行级值并入该行最后一个子段的 gap_ms，拼接期插入；
-  - 变速与响度归一：原引擎每行/子段独立 _apply_speed（ebur128 → 固定增益 →
-    alimiter，目标 -16 LUFS，峰值顶 -1.5dBFS，输出 24kHz）。**语速只在资源侧
-    应用一次**：资源原生支持 speed 就传参生效，不支持的由资源池在规范化时用
-    atempo 补齐（见 engines.base.EngineCapabilities.speed_guaranteed）。
-    本模块只在「既非原生、也没有下层保障」时才补变速，避免 speed²
+  - 变速：**只在资源侧应用一次** —— 资源原生支持 speed 就传参生效，不支持的由
+    资源池在规范化时用 atempo 补齐（见 engines.base.EngineCapabilities.speed_guaranteed）。
+    本模块只在「既非原生、也没有下层保障」（裸引擎）时才补变速，避免 speed²
     （2026-09-29 修：此前对原生引擎又套了一层 atempo，加速听起来偏快）；
     ffmpeg 不可用时跳过处理（仅告警），行为与 mono 一致。
-  - **响度归一同样只在需要时做**（2026-09-30）：本地 tts-server 的 `_apply_speed`
-    已经归一到同一目标（两份实现的 6 个常量逐项相同），再归一次是白跑一次 ffmpeg
-    加一次重采样。故按 `EngineCapabilities.normalizes_loudness` 判断，资源已保证
-    就整段跳过（`skip_loudness`）；池门面取 all()，混池时照旧归一。两件都不需要时
-    `_normalize_segment` 根本不调用（此前无条件跑一次 ffmpeg）。
+  - 响度归一：**不在这里做**（2026-10-09 上提到池门面，实现见 app/audio_norm.py）。
+    所有引擎产出都经 `Engines.synthesize_segment` 回到 backend，归一在那里对
+    「单人/播客 × 本地壳/云 API」四条路径统一执行一次。本模块此前那份实现
+    （与 tts-server 的 6 个常量逐项相同）已删除 —— 它让归一执行者随所选资源
+    漂移，且完全漏掉「单人 + 云 API」（mono_runner 后端不做后处理）。
 
 顺序保证：段落可并发（并发度取 capabilities.max_concurrency，未声明则读
 TTS_CONCURRENCY），asyncio.gather 保序返回，拼接严格按文本顺序——第 10 段先完成
@@ -41,6 +39,7 @@ import asyncio
 import subprocess
 from pathlib import Path
 
+from . import audio_norm
 from . import queue_state as qs
 from .config import logger
 from .engines import (
@@ -65,13 +64,9 @@ from .mono_runner import (
 from .engines.chunker import split_for_art
 from .engines.base import NonRetryableSynthesisError, find_ffmpeg, fix_wav_header
 
-# ─── 响度归一参数（对齐 tts-server podcast_engine.NORM_*） ──────────
-NORM_TARGET_LUFS = -16.0
-NORM_CEILING_DBFS = -1.5
-NORM_LIMITER_MARGIN_DB = 0.5
-NORM_MAX_GAIN_DB = 24.0
-NORM_ABNORMAL_GAIN_DB = 12.0
-NORM_SAMPLE_RATE = 24000  # 与原播客引擎输出一致（-ar 24000）
+# ── 响度归一已上提到池门面（2026-10-09）──
+# 常量、开关（PODCAST_NORM）与实现全部在 app/audio_norm.py —— 那是
+# 「单人/播客 × 本地壳/云 API」四条合成路径的唯一执行点。本模块不再持有归一参数。
 
 _FFMPEG_WARNED = False
 
@@ -84,33 +79,6 @@ def _ffmpeg_bin() -> str | None:
     return find_ffmpeg()
 
 
-def _measure_loudness(ffmpeg: str, data: bytes) -> float | None:
-    """ebur128 量积分响度（LUFS），测不出返回 None。"""
-    try:
-        result = subprocess.run(
-            [ffmpeg, "-hide_banner", "-nostats", "-i", "pipe:0",
-             "-af", "ebur128=peak=true", "-f", "null", "-"],
-            input=data, capture_output=True,
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    lufs = None
-    for line in result.stderr.decode("utf-8", "ignore").splitlines():
-        line = line.strip()
-        if line.startswith("I:"):
-            value = line.split()[1] if len(line.split()) > 1 else ""
-            if value == "-inf":
-                continue
-            try:
-                lufs = float(value)
-            except ValueError:
-                continue
-            break
-    return lufs
-
-
 def _fix_wav_header(data: bytes) -> bytes:
     """修正 ffmpeg 管道输出的 wav 头（实现见 engines.base.fix_wav_header）。
 
@@ -120,47 +88,37 @@ def _fix_wav_header(data: bytes) -> bytes:
     return fix_wav_header(data)
 
 
-def _normalize_segment(data: bytes, speed: float = 1.0) -> bytes:
-    """对单段音频做变速 + 响度归一（管道，无临时文件）。
+def _apply_speed(data: bytes, speed: float = 1.0) -> bytes:
+    """对单段音频变速（管道，无临时文件）。**不做响度归一**。
 
-    对齐原 podcast_engine._apply_speed：atempo 变速 → ebur128 测量 →
-    固定增益 → alimiter 限幅兜底 → 统一 24kHz。
+    响度归一已上提到池门面（app/audio_norm.py，2026-10-09），本函数只剩变速职责。
+    之所以保留，是给「既非原生支持、也没有池保障」的裸引擎兜底 —— 生产路径恒为
+    池门面（speed_guaranteed=True），不会走到这里。
 
     参数 speed 是「**本层要补的语速**」，不是用户的语速：引擎原生支持变速
-    （或资源池已保证）时调用方传 1.0，这里就只做响度归一，绝不再变一次速。
+    （或资源池已保证）时调用方传 1.0，此时本函数原样返回（零 ffmpeg 开销）。
 
     ffmpeg 不可用或处理失败时返回原始数据（不影响拼接，只记告警），
     避免音频后处理失败毁掉已合成的段落。
     """
     global _FFMPEG_WARNED
+    filters = atempo_filters(speed)
+    if not filters:
+        # 无变速要做：一次 ffmpeg 都不跑。这里**不**统一采样率 ——
+        # 资源池 normalize_pcm 已把每段统一成 24kHz/单声道/PCM16。
+        return data
+
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         if not _FFMPEG_WARNED:
-            logger.warning("[podcast] 未找到 ffmpeg，跳过变速/响度归一（音色间响度可能不齐）")
+            logger.warning("[podcast] 未找到 ffmpeg，跳过变速（语速可能不生效）")
             _FFMPEG_WARNED = True
         return data
-
-    filters = atempo_filters(speed)
-
-    lufs = _measure_loudness(ffmpeg, data)
-    if lufs is None:
-        # 与原引擎一致：测不出响度时退回 loudnorm（可能过短或全静音）
-        filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
-    else:
-        gain = NORM_TARGET_LUFS - lufs
-        if gain > NORM_ABNORMAL_GAIN_DB:
-            logger.warning("[podcast] 段原始响度 %.1f LUFS 偏小（需提升 %.1f dB），建议核对听感", lufs, gain)
-        if gain > NORM_MAX_GAIN_DB:
-            gain = NORM_MAX_GAIN_DB
-        limit = 10 ** ((NORM_CEILING_DBFS - NORM_LIMITER_MARGIN_DB) / 20)
-        filters.append(f"volume={gain:.2f}dB")
-        filters.append(f"alimiter=limit={limit:.4f}:level=disabled")
 
     try:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
-             "-filter:a", ",".join(filters), "-ar", str(NORM_SAMPLE_RATE),
-             "-f", "wav", "pipe:1"],
+             "-filter:a", ",".join(filters), "-ar", "24000", "-f", "wav", "pipe:1"],
             input=data, capture_output=True,
         )
     except OSError as e:
@@ -168,7 +126,7 @@ def _normalize_segment(data: bytes, speed: float = 1.0) -> bytes:
         return data
     if result.returncode != 0 or not result.stdout:
         stderr = result.stderr.decode("utf-8", "ignore")[-300:]
-        logger.warning("[podcast] ffmpeg 归一失败，返回原始音频: %s", stderr)
+        logger.warning("[podcast] ffmpeg 变速失败，返回原始音频: %s", stderr)
         return data
     return _fix_wav_header(result.stdout)
 
@@ -271,13 +229,11 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
     post_speeds = {spk: (1.0 if speed_done_above else value) for spk, value in speeds.items()}
     logger.info("[podcast] task=%s speeds=%s 语速由%s应用", task_id, speeds,
                 "资源侧（原生/池内 ffmpeg）" if speed_done_above else "本模块 ffmpeg")
-    # 响度归一：资源已保证时（caps.normalizes_loudness，如本地 tts-server 的
-    # _apply_speed 必经 -16 LUFS）**整段跳过**本层 ffmpeg —— 两份实现的 6 个常量
-    # 逐项相同，第二次测到的已是 ~-16、增益≈0，纯属白跑一次 ffmpeg 与一次重采样。
-    # 池门面取 all()，混池时为 False（照旧归一），所以这里不需要再判断引擎名。
-    skip_loudness = bool(caps.normalizes_loudness)
-    logger.info("[podcast] task=%s 响度归一由%s执行", task_id,
-                "资源侧（本层跳过）" if skip_loudness else "本模块 ffmpeg")
+    # 响度归一不在本模块做（2026-10-09 上提到池门面，实现见 app/audio_norm.py）：
+    # 池在返回每段音频前已按 PODCAST_NORM 统一处理，「单人/播客 × 本地壳/云 API」
+    # 四条路径都覆盖。这里只把开关状态打进日志，便于对照排查。
+    logger.info("[podcast] task=%s 响度归一由资源池统一执行（PODCAST_NORM=%s）",
+                task_id, audio_norm.NORM_MODE)
 
     entries = _flatten_podcast_segments(lines, caps, silence)
     if not entries:
@@ -332,12 +288,11 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
                     should_cancel=lambda: bool(task.get("cancel_requested")),
                 )
             )
-        # 段级后处理（变速 + 响度归一），**两件都不需要时直接返回**（零开销）：
-        #   变速：只有资源侧不负责语速时（post_speeds≠1）才在本层补一次；
-        #   归一：资源已保证响度时（skip_loudness）不再重复归一。
+        # 段级后处理只剩变速（响度归一已由池门面完成，见 app/audio_norm.py）：
+        # 只有资源侧不负责语速时（post_speeds≠1）才在本层补一次，否则原样返回。
         post_speed = post_speeds[entry["speaker"]]
-        if not (skip_loudness and abs(post_speed - 1.0) < 1e-3):
-            audio = await asyncio.to_thread(_normalize_segment, audio, post_speed)
+        if abs(post_speed - 1.0) >= 1e-3:
+            audio = await asyncio.to_thread(_apply_speed, audio, post_speed)
         state["done"] += 1
         _update_progress()
         return audio

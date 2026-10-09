@@ -204,7 +204,7 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((r.getframerate(), r.getnchannels(), r.getsampwidth()), (24000, 1, 2))
         self.assertAlmostEqual(duration, .12, places=2)
         with patch.object(podcast_runner, '_ffmpeg_bin', return_value=None):
-            fallback = podcast_runner._normalize_segment(converted, 1.0)
+            fallback = podcast_runner._apply_speed(converted, 1.0)
         mono_runner._concat_wavs([fallback, wav()], [0, 0])
         self.assertEqual(fallback, converted)
 
@@ -334,13 +334,14 @@ class SpeedTests(unittest.IsolatedAsyncioTestCase):
     async def test_podcast_defers_speed_to_resource_layer(self):
         """池保证语速时播客层不许再变速；只有裸引擎（无保障）才由播客层补。"""
         seen = []
-        original = podcast_runner._normalize_segment
+        original = podcast_runner._apply_speed
 
         def spy(data, speed=1.0):
             seen.append(speed)
             return original(data, speed)
 
-        for guaranteed, expected in [(True, 1.0), (False, 2.0)]:
+        # 语速由池保证时，本层一次都不该动音频；只有裸引擎（无保障）才补一次。
+        for guaranteed, expected in [(True, []), (False, [2.0])]:
             seen.clear()
             engine = Fake()
             engine.name = 'pool'
@@ -353,11 +354,11 @@ class SpeedTests(unittest.IsolatedAsyncioTestCase):
                     'params': {'speed': 2.0, 'speaker_speeds': {}},
                     'lines': [{'speaker': 'A', 'text': '测试'}]}
             with patch.object(podcast_runner, 'select_engine', select), \
-                 patch.object(podcast_runner, '_normalize_segment', spy), \
+                 patch.object(podcast_runner, '_apply_speed', spy), \
                  patch.object(podcast_runner.qs, 'persist_task'), \
                  patch.object(podcast_runner, 'mark_engine_failed'):
                 await podcast_runner.run_podcast_task(task)
-            self.assertEqual(seen, [expected])          # 本层要补的语速：1.0 或 2.0
+            self.assertEqual(seen, expected)            # 本层要补的语速：无，或 2.0
             self.assertEqual(engine.last_speed, 2.0)    # 请求里的用户语速始终是 2.0
             self.assertAlmostEqual(task['duration_sec'], 0.4 if guaranteed else 0.2, delta=0.05)
 

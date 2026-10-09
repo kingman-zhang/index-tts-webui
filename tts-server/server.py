@@ -286,16 +286,19 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health():
+    # 与 _apply_speed 共用同一个常量，避免两处各写一份解析规则后走偏
+    from podcast_engine import NORM_ENABLED
     return {
         "status": "ok" if tts is not None else "no_model",
         "model_loaded": tts is not None,
-        # 能力自述（2026-09-30）：本壳的 /api/synthesize 必经 _apply_speed
-        # （ebur128 测量 → 固定增益 → alimiter 限幅 → 24kHz，目标 -16 LUFS /
-        # 峰值 ≤ -1.5 dBFS），也就是说**出音已经做过响度归一**。backend 据此
-        # 跳过自己那一次重复归一。改动这里之前先确认 _apply_speed 还在链路上：
-        # tts-server-2.5 的壳也有一个 `_apply_loudness`，但那是**单遍 loudnorm**、
-        # 达不到 -16（实测 -21.7），所以那边报的是 False（理由见那边 server.py）。
-        "normalizes_loudness": True,
+        # 能力自述：本壳**默认不做响度归一**（2026-10-09 退役）—— 归一已统一由
+        # backend 的池门面执行（webui-backend/app/audio_norm.py）。本字段如实反映
+        # 本壳当前能力：默认 False；仅当启动环境显式设 PODCAST_NORM=gain 应急回退
+        # 时才是 True。backend 已不再据此跳过归一（池层无条件执行一次），保留本
+        # 字段供状态页与排障观测。
+        # 历史（2026-09-30）：这里曾硬编码 True，让 backend 跳过自己那一次以免
+        # 重复归一；那条规则已随归一的统一而废除。
+        "normalizes_loudness": NORM_ENABLED,
         "device": args.device,
         "fp16": args.fp16,
         "model_dir": args.model_dir,
