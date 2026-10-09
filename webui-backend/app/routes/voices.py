@@ -9,7 +9,7 @@ import httpx
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 
 from ..config import (
     DATA_DIR,
@@ -410,24 +410,27 @@ async def synthesize(req: SynthesizeRequestModel):
 
 
 @router.get("/api/audio/{filename}")
-async def proxy_audio(filename: str):
-    """获取音频文件：先尝试 TTS 服务，失败则本地查找。"""
+async def get_local_audio(filename: str):
+    """按文件名返回 **backend 本地**的音频（音色试听）。
+
+    2026-10-09（用户决定）：**移除 tts-server 兜底**，不再代理壳上的文件。
+    backend 是音色的权威源 —— 上传先落 backend 磁盘、再广播到壳，前端试听用的
+    `preview_name` / `filename` 本来就是 **backend 本地的文件名**（预设音色、BreezeBlue、
+    用户音色三条列表都从 backend 产出），也就是合成时真正取用的那一份。
+
+    旧实现「先打壳、失败才查本地」有三笔代价，换不来任何收益：
+    - 壳不可达（网络黑洞而非拒绝连接）时要**白等 60s 超时**才回退；
+    - 壳上存在同名旧文件时会**播错**（听到的不是将要用于合成的那份）；
+    - 壳在线时白多一次往返。
+
+    壳上独有、backend 没有的音色 ⇒ 直接 **404**，这是正确语义：音色列表本身
+    就来自 backend，不该出现的条目本来也点不到。
+    """
     safe_name = Path(filename).name
     # 根据后缀确定 content-type
     ext = Path(safe_name).suffix.lower()
     mime_map = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".flac": "audio/flac", ".ogg": "audio/ogg", ".webm": "audio/webm"}
     mime = mime_map.get(ext, "audio/mpeg")
-    # 先尝试从 TTS 服务获取
-    try:
-        resp = await http_client.get(f"{TTS_URL}/api/audio/{safe_name}", timeout=60.0)
-        if resp.status_code == 200:
-            return StreamingResponse(
-                iter([resp.content]),
-                media_type=mime,
-                headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-            )
-    except Exception:
-        pass
     # 本地查找：voices 目录（含新结构的 `<user_id>/` 子目录）/ breezeblue 音色库 /
     # preset-voices 目录（含 emotions 子目录） / outputs 目录
     search_dirs = [

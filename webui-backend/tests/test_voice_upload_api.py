@@ -313,19 +313,23 @@ def main() -> int:
     r = client.delete("/api/voices/内置.mp3", headers=AUTH)
     check("删预设 → 400", r.status_code, 400)
 
-    print("── 11. 试听：能按文件名取到子目录里的音色 ──")
+    print("── 11. 试听：只读 backend 本地，不代理 tts-server ──")
     r = client.post("/api/voices/upload",
                     files={"file": ("c.wav", b"RIFF" + b"\x00" * 20, "audio/wav")},
                     data={"name": "试听用"}, headers=AUTH)
     preview_name = r.json()["voice_id"] + ".wav"
-    tts_fail = FakeTTS(listed=[])
-    voice_routes.http_client = tts_fail
-    try:
-        r = client.get(f"/api/audio/{preview_name}")
-        check("本地能取到（tts 没有时回退本地）", r.status_code, 200)
-        check_true("返回的是音频字节", r.content.startswith(b"RIFF"))
-    finally:
-        voice_routes.http_client = tts
+    tts.calls.clear()
+    r = client.get(f"/api/audio/{preview_name}")
+    check("backend 本地取到（data/voices/<uid>/ 子目录）", r.status_code, 200)
+    check_true("返回的是音频字节", r.content.startswith(b"RIFF"))
+    check("试听未打 tts-server", [c for c in tts.calls if "/api/audio/" in c[1]], [])
+
+    # 2026-10-09（用户决定）：以 backend 为准，**去掉壳兜底**。
+    # 壳的音色表里有 `u_other_voc_zzz.wav`（见 FakeTTS.listed），backend 本地没有
+    # ⇒ 必须 404，且**不去代理**。旧实现会先打壳并把它代理回来。
+    r = client.get("/api/audio/u_other_voc_zzz.wav")
+    check("壳上有、backend 没有 → 404（不再回退代理）", r.status_code, 404)
+    check("404 时也没有打 tts-server", [c for c in tts.calls if "/api/audio/" in c[1]], [])
 
     print(f"\n{'=' * 46}\nTOTAL {PASS + FAIL}  PASS {PASS}  FAIL {FAIL}\n{'=' * 46}")
     return 1 if FAIL else 0

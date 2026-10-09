@@ -59,7 +59,7 @@ TTS_RESOURCES_FILE=data/config/tts-resources.yaml
 | POST | `/api/podcast/generate` | 提交双人播客合成任务 |
 | GET | `/api/podcast/status/{task_id}` | SSE 推送合成进度 |
 | GET | `/api/podcast/audio/{task_id}` | 代理下载音频 |
-| GET | `/api/audio/{filename}` | 按文件名代理下载音频 |
+| GET | `/api/audio/{filename}` | 按文件名读取 backend 本地的音频（音色试听；不代理 tts-server，缺席即 404） |
 | GET | `/api/tasks` | 列出最近任务 |
 | GET | `/api/projects` | 列出保存的项目 |
 | POST | `/api/projects` | 保存项目 |
