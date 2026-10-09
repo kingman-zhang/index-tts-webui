@@ -19,6 +19,7 @@
 - id: art
   provider: art
   api_key_env: AUTODL_API_TOKEN
+  max_concurrency: 3
 - id: ai302
   provider: 302ai
   api_key_env: INDEXTTS302_API_KEY
