@@ -4,13 +4,15 @@
 // 把 QueuePanel 单独挂到 dev server 页面上），只把 /api/queue 用 fetch mock 喂数据。
 // 因此下面每条断言都是「真点击 → 真状态机 → 真 DOM」，不是照抄 HTML 的自证。
 //
-// 要证的六件事：
+// 要证的这些事：
 //   ① 点删除图标**不再直接删**，而是弹出确认框（含任务名 + 「删除后无法恢复。」）
 //   ② 「取消中」的任务文案不同（点了不一定真删，说清两种结果）
 //   ③ 「取消」按钮 → 关闭且**不发** DELETE
 //   ④ Esc → 关闭（高风险动作的默认键位落在安全侧）
 //   ⑤ 点遮罩 → 关闭
 //   ⑥ 点确认「删除」→ 才真的发 DELETE；删完自动关框
+//   ⑦ 「清空已完成任务」同样要确认：写明条数与当前类型、取消/Esc 都不发请求、
+//      点「清空」才发 DELETE /api/queue?kind=…（注意与单条删除的路径不同）
 //
 // 用法（dev server 需已在 :6008 运行）：
 //   NODE_PATH=<node 沙箱>/node_modules <node> outputs/verify-queue-delete-confirm.js [输出前缀]
@@ -47,11 +49,12 @@ const check = (label, ok, extra = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${extra ? '  ' + extra : ''}`);
 };
 
-/** 弹窗是否存在（认「删除后无法恢复」这句独有文本） */
+/** 弹窗是否存在。两种确认框（删除单条 / 清空批量）的警示语不同，
+ *  但它们都以「…无法恢复。」结尾，用这个作判据不会误认报错详情弹窗。 */
 const DIALOG_FINDER = `(() => {
   for (const el of document.querySelectorAll('div')) {
     const cls = String(el.className || '');
-    if (cls.includes('inset-0') && cls.includes('fixed') && el.textContent.includes('删除后无法恢复')) return el;
+    if (cls.includes('inset-0') && cls.includes('fixed') && el.textContent.includes('无法恢复')) return el;
   }
   return null;
 })()`;
@@ -109,11 +112,11 @@ const measure = (page) => page.evaluate((finder) => {
     title: (modal.querySelector('h3') || {}).textContent || '',
     lines: [...modal.querySelectorAll('p')].map(p => p.textContent),
     warningColor: (() => {
-      const p = [...modal.querySelectorAll('p')].find(x => x.textContent.includes('删除后无法恢复'));
+      const p = [...modal.querySelectorAll('p')].find(x => x.textContent.includes('无法恢复'));
       return p ? getComputedStyle(p).color : null;
     })(),
     warningVisible: (() => {
-      const p = [...modal.querySelectorAll('p')].find(x => x.textContent.includes('删除后无法恢复'));
+      const p = [...modal.querySelectorAll('p')].find(x => x.textContent.includes('无法恢复'));
       if (!p) return false;
       const r = p.getBoundingClientRect();
       return r.width > 0 && r.height > 0 && r.top >= mr.top - 1 && r.bottom <= mr.bottom + 1;
@@ -169,7 +172,7 @@ const callsOf = (page) => page.evaluate(() => window.__probeCalls || []);
   );
   await new Promise(r => setTimeout(r, 400)); // 让首屏样式稳定
 
-  const report = { viewport: VIEW, terminal: null, cancelling: null, interactions: [] };
+  const report = { viewport: VIEW, terminal: null, cancelling: null, clear: null, interactions: [] };
 
   // ── ① 点击前：面板（含删除图标）────────────────────────────────
   const host = await page.$('#probe-root');
@@ -220,7 +223,7 @@ const callsOf = (page) => page.evaluate(() => window.__probeCalls || []);
   // ── ③ 点「取消」：关框、不发 DELETE ────────────────────────────
   await page.evaluate(() => {
     const dialog = [...document.querySelectorAll('div')]
-      .find(el => String(el.className || '').includes('inset-0') && el.textContent.includes('删除后无法恢复'));
+      .find(el => String(el.className || '').includes('inset-0') && el.textContent.includes('无法恢复'));
     [...dialog.querySelectorAll('button')].find(b => b.textContent.trim() === '取消').click();
   });
   await dialogGone(page);
@@ -256,7 +259,7 @@ const callsOf = (page) => page.evaluate(() => window.__probeCalls || []);
   await waitDialog(page);
   await page.evaluate(() => {
     const dialog = [...document.querySelectorAll('div')]
-      .find(el => String(el.className || '').includes('inset-0') && el.textContent.includes('删除后无法恢复'));
+      .find(el => String(el.className || '').includes('inset-0') && el.textContent.includes('无法恢复'));
     [...dialog.querySelectorAll('button')].find(b => b.textContent.trim() === '删除').click();
   });
   await dialogGone(page);
@@ -287,6 +290,66 @@ const callsOf = (page) => page.evaluate(() => window.__probeCalls || []);
   check('⑧ Esc 关闭「取消中」弹窗', !(await hasDialog(page)));
   // 该行确认删除也只应发 1 次 DELETE —— 这里不改状态（mock 数据固定），不再点确认
 
+  // ── ⑨ 「清空已完成任务」是批量删除，同样不可恢复，也必须确认 ──────
+  const countDeletes = async () => (await callsOf(page)).filter(c => c.startsWith('DELETE')).length;
+  const clickClear = () => page.evaluate(() => {
+    const b = [...document.querySelectorAll('#probe-root button')]
+      .find(x => (x.textContent || '').includes('清空已完成任务'));
+    if (b) b.click();
+    return !!b;
+  });
+  const clickInDialog = (text) => page.evaluate((t) => {
+    const d = [...document.querySelectorAll('div')]
+      .find(el => String(el.className || '').includes('inset-0') && el.textContent.includes('无法恢复'));
+    const b = [...d.querySelectorAll('button')].find(x => x.textContent.trim() === t);
+    if (b) b.click();
+    return !!b;
+  }, text);
+
+  const nd0 = await countDeletes(page);
+  check('⑨ 面板上有「清空已完成任务」按钮', (await clickClear()) === true);
+  await waitDialog(page);
+  const cl = await measure(page);
+  report.clear = cl;
+  check('⑨ 点清空 → 只弹确认框，不直接清空',
+    (await countDeletes(page)) === nd0, `DELETE 次数 ${nd0} → ${await countDeletes(page)}`);
+  check('⑨ 标题为「清空已完成任务？」', cl.title === '清空已完成任务？', `实际「${cl.title}」`);
+  check('⑨ 文案写明条数与当前类型（2 条 / 双人播客）',
+    cl.lines.some(l => l.includes('2 条')) && cl.lines.some(l => l.includes('双人播客')),
+    JSON.stringify(cl.lines));
+  check('⑨ 带「清空后无法恢复。」', cl.warningVisible === true);
+  check('⑨ 确认按钮文案为「清空」、红色、在右',
+    cl.buttons.length === 2 && cl.buttons[1].text === '清空' &&
+    cl.buttons[1].left > cl.buttons[0].left && /rgb\(239, 68, 68\)/.test(cl.buttons[1].bg),
+    JSON.stringify(cl.buttons.map(b => ({ t: b.text, bg: b.bg, left: b.left }))));
+  check('⑨ 同款弹窗尺寸（与删除确认一致，无样式漂移）',
+    cl.modal.width === t.modal.width && cl.modal.maxWidth === t.modal.maxWidth,
+    `${cl.modal.width} × ${cl.modal.height}`);
+  await page.screenshot({ path: `${OUT}-清空弹窗.png` });
+
+  // 取消 → 关闭且不发 DELETE
+  await clickInDialog('取消');
+  await dialogGone(page);
+  check('⑨ 点取消 → 关闭且不发 DELETE', (await countDeletes(page)) === nd0, `DELETE 次数 ${await countDeletes(page)}`);
+
+  // Esc → 关闭
+  await clickClear();
+  await waitDialog(page);
+  await page.keyboard.press('Escape');
+  await dialogGone(page);
+  check('⑨ Esc → 关闭', !(await hasDialog(page)));
+
+  // 确认「清空」→ 才发清空接口（DELETE /api/queue?kind=podcast，注意不是单条那个路径）
+  await clickClear();
+  await waitDialog(page);
+  await clickInDialog('清空');
+  await dialogGone(page);
+  const allCalls = await callsOf(page);
+  const clearCalls = allCalls.filter(c => c.startsWith('DELETE') && !/\/api\/queue\//.test(c));
+  check('⑨ 点确认「清空」→ 发出 DELETE /api/queue?kind=podcast 且弹窗关闭',
+    clearCalls.length === 1 && clearCalls[0].includes('kind=podcast'), JSON.stringify(clearCalls));
+  report.interactions.push({ step: '确认清空', calls: clearCalls });
+
   fs.writeFileSync(`${OUT}.json`, JSON.stringify(report, null, 2));
 
   console.log('\n── 实测几何（终态弹窗）──');
@@ -298,8 +361,11 @@ const callsOf = (page) => page.evaluate(() => window.__probeCalls || []);
   for (const b of t.buttons) console.log(`  「${b.text}」 ${b.width}×${b.height}  left ${b.left}  bg ${b.bg}`);
   console.log('\n── 实测几何（取消中弹窗）──');
   console.log(`弹窗 宽 ${c.modal.width}  高 ${c.modal.height}  内容右溢 ${c.contentOverflowRight}px`);
+  console.log('\n── 实测几何（清空弹窗）──');
+  console.log(`弹窗 宽 ${cl.modal.width}  高 ${cl.modal.height}  max-width ${cl.modal.maxWidth}  内容右溢 ${cl.contentOverflowRight}px`);
+  console.log(`按钮：` + cl.buttons.map(b => `「${b.text}」${b.width}×${b.height} bg ${b.bg}`).join('  '));
   console.log('\n摘要：' + results.filter(r => r.ok).length + '/' + results.length + ' 通过');
-  console.log('接口调用：' + JSON.stringify(calls, null, 0));
+  console.log('接口调用：' + JSON.stringify(allCalls, null, 0));
 
   await browser.close();
   process.exit(results.every(r => r.ok) ? 0 : 1);

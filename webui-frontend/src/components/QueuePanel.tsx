@@ -69,6 +69,9 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   // 存快照而不是 id：弹窗内容取点击那一刻的状态，不受轮询刷新影响。
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string; cancelling: boolean } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 清空确认：批量删除、同样不可恢复。条数在点击那一刻快照，用于说明影响面。
+  const [clearConfirm, setClearConfirm] = useState<{ count: number; label: string } | null>(null);
+  const [clearing, setClearing] = useState(false);
   const prevStatusRef = useRef<Map<string, string>>(new Map());
   // 行级进度控制台输出去重：仅在进度实际变化时打印
   const lastProgressRef = useRef<Map<string, string>>(new Map());
@@ -156,17 +159,6 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     };
   }, [refreshKey]);
 
-  // Esc 关闭删除确认框。高风险动作的默认键位应该是「取消」——顺手按 Esc
-  // 一定要落到安全的一侧。⚠️ 必须放在 `if (collapsed) return` 之前（hooks 顺序）。
-  useEffect(() => {
-    if (!pendingDelete) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !deleting) setPendingDelete(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pendingDelete, deleting]);
-
   // 「加载更多历史」：把每个 kind 的终态上限 +50 后立即重取。
   // 先写 ref 再调 load，否则这一次请求仍在用旧上限。
   const loadMoreHistory = () => {
@@ -253,10 +245,19 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   };
 
   const clearFinished = async () => {
-    // 只清空当前 tab 的类型：双人播客与单人配音各自独立，
-    // 否则在播客页点一下会把配音页的已完成任务一起清掉。
-    await api.clearFinishedTasks(activeKind);
-    load(true);
+    if (clearing) return;
+    setClearing(true);
+    try {
+      // 只清空当前 tab 的类型：双人播客与单人配音各自独立，
+      // 否则在播客页点一下会把配音页的已完成任务一起清掉。
+      await api.clearFinishedTasks(activeKind);
+      await load(true);
+    } catch (e: any) {
+      window.alert(`清空失败：${e?.message ?? e}`);
+    } finally {
+      setClearing(false);
+      setClearConfirm(null);
+    }
   };
 
   const retry = async (id: string) => {
@@ -636,7 +637,17 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                 （success/failed/interrupted/cancelled）——
                 漏一个就会出现「按钮可见却清不掉」或「有任务但按钮不出现」。 */}
             {(stats.success > 0 || stats.failed > 0 || stats.cancelled > 0) && !activeFilter && (
-              <Button variant="outline" size="sm" icon={Trash2} onClick={clearFinished} className="w-full">
+              <Button
+                variant="outline"
+                size="sm"
+                icon={Trash2}
+                onClick={() => setClearConfirm({
+                  count: stats.success + stats.failed + stats.cancelled,
+                  label: activeKind === "mono" ? "单人配音" : "双人播客",
+                })}
+                className="w-full"
+                title="批量删除当前类型已结束的任务（需确认）"
+              >
                 清空已完成任务
               </Button>
             )}
@@ -683,54 +694,101 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
         </div>
       )}
 
-      {/* 删除确认弹窗：删除不可恢复，而删除按钮是行内小图标、旁边挨着一排同类图标，
+      {/* 删除确认：删除不可恢复，而删除按钮是行内小图标、旁边挨着一排同类图标，
           误点代价高 ⇒ 必须二次确认。文案按状态分两种（「取消中」时点它不一定真删）。 */}
-      {pendingDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => { if (!deleting) setPendingDelete(null); }}
-          />
-          <div className="relative w-full max-w-sm rounded-2xl bg-white shadow-xl p-5">
-            <div className="flex items-start gap-2.5">
-              <div className="w-8 h-8 shrink-0 rounded-full bg-red-50 flex items-center justify-center">
-                <AlertTriangle className="w-4 h-4 text-red-500" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <h3 className="text-sm font-semibold text-gray-800">
-                  {pendingDelete.cancelling ? "移除这个任务？" : "删除这个任务？"}
-                </h3>
-                <p className="mt-1.5 text-xs text-gray-600 leading-5 break-words">
-                  <span className="font-medium text-gray-800">「{pendingDelete.name}」</span>
-                  {pendingDelete.cancelling
-                    ? "正在取消中：若已无执行器在运行，将被直接删除；否则只会再次请求取消。"
-                    : "将从任务队列与磁盘记录中删除。"}
-                </p>
-                <p className="mt-1.5 text-xs font-medium text-red-500">删除后无法恢复。</p>
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setPendingDelete(null)}
-                disabled={deleting}
-              >
-                取消
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                icon={Trash2}
-                onClick={confirmDelete}
-                disabled={deleting}
-              >
-                {deleting ? "删除中…" : "删除"}
-              </Button>
-            </div>
+      <ConfirmDialog
+        open={!!pendingDelete}
+        busy={deleting}
+        title={pendingDelete?.cancelling ? "移除这个任务？" : "删除这个任务？"}
+        description={
+          <>
+            <span className="font-medium text-gray-800">「{pendingDelete?.name}」</span>
+            {pendingDelete?.cancelling
+              ? "正在取消中：若已无执行器在运行，将被直接删除；否则只会再次请求取消。"
+              : "将从任务队列与磁盘记录中删除。"}
+          </>
+        }
+        warning="删除后无法恢复。"
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={confirmDelete}
+      />
+
+      {/* 清空确认：批量删除，影响面（条数 + 当前类型）必须写清楚 ——
+          这类按钮不在单个任务行上，看不到"删的是谁"，更容易误点。 */}
+      <ConfirmDialog
+        open={!!clearConfirm}
+        busy={clearing}
+        title="清空已完成任务？"
+        description={
+          <>
+            将删除当前类型（{clearConfirm?.label}）的
+            <span className="font-medium text-gray-800"> {clearConfirm?.count} 条</span>
+            已结束任务 —— 完成、失败、中断、取消都算。
+          </>
+        }
+        warning="清空后无法恢复。"
+        confirmText="清空"
+        onCancel={() => setClearConfirm(null)}
+        onConfirm={clearFinished}
+      />
+    </Card>
+  );
+}
+
+/** 二次确认弹窗。删除单条 / 清空批量两处共用同一套外观，避免两处样式漂移。
+ *
+ *  为什么不用 `window.confirm`：要显示**具体对象**（任务名、条数）才有防误删的意义，
+ *  原生 confirm 只能给一段纯文本、样式也突兀。项目里另一处删音色用的是 confirm，
+ *  但那里删的是用户自己刚上传的文件、且没有"批量"这一层，口径不同。
+ *
+ *  Esc = 取消：高风险动作的默认键位要落在安全的一侧（顺手一按不会删掉东西）。
+ *  遮罩同理；确认按钮在右、用红色，取消在左、用浅色。
+ */
+function ConfirmDialog({
+  open, title, description, warning, confirmText = "删除", busy = false, onCancel, onConfirm,
+}: {
+  open: boolean;
+  title: string;
+  description: React.ReactNode;
+  warning: string;
+  confirmText?: string;
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, busy, onCancel]);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={() => { if (!busy) onCancel(); }} />
+      <div className="relative w-full max-w-sm rounded-2xl bg-white shadow-xl p-5">
+        <div className="flex items-start gap-2.5">
+          <div className="w-8 h-8 shrink-0 rounded-full bg-red-50 flex items-center justify-center">
+            <AlertTriangle className="w-4 h-4 text-red-500" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
+            <p className="mt-1.5 text-xs text-gray-600 leading-5 break-words">{description}</p>
+            <p className="mt-1.5 text-xs font-medium text-red-500">{warning}</p>
           </div>
         </div>
-      )}
-    </Card>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onCancel} disabled={busy}>
+            取消
+          </Button>
+          <Button variant="destructive" size="sm" icon={Trash2} onClick={onConfirm} disabled={busy}>
+            {busy ? `${confirmText}中…` : confirmText}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
