@@ -1,0 +1,125 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "terminal": {
+    "viewportW": 1280,
+    "rem": 18,
+    "modal": {
+      "width": 432,
+      "height": 198,
+      "left": 424,
+      "top": 301,
+      "maxWidth": "432px",
+      "borderRadius": "18px",
+      "padLeft": 22.5,
+      "padRight": 22.5,
+      "padTop": 22.5
+    },
+    "overflowLeft": 0,
+    "overflowRight": 0,
+    "contentOverflowRight": 0,
+    "widestEl": "删除这个任务？",
+    "title": "删除这个任务？",
+    "lines": [
+      "「认知觉醒·第一期（完成）」将从任务队列与磁盘记录中删除。",
+      "删除后无法恢复。"
+    ],
+    "warningColor": "rgb(239, 68, 68)",
+    "warningVisible": true,
+    "buttons": [
+      {
+        "text": "取消",
+        "left": 694,
+        "right": 750,
+        "width": 56,
+        "height": 36,
+        "bg": "rgb(255, 255, 255)",
+        "color": "rgb(55, 65, 81)",
+        "disabled": false
+      },
+      {
+        "text": "删除",
+        "left": 759,
+        "right": 834,
+        "width": 74,
+        "height": 36,
+        "bg": "rgb(239, 68, 68)",
+        "color": "rgb(255, 255, 255)",
+        "disabled": false
+      }
+    ],
+    "scrimCoversViewport": true
+  },
+  "cancelling": {
+    "viewportW": 1280,
+    "rem": 18,
+    "modal": {
+      "width": 432,
+      "height": 198,
+      "left": 424,
+      "top": 301,
+      "maxWidth": "432px",
+      "borderRadius": "18px",
+      "padLeft": 22.5,
+      "padRight": 22.5,
+      "padTop": 22.5
+    },
+    "overflowLeft": 0,
+    "overflowRight": 0,
+    "contentOverflowRight": 0,
+    "widestEl": "移除这个任务？",
+    "title": "移除这个任务？",
+    "lines": [
+      "「认知觉醒·第三期（取消中）」正在取消中：若已无执行器在运行，将被直接删除；否则只会再次请求取消。",
+      "删除后无法恢复。"
+    ],
+    "warningColor": "rgb(239, 68, 68)",
+    "warningVisible": true,
+    "buttons": [
+      {
+        "text": "取消",
+        "left": 694,
+        "right": 750,
+        "width": 56,
+        "height": 36,
+        "bg": "rgb(255, 255, 255)",
+        "color": "rgb(55, 65, 81)",
+        "disabled": false
+      },
+      {
+        "text": "删除",
+        "left": 759,
+        "right": 834,
+        "width": 74,
+        "height": 36,
+        "bg": "rgb(239, 68, 68)",
+        "color": "rgb(255, 255, 255)",
+        "disabled": false
+      }
+    ],
+    "scrimCoversViewport": true
+  },
+  "interactions": [
+    {
+      "step": "取消",
+      "deleteCalls": 0
+    },
+    {
+      "step": "Esc",
+      "deleteCalls": 0
+    },
+    {
+      "step": "遮罩",
+      "deleteCalls": 0
+    },
+    {
+      "step": "确认删除",
+      "deleteCalls": 1,
+      "calls": [
+        "DELETE /api/queue/t-success"
+      ]
+    }
+  ]
+}

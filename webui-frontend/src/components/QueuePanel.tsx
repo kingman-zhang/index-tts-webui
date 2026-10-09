@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X, History } from "lucide-react";
+import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, AlertTriangle, X, History } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
 import { api } from "@/api/client";
 import { cn, audioDownloadName } from "@/lib/utils";
@@ -64,6 +64,11 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   const [editingName, setEditingName] = useState("");
   // 报错详情弹窗（失败自动弹出；队列内详情图标可再次打开）
   const [errorModal, setErrorModal] = useState<{ name: string; error: string } | null>(null);
+  // 删除确认弹窗：删除是**不可恢复**动作（终态任务连磁盘记录一起删），
+  // 而按钮是行内小图标、挨着一排同类图标，误点代价高。null = 未打开。
+  // 存快照而不是 id：弹窗内容取点击那一刻的状态，不受轮询刷新影响。
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string; cancelling: boolean } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const prevStatusRef = useRef<Map<string, string>>(new Map());
   // 行级进度控制台输出去重：仅在进度实际变化时打印
   const lastProgressRef = useRef<Map<string, string>>(new Map());
@@ -151,6 +156,17 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     };
   }, [refreshKey]);
 
+  // Esc 关闭删除确认框。高风险动作的默认键位应该是「取消」——顺手按 Esc
+  // 一定要落到安全的一侧。⚠️ 必须放在 `if (collapsed) return` 之前（hooks 顺序）。
+  useEffect(() => {
+    if (!pendingDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !deleting) setPendingDelete(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingDelete, deleting]);
+
   // 「加载更多历史」：把每个 kind 的终态上限 +50 后立即重取。
   // 先写 ref 再调 load，否则这一次请求仍在用旧上限。
   const loadMoreHistory = () => {
@@ -219,6 +235,21 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       window.alert("该任务仍有执行器在运行，已再次请求取消；当前分段合成结束后会自动移除。");
     }
     load(true);
+  };
+
+  // 删除前确认：终态任务会被连磁盘记录一起删掉，误删无法恢复。
+  // 失败也必须说出来 —— 例如它在别处已被删掉（404），静默会让人以为按钮坏了。
+  const confirmDelete = async () => {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    try {
+      await cancel(pendingDelete.id);
+    } catch (e: any) {
+      window.alert(`删除失败：${e?.message ?? e}`);
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
+    }
   };
 
   const clearFinished = async () => {
@@ -530,7 +561,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                         )}
                         {(task.status === "success" || task.status === "failed" || task.status === "interrupted" || task.status === "cancelled" || cancelling) && (
                           <button
-                            onClick={() => cancel(task.id)}
+                            onClick={() => setPendingDelete({ id: task.id, name: task.project_name, cancelling })}
                             className="p-1 text-gray-400 hover:bg-gray-200 rounded"
                             title={cancelling ? "删除；若该任务已无执行器在运行则直接移除" : "删除"}
                           >
@@ -647,6 +678,55 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
               >
                 我知道了
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 删除确认弹窗：删除不可恢复，而删除按钮是行内小图标、旁边挨着一排同类图标，
+          误点代价高 ⇒ 必须二次确认。文案按状态分两种（「取消中」时点它不一定真删）。 */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => { if (!deleting) setPendingDelete(null); }}
+          />
+          <div className="relative w-full max-w-sm rounded-2xl bg-white shadow-xl p-5">
+            <div className="flex items-start gap-2.5">
+              <div className="w-8 h-8 shrink-0 rounded-full bg-red-50 flex items-center justify-center">
+                <AlertTriangle className="w-4 h-4 text-red-500" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold text-gray-800">
+                  {pendingDelete.cancelling ? "移除这个任务？" : "删除这个任务？"}
+                </h3>
+                <p className="mt-1.5 text-xs text-gray-600 leading-5 break-words">
+                  <span className="font-medium text-gray-800">「{pendingDelete.name}」</span>
+                  {pendingDelete.cancelling
+                    ? "正在取消中：若已无执行器在运行，将被直接删除；否则只会再次请求取消。"
+                    : "将从任务队列与磁盘记录中删除。"}
+                </p>
+                <p className="mt-1.5 text-xs font-medium text-red-500">删除后无法恢复。</p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPendingDelete(null)}
+                disabled={deleting}
+              >
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                icon={Trash2}
+                onClick={confirmDelete}
+                disabled={deleting}
+              >
+                {deleting ? "删除中…" : "删除"}
+              </Button>
             </div>
           </div>
         </div>
