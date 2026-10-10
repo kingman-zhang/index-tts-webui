@@ -20,6 +20,9 @@ logs/
 # outputs/ 里的回归日志是运行产物（报告与回归入口脚本仍入库）
 outputs/*.log
 
+# 撕音扫描工具的运行日志（tools/scan_tts_artifacts.py 默认写在调用目录）
+scan_tts_artifacts.log
+
 .workbuddy/
 
 # 密钥配置（模板 .env.example 入库，真实 .env 不入库）
