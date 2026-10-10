@@ -24,6 +24,16 @@
     第三方声明 None ⇒ 读 TTS_CONCURRENCY，默认 3，钳 1-8）；
   - gather 保序 → 拼接顺序与文本顺序一致；失败段自动重试一次，
     重试后仍失败则把该引擎置入冷却（避免每个新任务重复撞同一个故障引擎）。
+
+落盘与续传（2026-10-10，G4）：
+  - 每段合成完**立即落盘**到 `data/outputs/seg_cache/{task_id}/{i}.wav`，
+    内存里不再累积整章音频；拼接改为「按序读缓存 → 逐段写入成品」，
+    峰值内存 = 单段（原先是把所有段 gather 进内存再拼，随章节线性增长）。
+  - 同一 task_id 重跑时（用户点「重新提交」复用 id，见 routes/queue.py）
+    已完成的段直接复用：不调平台、不产生费用，只补缺口。
+  - 缓存有效性由**合成指纹**把关（引擎 / 单次上限 / 语速 / 音色 / 全部段的
+    文本·情绪·静音），不符即整目录作废 —— 换引擎会改变段划分，沿用旧文件
+    会拼出错位音频。详见 app/seg_cache.py。
 """
 
 from __future__ import annotations
@@ -32,10 +42,12 @@ import asyncio
 import io
 import os
 import re
+import time
 import wave
 from pathlib import Path
 
 from . import queue_state as qs
+from . import seg_cache
 from .config import DATA_DIR, logger
 from .engines import (
     EMO_VECTOR_ORDER,
@@ -180,6 +192,11 @@ def _concat_wavs(chunks: list[bytes], gaps_ms: list[int]) -> tuple[bytes, float]
 
     用 wave 模块直拼（无 ffmpeg 依赖）；各段音频参数必须一致——
     任务开始时固定单一引擎，正常情况下不会混流。
+
+    ⚠️ 2026-10-10（G4）起 **mono 路径不再走这里**：它要求把所有段音频同时
+    放在内存里（入参就是 chunks 列表，返回又是完整字节），峰值内存随章节线性
+    增长。mono 改用 `_assemble_streaming`（读段缓存、逐段写文件、读完即丢）。
+    本函数保留给 `podcast_runner`（单集体量小、无书稿场景），行为不变。
     """
     if not chunks:
         raise ValueError("没有可拼接的音频段")
@@ -211,6 +228,102 @@ def _concat_wavs(chunks: list[bytes], gaps_ms: list[int]) -> tuple[bytes, float]
                 w.writeframes(b"\x00" * (gap_frames * frame_bytes))
                 total_frames += gap_frames
     return out.getvalue(), total_frames / framerate
+
+
+# ─── 分段落盘缓存：流式合流 + 断点续传（2026-10-10，G4）──────────────
+# 设计动机与失效规则见 app/seg_cache.py 顶部的完整说明。
+# 这里只放「与 mono 任务生命周期绑定」的那部分。
+
+# 进度写盘节流。进度/current_line/message 都是**内存对象**上的字段，前端轮询
+# （routes/queue.py 直接返回 qs.queue_tasks 里的对象）读的也是内存；落盘只为
+# 进程重启后能恢复。所以没必要每合成一段就把整个任务 JSON 重写一遍 ——
+# 任务 JSON 里含整篇 lines，段数越多，写盘总量按平方增长。
+PROGRESS_PERSIST_MIN_INTERVAL_SEC = 2.0
+PROGRESS_PERSIST_MIN_STEP = 0.05
+
+
+def _seg_cache_root() -> Path:
+    """分段缓存根目录 = `OUTPUTS_DIR/seg_cache`。
+
+    **每次调用求值**（不写成模块常量）：测试会 patch `mono_runner.OUTPUTS_DIR`
+    把产物重定向到临时目录，写死常量会绕过它，缓存就落到真实 data/ 里去了。
+    """
+    return OUTPUTS_DIR / "seg_cache"
+
+
+def _assemble_streaming_sync(
+    cache_root: Path, task_id: str, gaps: list[int], out_path: Path
+) -> float:
+    """把分段缓存按序流式写成一个 wav，返回总时长秒。
+
+    峰值内存 = **单段**（读一段 → 写出 → 丢一段），与章节总长无关 —— 这正是
+    G4「流式落盘」要解决的问题。段音频在此之前已由 `_worker` 逐段落盘，
+    所以运行期也不会把整章攒在内存里。
+
+    `wave` 的文件头（含总帧数）在 `close()` 时才回填，因此流式写入不需要预先
+    知道总长，这是能「边写边丢」的前提。
+    """
+    if not gaps:
+        raise ValueError("没有可拼接的音频段")
+    framerate = sampwidth = channels = 0
+    frame_bytes = 0
+    total_frames = 0
+    w = None
+    try:
+        for i in range(len(gaps)):
+            data = seg_cache.read_segment(cache_root, task_id, i)
+            if data is None:
+                raise ValueError(
+                    f"第 {i + 1}/{len(gaps)} 段的分段缓存缺失，无法拼接（请重新生成该任务）"
+                )
+            with wave.open(io.BytesIO(data), "rb") as r:
+                params = (r.getframerate(), r.getsampwidth(), r.getnchannels())
+                frames = r.readframes(r.getnframes())
+            if w is None:
+                framerate, sampwidth, channels = params
+                frame_bytes = sampwidth * channels
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                w = wave.open(str(out_path), "wb")
+                w.setnchannels(channels)
+                w.setsampwidth(sampwidth)
+                w.setframerate(framerate)
+            elif params != (framerate, sampwidth, channels):
+                raise ValueError(
+                    f"第 {i + 1} 段音频参数与前段不一致（引擎混流或格式变化），请重试"
+                )
+            w.writeframes(frames)
+            total_frames += len(frames) // frame_bytes
+            gap_ms = int(gaps[i] or 0)
+            if gap_ms > 0:
+                gap_frames = int(framerate * gap_ms / 1000)
+                w.writeframes(b"\x00" * (gap_frames * frame_bytes))
+                total_frames += gap_frames
+    except Exception:
+        # 失败时收掉半成品：绝不能留下一个「头是错的、长度不全」的 wav
+        # 被当成成品交给用户。
+        if w is not None:
+            try:
+                w.close()
+            except Exception:
+                pass
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+        raise
+    if w is None:  # 理论上到不了：gaps 非空 ⇒ 循环至少写入一段
+        raise ValueError("没有可拼接的音频段")
+    w.close()  # 这一步回填正确的 nframes 头
+    return total_frames / framerate
+
+
+async def _assemble_streaming(
+    cache_root: Path, task_id: str, gaps: list[int], out_path: Path
+) -> float:
+    """`_assemble_streaming_sync` 的异步包装（磁盘 IO 不阻塞事件循环）。"""
+    return await asyncio.to_thread(
+        _assemble_streaming_sync, cache_root, task_id, gaps, out_path
+    )
 
 
 def _resolve_local_voice(voice_path: str) -> str:
@@ -286,13 +399,32 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
     conc = effective_concurrency(caps)
     logger.info("[mono] task=%s engine=%s entries=%d concurrency=%d", task_id, engine.name, total, conc)
 
+    # ── 分段缓存准备（流式落盘 + 断点续传）───────────────────────────
+    # 指纹不符即整目录作废重建：换引擎会改变段划分（切法按 max_input_chars），
+    # 沿用旧段文件会拼出**错位音频**。详见 app/seg_cache.py 顶部说明。
+    cache_root = _seg_cache_root()
+    fp = seg_cache.fingerprint(
+        engine=engine.name,
+        max_input_chars=caps.max_input_chars,
+        speed=speed,
+        voice=voice_path,
+        entries=entries,
+    )
+    if seg_cache.prepare(cache_root, task_id, fp, total):
+        cached_n = sum(1 for i in range(total) if seg_cache.has_segment(cache_root, task_id, i))
+        if cached_n:
+            logger.info(
+                "[mono] task=%s 命中分段缓存 %d/%d 段（跳过重复合成，不产生平台费用）",
+                task_id, cached_n, total,
+            )
+
     # 行 → 段数映射（用于 current_line：行内全部段完成才计入）
     line_counts: dict[int, int] = {}
     for e in entries:
         line_counts[e["line_idx"]] = line_counts.get(e["line_idx"], 0) + 1
 
     sem = asyncio.Semaphore(conc)
-    state = {"submitted": 0, "done": 0}
+    state = {"submitted": 0, "done": 0, "last_persist": 0.0, "last_persist_progress": -1.0}
 
     def _update_progress() -> None:
         done = state["done"]
@@ -315,12 +447,27 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
             task["message"] = f"已合成 {done}/{total} 段"
         elif state["submitted"] > 0:
             task["message"] = f"已提交 {state['submitted']}/{total} 段，等待平台合成"
-        qs.persist_task(task_id)
+        # 以上都只改**内存**字段（前端轮询读的就是内存对象）；落盘只为重启恢复，
+        # 故按「时间 / 进度步长 / 收尾」三条件节流，不再每段全量重写任务 JSON。
+        now = time.monotonic()
+        if (done >= total
+                or now - state["last_persist"] >= PROGRESS_PERSIST_MIN_INTERVAL_SEC
+                or task["progress"] - state["last_persist_progress"] >= PROGRESS_PERSIST_MIN_STEP):
+            state["last_persist"] = now
+            state["last_persist_progress"] = task["progress"]
+            qs.persist_task(task_id)
 
-    async def _worker(entry: dict) -> bytes:
+    async def _worker(index: int, entry: dict) -> None:
         async with sem:
             if task.get("cancel_requested"):
                 raise _TaskCancelled()
+            # 断点续传：这一段上次已合成并落盘 ⇒ 直接复用，不调平台、不产生费用。
+            # 判断放在信号量内，让「命中」与实际合成共享同一并发额度 —— 否则大量
+            # 命中时会瞬间冲到 100%，掩盖仍在跑的段。
+            if seg_cache.has_segment(cache_root, task_id, index):
+                state["done"] += 1
+                _update_progress()
+                return
             state["submitted"] += 1
             _update_progress()
             # should_cancel 让资源池在「排队等待中 / 已拿到租约但尚未提交」时也能
@@ -329,12 +476,14 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
                 SegmentRequest(text=entry["text"], voice=voice, emotion_label=entry["emotion"],
                                speed=speed, should_cancel=lambda: bool(task.get("cancel_requested")))
             )
+        # 落盘放在信号量**之外**：写盘不该占用平台的并发额度。
+        # 这一步是关键 —— 音频在此离开内存，不再累积进 results（G4 流式落盘）。
+        await asyncio.to_thread(seg_cache.write_segment, cache_root, task_id, index, audio)
         state["done"] += 1
         _update_progress()
-        return audio
 
-    async def _run_batch(batch: list[dict]) -> list:
-        return await asyncio.gather(*[_worker(e) for e in batch], return_exceptions=True)
+    async def _run_batch(batch: list[tuple[int, dict]]) -> list:
+        return await asyncio.gather(*[_worker(i, e) for i, e in batch], return_exceptions=True)
 
     def _failed(results: list) -> list[int]:
         # 不可重试的失败（可能已计费）与主动取消都不重试：
@@ -342,7 +491,9 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
         return [i for i, r in enumerate(results) if isinstance(r, Exception)
                 and not isinstance(r, (NonRetryableSynthesisError, SynthesisCancelled, _TaskCancelled))]
 
-    results = await _run_batch(entries)
+    # 并发合成。注意 results 里存的不再是音频字节，而是 None（成功/命中缓存）
+    # 或异常对象 —— 音频已经逐段落盘，内存里不累积整章（G4）。
+    results = await _run_batch(list(enumerate(entries)))
 
     # 无条件检查取消：即使所有分段都在标记设置前提交（短任务），停止也必须生效
     if task.get("cancel_requested"):
@@ -358,7 +509,7 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
             logger.warning("[mono] task=%s 段 %d/%d 首次合成失败，重试: %s", task_id, i + 1, total, results[i])
         task["message"] = f"重试 {len(retry_idx)} 个失败段"
         qs.persist_task(task_id)
-        retry_results = await _run_batch([entries[i] for i in retry_idx])
+        retry_results = await _run_batch([(i, entries[i]) for i in retry_idx])
         for slot, i in enumerate(retry_idx):
             results[i] = retry_results[slot]
 
@@ -380,14 +531,13 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
             mark_engine_failed(engine.name)
         raise first  # 保留原始异常类型，queue_worker 据此归类 INTERRUPTED/FAILED
 
-    chunks: list[bytes] = [r for r in results]
     gaps: list[int] = [e["gap_ms"] for e in entries]
 
     task["message"] = "拼接音频中"
     qs.persist_task(task_id)
-    wav_bytes, duration = _concat_wavs(chunks, gaps)
+    # 流式合流：按序读段缓存、逐段写入成品，峰值内存 = 单段（G4）。
     out_path = OUTPUTS_DIR / f"mono_{task_id}.wav"
-    out_path.write_bytes(wav_bytes)
+    duration = await _assemble_streaming(cache_root, task_id, gaps, out_path)
 
     task["status"] = qs.QueueTaskStatus.SUCCESS
     task["progress"] = 1.0
@@ -396,4 +546,8 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
     task["duration_sec"] = round(duration, 2)
     task["message"] = "合成完成"
     task["engine"] = engine.name
-    logger.info("[mono] completed task=%s engine=%s segments=%d concurrency=%d duration=%.1fs", task_id, engine.name, len(chunks), conc, duration)
+    qs.persist_task(task_id)
+    # 成功之后段缓存不再有任何用途（成品已生成），清掉以免磁盘只增不减。
+    # 失败/中断/取消**不清** —— 那正是断点续传要保留的凭据。
+    seg_cache.clear(cache_root, task_id)
+    logger.info("[mono] completed task=%s engine=%s segments=%d concurrency=%d duration=%.1fs", task_id, engine.name, len(gaps), conc, duration)

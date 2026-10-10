@@ -15,6 +15,7 @@ from . import queue_state as qs
 # build_info 自己就把 config 放在首位，这里跟着同一顺序。
 from .config import GLOSSARY_PATH, TTS_URL, args, http_client, logger
 from . import build_info
+from . import seg_cache
 from .queue_worker import process_queue, resume_polling
 from .queue_state import load_persisted_tasks
 from .routes import all_routers
@@ -96,6 +97,17 @@ async def on_startup():
 
     # 1. 从磁盘加载持久化的队列任务
     load_persisted_tasks()
+
+    # 1.5 清理「孤儿」分段缓存（G4）
+    # 失败/中断的任务会刻意保留段缓存供断点续传；但用户一旦把任务从队列里删掉，
+    # 那份缓存就再也不会被用到 —— 启动时按现存任务名单清一遍，否则磁盘只增不减。
+    # 必须在 load_persisted_tasks() 之后（要拿完整的现存任务名单）。
+    try:
+        _pruned = seg_cache.prune(seg_cache.default_root(), qs.queue_tasks.keys())
+        if _pruned:
+            logger.info("[startup] 清理了 %d 个孤儿分段缓存目录", _pruned)
+    except Exception as e:  # 清理失败不影响启动
+        logger.warning("[startup] 清理分段缓存失败: %s", e)
 
     # 2. 对持久化中"运行中"且有 tts_task_id 的任务，尝试恢复轮询
     persisted_running = [

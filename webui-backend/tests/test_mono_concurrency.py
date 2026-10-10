@@ -7,10 +7,13 @@
 """
 
 import asyncio
+import io
 import os
+import re
+import struct
 import sys
 import tempfile
-import time
+import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,6 +37,25 @@ def check(name, actual, expected):
 
 
 # ---------- 假引擎 ----------
+
+_SEG_NO_RE = re.compile(r"(\d+)")
+
+
+def _wav_1frame(value: int, framerate: int = 8000) -> bytes:
+    """单声道 16bit、恰好 1 帧的合法 wav；采样值即传入的 value。
+
+    假引擎返回**合法 wav**（而不是随手的 `b"wav:..."`）之后，整条 mono 链路
+    （逐段落盘 → 按序流式合流）都能真跑，不需要再伪造合流入口 ——「拼接保序」
+    于是可以直接从**成品音频**上验证。
+    """
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(framerate)
+        w.writeframes(struct.pack("<h", value))
+    return buf.getvalue()
+
 
 class FakeEngine:
     name = "fake_api"
@@ -59,7 +81,9 @@ class FakeEngine:
             if req.text in self.fail_first:
                 self.fail_first.discard(req.text)  # 只失败一次，重试成功
                 raise RuntimeError(f"模拟瞬时失败: {req.text}")
-            return f"wav:{req.text}".encode()
+            # 1 帧、采样值 = 文本里的序号 ⇒ 成品音频的第 i 帧就代表第 i 段。
+            m = _SEG_NO_RE.search(req.text)
+            return _wav_1frame(int(m.group(1)) if m else 0)
         finally:
             self._inflight -= 1
 
@@ -86,7 +110,7 @@ def _make_voice_file(tmpdir: Path) -> None:
     (tmpdir / "voice.mp3").write_bytes(b"fake")
 
 
-def _patch_engine(engine, tmpdir: Path, concat_sink: list | None = None):
+def _patch_engine(engine, tmpdir: Path):
     """把 mono_runner 的选引擎入口替换为固定假引擎。
 
     2026-09-29 起 mono_runner 不再自己 `build_registry()`，而是调
@@ -94,6 +118,9 @@ def _patch_engine(engine, tmpdir: Path, concat_sink: list | None = None):
     必须跨任务存活），所以 patch 点从 `mono_runner.build_registry`
     改成 `mono_runner.select_engine` —— 名字是从 `.engines` import 进本模块的，
     patch 本模块属性即可生效。
+
+    2026-10-10（G4）后**不再需要伪造合流入口**：假引擎返回的是合法 wav，
+    `_assemble_streaming` 可以真跑（读段缓存 → 写成品）。
     """
     async def _select():
         return engine
@@ -102,13 +129,7 @@ def _patch_engine(engine, tmpdir: Path, concat_sink: list | None = None):
     # 失败路径会调 mark_engine_failed 写真实注册表的冷却表；测试里换成空操作，
     # 避免假引擎名污染跨用例的熔断状态（熔断本身另有 tests/test_engine_layer.py 覆盖）。
     mono_runner.mark_engine_failed = lambda name: None
-    mono_runner.OUTPUTS_DIR = tmpdir  # 避免写入真实 data 目录
-    if concat_sink is not None:
-        def _fake_concat(chunks, gaps):
-            concat_sink.append([c.decode() for c in chunks])
-            return b"", 0.0
-
-        mono_runner._concat_wavs = _fake_concat
+    mono_runner.OUTPUTS_DIR = tmpdir  # 避免写入真实 data 目录（段缓存也随之进 tmpdir）
 
 
 def test_flatten():
@@ -181,26 +202,42 @@ def test_concurrency_env():
     return ok
 
 
-def test_concurrent_order_and_speed():
+def test_concurrency_and_order():
+    """并发、并发上限、拼接保序。
+
+    ⚠️ 刻意**不测墙钟耗时**：本仓库的测试运行环境里单次文件读取有 ~31 ms 的
+    固定开销（读 1 KB 也一样，而 stat 是 0 ms），会淹没耗时信号，让「并发提速」
+    这条断言变成测环境。并发的证据改用「同时在场段数 max_inflight」—— 它直接
+    说明有多少段真的在同时跑，更贴近语义，也不受环境 IO 影响。
+    """
     async def run():
         tmp = Path(tempfile.mkdtemp())
         _make_voice_file(tmp)
         engine = FakeEngine(delay=0.06)
-        sink: list = []
-        _patch_engine(engine, tmp, sink)
+        _patch_engine(engine, tmp)
         lines = [{"speaker": "A", "text": f"第{i}段"} for i in range(6)]
         task = _make_task(tmp, lines, id="conc_order")
-        t0 = time.monotonic()
         await mono_runner.run_mono_task(task)
-        elapsed = time.monotonic() - t0
-        return engine, task, elapsed, sink
+        return engine, task, tmp
 
-    engine, task, elapsed, sink = asyncio.run(run())
-    ok = check("并发保序（拼接顺序=文本顺序）", sink[0], [f"wav:第{i}段" for i in range(6)])
-    ok &= check("任务成功", task["status"].value if hasattr(task["status"], "value") else task["status"], "success")
+    engine, task, tmp = asyncio.run(run())
+    ok = check("任务成功", task["status"].value if hasattr(task["status"], "value") else task["status"], "success")
     ok &= check("调用次数", len(engine.calls), 6)  # 无失败无重试
-    ok &= check("实际并发度 3", engine.max_inflight, 3)
-    ok &= check(f"耗时提速（{elapsed:.2f}s < 0.28s，串行需 0.36s）", elapsed < 0.28, True)
+    ok &= check("并发确实达到 3", engine.max_inflight, 3)
+    ok &= check("并发上限被遵守（≤3）", engine.max_inflight <= 3, True)
+
+    # 保序：假引擎每段正好 1 帧、采样值 = 段序号，所以成品音频的帧序列就是
+    # 「段落的实际排列顺序」。G4 起拼接改为按索引 0..N 读段缓存，这条断言
+    # 直接锁住那条真实路径（不再依赖伪造的合流入口）。
+    out = tmp / "mono_conc_order.wav"
+    ok &= check("成品音频已生成", out.is_file(), True)
+    with wave.open(str(out), "rb") as r:
+        raw = r.readframes(r.getnframes())
+    vals = list(struct.unpack("<%dh" % (len(raw) // 2), raw))
+    ok &= check("拼接保序（第 i 帧 = 第 i 段）", vals, list(range(6)))
+
+    # 成功后段缓存应被清理，否则磁盘只增不减
+    ok &= check("成功后段缓存已清理", not (mono_runner._seg_cache_root() / "conc_order").exists(), True)
     ok &= check("duration_sec 已统计", isinstance(task.get("duration_sec"), float), True)
     return ok
 
@@ -275,7 +312,7 @@ def main() -> int:
     all_ok = True
     all_ok &= test_flatten()
     all_ok &= test_concurrency_env()
-    all_ok &= test_concurrent_order_and_speed()
+    all_ok &= test_concurrency_and_order()
     all_ok &= test_retry_failed_segment()
     all_ok &= test_all_failed_raises()
     all_ok &= test_cancel()
