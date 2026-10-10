@@ -1,0 +1,66 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "viewportW": 1280,
+  "cardCount": 4,
+  "cards": [
+    {
+      "name": "体验包",
+      "hasBonusLine": false,
+      "cardTop": 86,
+      "cardBottom": 252,
+      "cardHeight": 166,
+      "btnTop": 180,
+      "btnBottom": 216,
+      "btnHeight": 36,
+      "gapToCardBottom": 36,
+      "btnMarginTop": "4.5px",
+      "padBottom": 13.5
+    },
+    {
+      "name": "标准包",
+      "hasBonusLine": true,
+      "cardTop": 86,
+      "cardBottom": 252,
+      "cardHeight": 166,
+      "btnTop": 201,
+      "btnBottom": 237,
+      "btnHeight": 36,
+      "gapToCardBottom": 15,
+      "btnMarginTop": "4.5px",
+      "padBottom": 13.5
+    },
+    {
+      "name": "超值包",
+      "hasBonusLine": true,
+      "cardTop": 86,
+      "cardBottom": 252,
+      "cardHeight": 166,
+      "btnTop": 201,
+      "btnBottom": 237,
+      "btnHeight": 36,
+      "gapToCardBottom": 15,
+      "btnMarginTop": "4.5px",
+      "padBottom": 13.5
+    },
+    {
+      "name": "尊享包",
+      "hasBonusLine": true,
+      "cardTop": 86,
+      "cardBottom": 252,
+      "cardHeight": 166,
+      "btnTop": 201,
+      "btnBottom": 237,
+      "btnHeight": 36,
+      "gapToCardBottom": 15,
+      "btnMarginTop": "4.5px",
+      "padBottom": 13.5
+    }
+  ],
+  "spread": {
+    "btnTop": 21,
+    "gapToCardBottom": 21
+  }
+}

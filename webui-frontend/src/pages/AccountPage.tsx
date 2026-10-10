@@ -539,7 +539,8 @@ function ShopCard({ showToast }: { showToast: (m: string) => void }) {
                 {pack.bonus_points > 0 && (
                   <p className="text-[0.625rem] text-amber-600">含赠送 {pack.bonus_points} 积分</p>
                 )}
-                <Button size="sm" className="mt-1 w-full"
+                {/* mt-auto：卡片被 grid 拉成等高后，把按钮压到底边，保证四种套餐（有无「含赠送」行）按钮对齐 */}
+                <Button size="sm" className="mt-auto w-full"
                   icon={busyId === pack.id ? Loader2 : ShoppingCart}
                   disabled={!!busyId}
                   onClick={() => void buy(pack)}>
