@@ -4,11 +4,14 @@ import { MonoEditor } from "../components/MonoEditor";
 import { MonoVoiceCard, type MonoVoice } from "../components/MonoVoiceCard";
 import { GlossaryPanel } from "../components/GlossaryPanel";
 import { QueuePanel } from "../components/QueuePanel";
+import { ChapterList } from "../components/ChapterList";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
   defaultProjectName, defaultParams, defaultSilence,
   textToMonoLines, monoLinesToText, billableChars, estimatePoints,
+  newChapterId, type MonoChapter,
 } from "../types";
 import {
   loadProjects, saveProject, removeProject, type MonoProjectSnapshot,
@@ -22,9 +25,12 @@ interface MonoDraft {
   voice: MonoVoice;
   speed: number;
   text: string;
+  /** 书稿模式：整本书的章节（普通单篇时缺省） */
+  book?: MonoChapter[];
+  activeChapterId?: string;
 }
 
-/** v2 草稿 = { name?, voice, speed, text }；读到 v1（逐段模型）时迁移为标记文本 */
+/** v2 草稿 = { name?, voice, speed, text[, book] }；读到 v1（逐段模型）时迁移为标记文本 */
 function loadMonoDraft(): MonoDraft {
   const empty: MonoDraft = { name: defaultProjectName(), voice: { voice_path: null, voice_name: null }, speed: 1.0, text: "" };
   try {
@@ -37,6 +43,8 @@ function loadMonoDraft(): MonoDraft {
           voice: { voice_path: d.voice?.voice_path ?? null, voice_name: d.voice?.voice_name ?? null },
           speed: Number(d.speed) > 0 ? Number(d.speed) : 1.0,
           text: d.text,
+          book: Array.isArray(d.book) && d.book.length ? d.book : undefined,
+          activeChapterId: typeof d.activeChapterId === "string" ? d.activeChapterId : undefined,
         };
       }
     }
@@ -56,7 +64,12 @@ function loadMonoDraft(): MonoDraft {
   return empty;
 }
 
-/** 单人配音页（/dubbing）：单音色 + 所见即所得画布 + 队列 */
+/** 单人配音页（/dubbing）：单音色 + 所见即所得画布 + 队列。
+ *
+ *  两种工作形态：
+ *  - 普通单篇（book = null）：画布文本 = 整篇文稿，与旧行为一致。
+ *  - 书稿模式（book = 章节数组）：画布文本**恒等于当前章**；左栏出现章节目录，
+ *    可逐章编辑 / 逐章生成 / 勾选批量生成（每章一个队列任务，各扣各的积分）。 */
 export default function DubbingPage() {
   const initial = loadMonoDraft();
   const [name, setName] = useState(initial.name);
@@ -64,14 +77,36 @@ export default function DubbingPage() {
   const [monoSpeed, setMonoSpeed] = useState<number>(initial.speed);
   const [monoText, setMonoText] = useState<string>(initial.text);
 
+  // ─── 书稿模式 ─────────────────────────────────────────────
+  const [book, setBook] = useState<MonoChapter[] | null>(initial.book ?? null);
+  const [activeChapterId, setActiveChapterId] = useState<string | null>(
+    initial.book?.length ? (initial.activeChapterId ?? initial.book[0].id) : null
+  );
+  const [chapterSelected, setChapterSelected] = useState<Set<string>>(new Set());
+  const [chapterSubmitted, setChapterSubmitted] = useState<Set<string>>(new Set());
+  const [bookCollapsed, setBookCollapsed] = useState(false);
+  const [submittingBatch, setSubmittingBatch] = useState(false);
+  const [submittingChapterId, setSubmittingChapterId] = useState<string | null>(null);
+
   const { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000, memberMinCharge } = useAppInit();
   const { toast, showToast } = useToast();
   const { user } = useAuth();
 
-  // 草稿自动保存（含项目名，刷新不丢；text 为画布文本唯一真源）
+  // 草稿自动保存（含书稿；刷新不丢）。
+  // 书稿是几十万字量级 → 必须防抖：否则每次按键都要序列化 ~1MB JSON，输入会卡。
   useEffect(() => {
-    localStorage.setItem(MONO_DRAFT_KEY, JSON.stringify({ name, voice: monoVoice, speed: monoSpeed, text: monoText }));
-  }, [name, monoVoice, monoSpeed, monoText]);
+    const t = setTimeout(() => {
+      const draft: MonoDraft = {
+        name, voice: monoVoice, speed: monoSpeed, text: monoText,
+        book: book ?? undefined,
+        activeChapterId: activeChapterId ?? undefined,
+      };
+      try {
+        localStorage.setItem(MONO_DRAFT_KEY, JSON.stringify(draft));
+      } catch { /* 配额不足（书稿过大）时放弃本次草稿保存，不打断编辑 */ }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [name, monoVoice, monoSpeed, monoText, book, activeChapterId]);
 
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,8 +119,15 @@ export default function DubbingPage() {
   const [projectSaved, setProjectSaved] = useState(false);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 切换项目会覆盖画布 → 用平台统一样式弹窗确认（替代原生 confirm）；
+  // 确认后执行 run()。不确认则什么都不发生。
+  const [pendingSwitch, setPendingSwitch] = useState<{ name: string; run: () => void } | null>(null);
+
   const handleSaveProject = () => {
-    setProjects(saveProject({ name, voice: monoVoice, speed: monoSpeed, text: monoText }));
+    setProjects(saveProject({
+      name, voice: monoVoice, speed: monoSpeed, text: monoText,
+      book, activeChapterId,
+    }));
     setProjectSaved(true);
     if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
     savedFlashTimer.current = setTimeout(() => setProjectSaved(false), 1500);
@@ -94,18 +136,84 @@ export default function DubbingPage() {
   const handleSwitchProject = (id: string) => {
     const snap = projects.find(p => p.id === id);
     if (!snap) return;
-    if (monoText.trim() && !window.confirm(`切换到「${snap.name}」将替换当前文稿内容，是否继续？`)) return;
-    setName(snap.name);
-    setMonoVoice(snap.voice);
-    setMonoSpeed(snap.speed);
-    setMonoText(snap.text);
-    showToast(`已切换到「${snap.name}」`);
+    const doSwitch = () => {
+      setName(snap.name);
+      setMonoVoice(snap.voice);
+      setMonoSpeed(snap.speed);
+      setMonoText(snap.text);
+      const b = snap.book ?? null;
+      setBook(b);
+      setActiveChapterId(b?.length ? (snap.activeChapterId ?? b[0].id) : null);
+      setChapterSelected(b ? new Set(b.map(c => c.id)) : new Set());
+      setChapterSubmitted(new Set());
+      showToast(`已切换到「${snap.name}」`);
+    };
+    // 画布有内容时才需确认（平台统一样式弹窗，替代原生 confirm）
+    if (monoText.trim()) {
+      setPendingSwitch({ name: snap.name, run: doSwitch });
+      return;
+    }
+    doSwitch();
   };
 
   const handleDeleteProject = (id: string) => {
     const target = projects.find(p => p.id === id);
     setProjects(removeProject(id));
     if (target) showToast(`已删除存档「${target.name}」`);
+  };
+
+  // ─── 书稿：画布文本 ⇄ 当前章 ──────────────────────────────
+  const activeIndex = book && activeChapterId ? book.findIndex(c => c.id === activeChapterId) : -1;
+  const activeChapter = activeIndex >= 0 ? book![activeIndex] : null;
+
+  /** 画布编辑：写回「当前章」，保证 book 与画布不漂移 */
+  const handleTextChange = (next: string) => {
+    setMonoText(next);
+    if (activeChapterId) {
+      setBook(prev => prev
+        ? prev.map(c => (c.id === activeChapterId ? { ...c, text: next } : c))
+        : prev);
+    }
+  };
+
+  const switchChapter = (id: string) => {
+    const ch = book?.find(c => c.id === id);
+    if (!ch) return;
+    setActiveChapterId(id);
+    setMonoText(ch.text);
+  };
+
+  /** 导入确认后收到的整本书稿 → 落成书稿模式，当前章 = 第 1 章 */
+  const handleImportChapters = (chs: { title: string; text: string }[]) => {
+    const chapters: MonoChapter[] = chs.map((c, i) => ({
+      id: newChapterId(),
+      title: c.title?.trim() || `第 ${i + 1} 章`,
+      text: c.text,
+    }));
+    setBook(chapters);
+    setActiveChapterId(chapters[0].id);
+    setMonoText(chapters[0].text);
+    setChapterSelected(new Set(chapters.map(c => c.id)));
+    setChapterSubmitted(new Set());
+    showToast(`已导入 ${chapters.length} 章到书稿：可逐章编辑，或勾选后批量生成`);
+  };
+
+  /** 退出书稿模式：画布保留当前章文本，书稿本身可从存档再取 */
+  const exitBook = () => {
+    setBook(null);
+    setActiveChapterId(null);
+    setChapterSelected(new Set());
+    setChapterSubmitted(new Set());
+    showToast("已退出书稿模式（画布保留当前章内容）");
+  };
+
+  const toggleChapterSel = (id: string) => {
+    setChapterSelected(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
   };
 
   const parsed = textToMonoLines(monoText);
@@ -125,6 +233,28 @@ export default function DubbingPage() {
     !pointsInsufficient;
 
   // ─── 提交（kind=mono，后端走引擎适配层） ───────────────────
+  /** 把一段文本提交为一个队列任务（画布当前章 / 单章 / 批量，三处共用）。
+   *  project_name 用章标题，便于在队列里对上「这是第几章」。 */
+  const submitText = (text: string, projectName: string) => {
+    if (!monoVoice.voice_path) throw new Error("请先在左侧选择配音音色");
+    const lines = textToMonoLines(text).map(l => ({
+      speaker: "A" as const,
+      text: l.text,
+      emotion: l.emotion_label ? { label: l.emotion_label } : null,
+    }));
+    if (!lines.length) throw new Error("这一章没有可合成的内容");
+    const params = { ...defaultParams(), speed: monoSpeed, speaker_speeds: { A: monoSpeed } };
+    return api.submitToQueue({
+      project_name: projectName,
+      kind: "mono",
+      lines,
+      voices: { A: monoVoice.voice_path },
+      silence: defaultSilence(),
+      params,
+      glossary_enabled: true,
+    });
+  };
+
   const handleGenerate = async () => {
     setError(null);
     if (!monoVoice.voice_path) {
@@ -132,23 +262,10 @@ export default function DubbingPage() {
       setError(message); showToast(message);
       return;
     }
-    const lines = parsed.map(l => ({
-      speaker: "A" as const,
-      text: l.text,
-      emotion: l.emotion_label ? { label: l.emotion_label } : null,
-    }));
     setGenerating(true);
     try {
-      const params = { ...defaultParams(), speed: monoSpeed, speaker_speeds: { A: monoSpeed } };
-      const result = await api.submitToQueue({
-        project_name: name,
-        kind: "mono",
-        lines,
-        voices: { A: monoVoice.voice_path },
-        silence: defaultSilence(),
-        params,
-        glossary_enabled: true,
-      });
+      const result = await submitText(monoText, name);
+      if (activeChapterId) setChapterSubmitted(prev => new Set(prev).add(activeChapterId));
       showToast(`已加入队列（位置 ${result.queue_position}）`);
       setQueueRefreshKey(k => k + 1);
       setQueueCollapsed(false);
@@ -162,6 +279,63 @@ export default function DubbingPage() {
       } else {
         showToast(`提交失败: ${e.message}`);
       }
+    }
+  };
+
+  /** 单章生成（章节目录里每行的闪电按钮） */
+  const generateChapter = async (id: string) => {
+    const ch = book?.find(c => c.id === id);
+    if (!ch) return;
+    setError(null);
+    setSubmittingChapterId(id);
+    try {
+      const result = await submitText(ch.text, ch.title);
+      setChapterSubmitted(prev => new Set(prev).add(id));
+      showToast(`「${ch.title}」已加入队列（位置 ${result.queue_position}）`);
+      setQueueRefreshKey(k => k + 1);
+      setQueueCollapsed(false);
+      refreshUser();
+    } catch (e: any) {
+      setError(e.message);
+      showToast(`「${ch.title}」提交失败: ${e.message}`);
+    } finally {
+      setSubmittingChapterId(null);
+    }
+  };
+
+  /** 批量生成：选中的章逐个提交（每章一个任务、各扣各的）。
+   *  首个失败即停 —— 多半是余额不足，继续只会连带失败。 */
+  const generateSelectedChapters = async () => {
+    if (!book) return;
+    const list = book.filter(c => chapterSelected.has(c.id));
+    if (!list.length) return;
+    setError(null);
+    setSubmittingBatch(true);
+    let ok = 0;
+    let failTitle = "";
+    let failMsg = "";
+    for (const ch of list) {
+      try {
+        await submitText(ch.text, ch.title);
+        setChapterSubmitted(prev => new Set(prev).add(ch.id));
+        ok += 1;
+      } catch (e: any) {
+        failTitle = ch.title;
+        failMsg = e.message;
+        break;
+      }
+    }
+    setSubmittingBatch(false);
+    setQueueRefreshKey(k => k + 1);
+    setQueueCollapsed(false);
+    refreshUser();
+    if (failTitle) {
+      setError(failMsg);
+      showToast(ok > 0
+        ? `已提交 ${ok} 章；「${failTitle}」失败：${failMsg}`
+        : `提交失败：${failMsg}`);
+    } else {
+      showToast(`已提交 ${ok} 章到队列`);
     }
   };
 
@@ -187,7 +361,12 @@ export default function DubbingPage() {
         ttsInfo={ttsInfo}
         onSaveProject={handleSaveProject}
         projectSaved={projectSaved}
-        projects={projects.map(p => ({ id: p.id, name: p.name, savedAt: p.savedAt, meta: `${p.text.replace(/\s/g, "").length} 字` }))}
+        projects={projects.map(p => ({
+          id: p.id, name: p.name, savedAt: p.savedAt,
+          meta: p.book?.length
+            ? `${p.book.length} 章 · ${p.book.reduce((n, c) => n + c.text.replace(/\s/g, "").length, 0)} 字`
+            : `${p.text.replace(/\s/g, "").length} 字`,
+        }))}
         onSwitchProject={handleSwitchProject}
         onDeleteProject={handleDeleteProject}
       />
@@ -204,6 +383,29 @@ export default function DubbingPage() {
             voiceFiles={voiceFiles}
             onUpload={handleUploadVoice}
           />
+
+          {book && book.length > 0 && (
+            <ChapterList
+              chapters={book}
+              activeId={activeChapterId}
+              selected={chapterSelected}
+              submitted={chapterSubmitted}
+              collapsed={bookCollapsed}
+              onToggleCollapse={() => setBookCollapsed(v => !v)}
+              onSelect={switchChapter}
+              onToggle={toggleChapterSel}
+              onToggleAll={on => setChapterSelected(on ? new Set(book.map(c => c.id)) : new Set())}
+              onGenerate={generateChapter}
+              onGenerateSelected={generateSelectedChapters}
+              submitting={submittingBatch}
+              submittingId={submittingChapterId}
+              canGenerate={!!monoVoice.voice_path}
+              pointsConfig={memberEnforce ? { per1000: memberPer1000, minCharge: memberMinCharge } : null}
+              balance={balance}
+              onExit={exitBook}
+            />
+          )}
+
           <GlossaryPanel
             collapsed={glossaryCollapsed}
             onToggle={() => setGlossaryCollapsed(!glossaryCollapsed)}
@@ -213,12 +415,15 @@ export default function DubbingPage() {
         <main className="flex-1 min-w-0">
           <MonoEditor
             text={monoText}
-            onChange={setMonoText}
+            onChange={handleTextChange}
             onGenerate={handleGenerate}
             canGenerate={canGenerate}
             generating={generating}
             error={error}
             pointsInfo={pointsInfo}
+            pointsEnv={memberEnforce ? { per1000: memberPer1000, minCharge: memberMinCharge, balance } : null}
+            onImportChapters={handleImportChapters}
+            title={activeChapter ? `${activeIndex + 1}. ${activeChapter.title}` : undefined}
           />
         </main>
 
@@ -231,6 +436,27 @@ export default function DubbingPage() {
           />
         </aside>
       </div>
+
+      {/* 切换项目前的覆盖确认（平台统一样式，替代原生 confirm） */}
+      <ConfirmDialog
+        open={!!pendingSwitch}
+        tone="default"
+        title="切换项目？"
+        description={
+          <>
+            将加载存档「
+            <span className="font-medium text-gray-800">{pendingSwitch?.name}</span>
+            」，替换画布中现有的 {totalChars} 字文稿。
+          </>
+        }
+        confirmText="继续切换"
+        onCancel={() => setPendingSwitch(null)}
+        onConfirm={() => {
+          const run = pendingSwitch?.run;
+          setPendingSwitch(null);
+          run?.();
+        }}
+      />
 
       <ToastNode toast={toast} />
     </div>

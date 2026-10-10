@@ -127,8 +127,8 @@ export function Badge({ className, children, color = "gray" }: { className?: str
 }
 
 // ─── Label ─────────────────────────────────────────────────
-export function Label({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <label className={cn("text-xs font-medium text-gray-600 mb-1 block", className)}>{children}</label>;
+export function Label({ className, children, htmlFor }: { className?: string; children: React.ReactNode; htmlFor?: string }) {
+  return <label htmlFor={htmlFor} className={cn("text-xs font-medium text-gray-600 mb-1 block", className)}>{children}</label>;
 }
 
 // ─── Slider (带数值显示) ───────────────────────────────────

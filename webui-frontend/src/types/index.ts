@@ -285,6 +285,92 @@ export function estimatePoints(chars: number, per1000: number, minCharge: number
   return Math.max(minCharge, Math.ceil((chars * per1000) / 1000));
 }
 
+// ─── 导入自动分章（与后端 app/book_split.py 同一约定）─────────
+//
+// 后端只在**行边界**切分，返回 text.split("\n") 的半开区间下标 [start_line, end_line)。
+// 前端拿同一份 text 用同样的切法还原章节正文，因此预览与真正送进合成的文本
+// 逐字符一致 —— 不要在这里引入任何「行内切分」，否则会截断行内 [pause:N]
+// 与【情绪】作用域。
+
+/** 单章字数上限默认值 —— **必须与后端 `app/book_split.py: DEFAULT_CHAPTER_MAX_CHARS` 一致**。
+ *
+ *  只有两个用途，都是「后端返回值到达之前」或「没有后端可问」的兜底：
+ *    - 导入弹窗打开时 `chapterMax` 的初值；
+ *    - 帮助文案里的「约 N 万字」。
+ *  导入/重切之后一律以后端返回的 `chapter_max_chars` 为准（后端认环境变量
+ *  `MONO_CHAPTER_MAX_CHARS`，前端不重复判）。此前这两处各自写死 10000 / 「1 万字」，
+ *  改后端它们不会跟着变 —— 收进一个常量就是为了消掉这个重复。
+ */
+export const DEFAULT_CHAPTER_MAX_CHARS = 20_000;
+
+/** 章节元数据。 */
+export interface ChapterMeta {
+  index: number;
+  title: string;
+  /** text.split("\n") 的起始下标（含） */
+  start_line: number;
+  /** text.split("\n") 的结束下标（不含） */
+  end_line: number;
+  /** 不计空白的字数（与后端 count_chars 同口径） */
+  chars: number;
+}
+
+/** 书稿模式里的一章：切分确认后落成的「可编辑章节」。
+ *
+ *  与 ChapterMeta 的区别：ChapterMeta 是切分结果的**元数据**（行号区间，只在分段确认页用）；
+ *  MonoChapter 是**内容实体**（自带正文），是书稿编辑与逐章生成的基本单位。
+ *  画布文本恒等于「当前章」的 text，编辑画布即改写它。 */
+export interface MonoChapter {
+  /** 稳定 id（前端生成）：切章、勾选、队列对应都用它 */
+  id: string;
+  title: string;
+  /** 该章正文（保留 [pause:N] 与【情绪】标记，与画布同格式） */
+  text: string;
+}
+
+/** 生成章节 id。带随机后缀：批量导入时同一毫秒会连造几十个，纯时间戳会撞。 */
+export function newChapterId(): string {
+  return `ch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** 把文本切成与后端一致的行数组（统一换行符）。 */
+export function splitTextLines(text: string): string[] {
+  return text.replace(/\r\n?/g, "\n").split("\n");
+}
+
+/** 按行号还原章节正文。 */
+export function chapterTextOf(
+  lines: string[],
+  ch: Pick<ChapterMeta, "start_line" | "end_line">
+): string {
+  return lines.slice(ch.start_line, ch.end_line).join("\n");
+}
+
+/** 中文 TTS 语速粗估（字/秒）：只用于确认页显示「约 N 分钟」，不参与任何计费。 */
+export const TTS_CHARS_PER_SEC = 4.5;
+
+/** 字数 → 预估音频时长（分钟，浮点）。 */
+export function estimateMinutes(chars: number): number {
+  return chars / TTS_CHARS_PER_SEC / 60;
+}
+
+/** 把分钟格式化成「N 分钟」/「N 小时 M 分」。 */
+export function formatMinutes(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return "0 分钟";
+  if (minutes < 60) return `${Math.max(1, Math.round(minutes))} 分钟`;
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes - h * 60);
+  return m > 0 ? `${h} 小时 ${m} 分` : `${h} 小时`;
+}
+
+/** 把字数格式化成「N 字」/「N.N 万字」（与 AccountPage 的 fmtChars 同风格）。 */
+export function formatChars(n: number): string {
+  if (!n || n <= 0) return "0 字";
+  if (n < 10000) return `${n} 字`;
+  const wan = n / 10000;
+  return `${Number.isInteger(wan) ? wan : wan.toFixed(1)} 万字`;
+}
+
 export interface MonoParsedLine {
   text: string;
   /** null=跟随音色 */

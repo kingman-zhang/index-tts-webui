@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../api/client";
+import { showToast as emitToast, useToastState, type ToastState } from "../lib/toast";
 import type { VoiceFile } from "../types";
 
 /**
@@ -54,23 +55,32 @@ export function useAppInit() {
   return { voiceFiles, ttsOnline, ttsInfo, memberEnforce, memberPer1000, memberMinCharge, reloadVoices };
 }
 
-/** 轻量 toast：2.5s 自动消失 */
+/**
+ * 轻量 toast：2.5s 自动消失。
+ *
+ * 状态已提到 `lib/toast.ts` 的**模块级单例**，所以深处组件也能 `import { toast }`
+ * 直接弹（不必层层下传 showToast）。这里保持原有签名 `{ toast, showToast }` 不变，
+ * 页面侧调用零改动。传字符串一律按 info 处理。
+ */
 export function useToast() {
-  const [toast, setToast] = useState<string | null>(null);
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
-  }, []);
+  const toast = useToastState();
+  const showToast = useCallback((msg: string) => emitToast(msg), []);
   return { toast, showToast };
 }
 
-/** Toast 展示层（配合 useToast 使用） */
-export function ToastNode({ toast }: { toast: string | null }) {
+/** Toast 展示层（配合 useToast 使用）；按语义上色：info 灰 / success 绿 / error 红 */
+export function ToastNode({ toast }: { toast: ToastState | null }) {
   if (!toast) return null;
+  const tone =
+    toast.kind === "error"
+      ? "bg-red-600"
+      : toast.kind === "success"
+        ? "bg-emerald-600"
+        : "bg-gray-800";
   return (
     <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
-      <div className="bg-gray-800 text-white text-sm px-4 py-2 rounded-lg shadow-lg">
-        {toast}
+      <div key={toast.id} className={`${tone} text-white text-sm px-4 py-2 rounded-lg shadow-lg`}>
+        {toast.message}
       </div>
     </div>
   );

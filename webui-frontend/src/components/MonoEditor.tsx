@@ -26,14 +26,21 @@ import {
   MONO_EMOTION_META,
   MONO_EMOTION_MARKERS,
   MONO_SCOPE_END,
+  DEFAULT_CHAPTER_MAX_CHARS,
   textToMonoLines,
   textToPodcastSegments,
   billableChars,
+  chapterTextOf,
+  splitTextLines,
+  formatChars,
+  type ChapterMeta,
 } from "@/types";
 import { api } from "@/api/client";
 import { cn } from "@/lib/utils";
+import { ChapterConfirmPanel } from "@/components/ChapterConfirmPanel";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
-/** 导入文档限制：≤20MB、解析后 ≤1 万字 */
+/** 导入文档：文件大小兜底上限（真正生效的闸门是后端字数上限，前端不重复判字数） */
 const IMPORT_MAX_BYTES = 20 * 1024 * 1024;
 
 interface MonoEditorProps {
@@ -50,6 +57,11 @@ interface MonoEditorProps {
   speakers?: { A: string; B: string };
   /** 导入文档解析后的纯文本 → 画布文本转换（播客模式用于识别 A:/B: 前缀） */
   importTransform?: (raw: string) => string;
+  /** 积分环境（确认页按章估算与余额提示用）；null/缺省 = 未开启按量计费 */
+  pointsEnv?: { per1000: number; minCharge: number; balance: number | null } | null;
+  /** 导入确认后，把选中的章**整份**上抛给页面（书稿模式）。
+   *  不传 = 保持旧行为：只把第 1 章写入画布。 */
+  onImportChapters?: (chapters: { title: string; text: string }[]) => void;
   /** 画布区标题（如"对话脚本"；不传则不显示） */
   title?: string;
 }
@@ -482,7 +494,7 @@ interface HistoryEntry {
   caret: number | null;
 }
 
-export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo, speakers, importTransform, title }: MonoEditorProps) {
+export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating, error, pointsInfo, speakers, importTransform, pointsEnv, onImportChapters, title }: MonoEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const savedRange = useRef<Range | null>(null);
   const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -501,6 +513,20 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   const [dragOver, setDragOver] = useState(false);
   /** 播客模式导入弹窗的文本框内容（.txt 文件内容 / 手动粘贴） */
   const [importText, setImportText] = useState("");
+
+  // ─── 单人模式导入第二步：分段确认 ─────────────────────────
+  // 导入只解析 + 切分，把结果摊给用户确认后才写入画布；**确认前不生成任何音频**。
+  /** 解析出的全文（确认后按行号从中还原章节正文） */
+  const [docText, setDocText] = useState("");
+  const [chapters, setChapters] = useState<ChapterMeta[]>([]);
+  // 初值用前端常量，extract 返回后立刻被后端的 chapter_max_chars 覆盖（后端认环境变量）。
+  const [chapterMax, setChapterMax] = useState(DEFAULT_CHAPTER_MAX_CHARS);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
+  const [splitting, setSplitting] = useState(false);
+
+  // 覆盖确认：导入会替换画布现有内容时，先弹平台统一样式的确认框，
+  // 用户点「继续导入」后才执行 run()。原生 window.confirm 无法自绘样式，故改由状态驱动。
+  const [pendingImport, setPendingImport] = useState<{ run: () => void } | null>(null);
 
   const parsed = textToMonoLines(text);
   const podcastSegs = speakers ? textToPodcastSegments(text) : null;
@@ -529,15 +555,21 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
       setImportError("没有可导入的内容：请在下方粘贴对话文本，或选择 .txt 文件");
       return;
     }
-    if (textRef.current.trim() && !window.confirm("导入将替换当前文稿内容，是否继续？")) return;
-    // 入 undo 栈，导入后可 Cmd+Z 撤回
-    undoStack.current.push({ text: textRef.current, caret: null });
-    if (undoStack.current.length > 100) undoStack.current.shift();
-    redoStack.current = [];
-    onChange(importTransform ? importTransform(raw) : raw);
-    setImportOpen(false);
-    setImportText("");
-    setImportError(null);
+    const doApply = () => {
+      // 入 undo 栈，导入后可 Cmd+Z 撤回
+      undoStack.current.push({ text: textRef.current, caret: null });
+      if (undoStack.current.length > 100) undoStack.current.shift();
+      redoStack.current = [];
+      onChange(importTransform ? importTransform(raw) : raw);
+      setImportOpen(false);
+      setImportText("");
+      setImportError(null);
+    };
+    if (textRef.current.trim()) {
+      setPendingImport({ run: doApply });
+      return;
+    }
+    doApply();
   };
 
   /** 播客模式：读取 .txt 文件内容填入文本框（预览后再点「导入」生效） */
@@ -557,27 +589,157 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
     }
   };
 
+  /** 单人模式：清空分段确认状态，回到上传步骤 */
+  const resetImport = () => {
+    setDocText("");
+    setChapters([]);
+    setPicked(new Set());
+    setImportError(null);
+  };
+
+  const closeImport = () => {
+    resetImport();
+    setImportOpen(false);
+  };
+
+  /** 装载一份切分结果：默认全选（用户可取消勾选，但默认「整本书都做」更常见） */
+  const loadChapters = (list: ChapterMeta[]) => {
+    setChapters(list);
+    setPicked(new Set(list.map(c => c.index)));
+  };
+
   const handleImportFile = async (file: File) => {
     if (file.size > IMPORT_MAX_BYTES) {
       setImportError("文件超过 20MB 上限");
       return;
     }
-    if (textRef.current.trim() && !window.confirm("导入将替换当前文稿内容，是否继续？")) return;
+    // 播客模式保持旧行为：解析后直接按 A:/B: 前缀转换写入画布
+    if (importTransform) {
+      const doImport = async () => {
+        setImportError(null);
+        setImporting(true);
+        try {
+          const r = await api.extractDocument(file);
+          undoStack.current.push({ text: textRef.current, caret: null });
+          if (undoStack.current.length > 100) undoStack.current.shift();
+          redoStack.current = [];
+          onChange(importTransform(r.text));
+          setImportOpen(false);
+        } catch (e: any) {
+          setImportError(`导入失败：${e.message}`);
+        } finally {
+          setImporting(false);
+        }
+      };
+      if (textRef.current.trim()) {
+        setPendingImport({ run: () => void doImport() });
+        return;
+      }
+      await doImport();
+      return;
+    }
+    // 单人模式：**只解析 + 切分**，进入分段确认步骤（不写画布、不生成）
     setImportError(null);
     setImporting(true);
     try {
       const r = await api.extractDocument(file);
-      // 入 undo 栈，导入后可 Cmd+Z 撤回
-      undoStack.current.push({ text: textRef.current, caret: null });
-      if (undoStack.current.length > 100) undoStack.current.shift();
-      redoStack.current = [];
-      onChange(importTransform ? importTransform(r.text) : r.text);
-      setImportOpen(false);
+      setDocText(r.text);
+      setChapterMax(r.chapter_max_chars);
+      loadChapters(r.chapters);
     } catch (e: any) {
       setImportError(`导入失败：${e.message}`);
     } finally {
       setImporting(false);
     }
+  };
+
+  // ─── 分段确认页的编辑动作 ─────────────────────────────────
+  const toggleChapter = (i: number) =>
+    setPicked(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+
+  const toggleAllChapters = (on: boolean) =>
+    setPicked(on ? new Set(chapters.map(c => c.index)) : new Set());
+
+  const renameChapter = (i: number, title: string) =>
+    setChapters(prev => prev.map(c => (c.index === i ? { ...c, title } : c)));
+
+  /** 与上一章合并：行区间取并集（两章本就首尾相接，中间空行不计字数，故字数可直接相加）。 */
+  const mergeChapter = (i: number) => {
+    const k = chapters.findIndex(c => c.index === i);
+    if (k <= 0) return;
+    const prevCh = chapters[k - 1];
+    const merged: ChapterMeta = {
+      ...prevCh,
+      end_line: chapters[k].end_line,
+      chars: prevCh.chars + chapters[k].chars,
+    };
+    const next = [...chapters.slice(0, k - 1), merged, ...chapters.slice(k + 1)]
+      .map((c, idx) => ({ ...c, index: idx }));
+    setChapters(next);
+    setPicked(new Set(next.map(c => c.index)));
+  };
+
+  /** 调「每章上限」重新切分（会丢弃标题改动与勾选，故先提示）。 */
+  const resplitChapters = async (limit: number) => {
+    if (!docText) return;
+    setSplitting(true);
+    setImportError(null);
+    try {
+      const r = await api.splitDocument(docText, limit);
+      setChapterMax(r.chapter_max_chars);
+      loadChapters(r.chapters);
+    } catch (e: any) {
+      setImportError(`重新切分失败：${e.message}`);
+    } finally {
+      setSplitting(false);
+    }
+  };
+
+  const requestChapterMax = (n: number) => {
+    if (n === chapterMax || splitting) return;
+    void resplitChapters(n);
+  };
+
+  /** 确认分段 → 落成书稿（提供 onImportChapters 时）或仅写入画布（兜底）。 */
+  const confirmImport = () => {
+    const order = chapters
+      .filter(c => picked.has(c.index))
+      .sort((a, b) => a.start_line - b.start_line);
+    if (!order.length) return;
+    const doConfirm = () => {
+      const lines = splitTextLines(docText);
+      if (onImportChapters) {
+        // 书稿模式：把整份（已改名/合并后的）分章结果上抛，由页面建书稿。
+        // 跳过空章：只有空行的章没有合成价值，后端也会以「空行」拒绝。
+        const list = order
+          .map(c => ({ title: c.title, text: chapterTextOf(lines, c) }))
+          .filter(c => c.text.trim().length > 0);
+        if (!list.length) {
+          setImportError("选中的章节没有正文内容");
+          return;
+        }
+        onImportChapters(list);
+        closeImport();
+        return;
+      }
+      // 未接入书稿：保持旧行为，只把第 1 章写入画布
+      const first = order[0];
+      undoStack.current.push({ text: textRef.current, caret: null });
+      if (undoStack.current.length > 100) undoStack.current.shift();
+      redoStack.current = [];
+      onChange(chapterTextOf(lines, first));
+      closeImport();
+    };
+    if (textRef.current.trim()) {
+      setPendingImport({ run: doConfirm });
+      return;
+    }
+    doConfirm();
   };
 
   // 外部 text 变化（导入/草稿迁移/undo 恢复）时同步画布 DOM；
@@ -1148,6 +1310,7 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
             onClick={() => {
               setImportError(null);
               setImportText("");
+              resetImport();
               setImportOpen(true);
             }}
             disabled={importing}
@@ -1436,15 +1599,43 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div
             className="absolute inset-0 bg-black/40"
-            onClick={() => { if (!importing) setImportOpen(false); }}
+            onClick={() => { if (!importing && !splitting) closeImport(); }}
           />
-          <div className="relative w-full max-w-md rounded-2xl bg-white shadow-xl p-6">
+          <div
+            className={cn(
+              "relative w-full rounded-2xl bg-white shadow-xl p-6",
+              chapters.length > 0 ? "max-w-2xl" : "max-w-md"
+            )}
+          >
+            {chapters.length > 0 ? (
+              <ChapterConfirmPanel
+                text={docText}
+                chapters={chapters}
+                chapterMaxChars={chapterMax}
+                selected={picked}
+                pointsConfig={pointsEnv}
+                balance={pointsEnv?.balance ?? null}
+                splitting={splitting}
+                error={importError}
+                confirmLabel={onImportChapters ? `导入 ${picked.size} 章到书稿` : `确认分章（${picked.size} 章）`}
+                confirmHint={onImportChapters ? "只是建档，不会自动开始生成" : "确认后才会开始生成"}
+                onToggle={toggleChapter}
+                onToggleAll={toggleAllChapters}
+                onRename={renameChapter}
+                onMerge={mergeChapter}
+                onChapterMaxChange={requestChapterMax}
+                onResplit={() => void resplitChapters(chapterMax)}
+                onConfirm={confirmImport}
+                onBack={resetImport}
+              />
+            ) : (
+            <>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-semibold text-gray-800">导入文档</h3>
               <button
                 type="button"
                 aria-label="关闭"
-                onClick={() => { if (!importing) setImportOpen(false); }}
+                onClick={() => { if (!importing) closeImport(); }}
                 className="p-1 rounded text-gray-400 hover:text-gray-600 transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -1489,7 +1680,10 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
                 {importing ? "正在解析文档…" : "点击或拖拽上传到这里"}
               </p>
               <p className="text-xs text-gray-400">
-                支持 .doc / .docx / .pdf / .txt / .md · ≤ 20MB · ≤ 1 万字
+                支持 .doc / .docx / .pdf / .txt / .md · 导入后可自动分章并逐章确认
+              </p>
+              <p className="text-xs text-gray-400">
+                文件 ≤ 20MB（带图 PDF 才可能触顶）；书稿按每章约 {formatChars(DEFAULT_CHAPTER_MAX_CHARS)}自动切分
               </p>
             </div>
             {importError && (
@@ -1498,9 +1692,31 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
                 {importError}
               </p>
             )}
+            </>
+            )}
           </div>
         </div>
       )}
+
+      {/* 覆盖确认：导入会替换画布现有内容时先确认（平台统一样式，替代原生 confirm） */}
+      <ConfirmDialog
+        open={!!pendingImport}
+        tone="default"
+        title="替换当前文稿？"
+        description={
+          <>
+            导入的新内容将替换画布中现有的{" "}
+            <span className="font-medium text-gray-800">{totalChars} 字</span>文稿。
+          </>
+        }
+        confirmText="继续导入"
+        onCancel={() => setPendingImport(null)}
+        onConfirm={() => {
+          const run = pendingImport?.run;
+          setPendingImport(null);
+          run?.();
+        }}
+      />
 
       {/* 错误提示 */}
       {error && (

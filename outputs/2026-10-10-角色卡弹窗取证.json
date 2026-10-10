@@ -1,0 +1,39 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "dialogs": {
+    "rename": {
+      "title": "重命名角色预设",
+      "paragraphs": [],
+      "buttons": [
+        "取消",
+        "确认"
+      ],
+      "hasInput": true,
+      "inputValue": "角色甲",
+      "focusIsInput": true
+    },
+    "deletePreset": {
+      "title": "删除这个角色预设？",
+      "paragraphs": [
+        "该预设将从已保存列表中移除。",
+        "删除后无法恢复。"
+      ],
+      "buttons": [
+        "取消",
+        "删除"
+      ],
+      "hasInput": false,
+      "inputValue": null,
+      "focusIsInput": null
+    }
+  },
+  "toasts": {
+    "rename": {
+      "bg": "rgb(220, 38, 38)",
+      "text": "改名失败: probe: 改名接口故意失败"
+    }
+  }
+}

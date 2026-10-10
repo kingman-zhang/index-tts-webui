@@ -1,5 +1,5 @@
 /** WebUI 后端 API 客户端。 */
-import type { PodcastProject, TaskInfo, VoiceFile, EmotionConfig, GenerationParams, BreezeblueVoice } from "@/types";
+import type { PodcastProject, TaskInfo, VoiceFile, EmotionConfig, GenerationParams, BreezeblueVoice, ChapterMeta } from "@/types";
 import { authFetch } from "@/lib/auth";
 
 const BASE = "/api";
@@ -73,11 +73,30 @@ export const api = {
     return fetchJSON(`${BASE}/voices/upload`, { method: "POST", body: form });
   },
 
-  // 导入文档（配音画布）：doc/docx/pdf/txt/md，≤20MB、解析后 ≤1 万字
-  async extractDocument(file: File): Promise<{ text: string; chars: number }> {
+  // 导入文档（配音画布）：doc/docx/pdf/txt/md。**只解析 + 自动分章，不建任何任务**；
+  // 是否生成由用户在确认页决定。
+  async extractDocument(file: File): Promise<{
+    text: string;
+    chars: number;
+    chapters: ChapterMeta[];
+    chapter_max_chars: number;
+  }> {
     const form = new FormData();
     form.append("file", file);
     return fetchJSON(`${BASE}/mono/extract`, { method: "POST", body: form });
+  },
+
+  /** 按「每章上限」重新切分已解析文本（确认页调旋钮用，免重复上传文件）。 */
+  async splitDocument(text: string, chapterMaxChars?: number): Promise<{
+    chapters: ChapterMeta[];
+    chars: number;
+    chapter_max_chars: number;
+  }> {
+    return fetchJSON(`${BASE}/mono/split`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, chapter_max_chars: chapterMaxChars ?? null }),
+    });
   },
 
   /**

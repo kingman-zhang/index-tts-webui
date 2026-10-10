@@ -1,0 +1,71 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "dialog": {
+    "viewportW": 1280,
+    "modal": {
+      "width": 432,
+      "height": 151,
+      "left": 424,
+      "top": 325,
+      "maxWidth": "432px",
+      "borderRadius": "18px",
+      "padLeft": 22.5,
+      "padRight": 22.5,
+      "padTop": 22.5
+    },
+    "overflowLeft": 0,
+    "overflowRight": 0,
+    "contentOverflowRight": 0,
+    "widestEl": "替换当前文稿？",
+    "title": "替换当前文稿？",
+    "lines": [
+      "导入的新内容将替换画布中现有的 1191 字文稿。"
+    ],
+    "iconBg": "rgb(238, 242, 255)",
+    "iconStroke": "rgb(99, 102, 241)",
+    "buttons": [
+      {
+        "text": "取消",
+        "left": 688,
+        "right": 744,
+        "width": 56,
+        "height": 36,
+        "bg": "rgb(255, 255, 255)",
+        "color": "rgb(55, 65, 81)"
+      },
+      {
+        "text": "继续导入",
+        "left": 753,
+        "right": 834,
+        "width": 81,
+        "height": 36,
+        "bg": "rgb(79, 70, 229)",
+        "color": "rgb(255, 255, 255)"
+      }
+    ],
+    "scrimCoversViewport": true,
+    "topmostAtCenter": true
+  },
+  "interactions": [
+    {
+      "step": "取消",
+      "replaced": false
+    },
+    {
+      "step": "Esc",
+      "replaced": false
+    },
+    {
+      "step": "遮罩",
+      "replaced": false
+    },
+    {
+      "step": "继续导入",
+      "replaced": true,
+      "firstLine": "第一章 起点"
+    }
+  ]
+}

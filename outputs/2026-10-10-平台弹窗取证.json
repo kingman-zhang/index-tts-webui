@@ -1,0 +1,103 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "dialogs": {
+    "destructive": {
+      "title": "删除这个音色？",
+      "paragraphs": [
+        "将删除音色「测试音色.mp3」。",
+        "删除后无法恢复。"
+      ],
+      "iconBg": "rgb(254, 242, 242)",
+      "iconColor": "rgb(239, 68, 68)",
+      "buttons": [
+        {
+          "text": "取消",
+          "bg": "rgb(255, 255, 255)",
+          "left": 694,
+          "w": 56,
+          "h": 36,
+          "disabled": false
+        },
+        {
+          "text": "删除",
+          "bg": "rgb(239, 68, 68)",
+          "left": 759,
+          "w": 74,
+          "h": 36,
+          "disabled": false
+        }
+      ],
+      "modal": {
+        "w": 432,
+        "h": 176,
+        "maxWidth": "432px",
+        "borderRadius": "18px",
+        "padLeft": 22.5
+      },
+      "overflowRight": 0,
+      "hasInput": false,
+      "inputValue": null,
+      "focusIsInput": null,
+      "inputFullySelected": null,
+      "confirmDisabled": null,
+      "scrimCoversViewport": true
+    },
+    "default": {
+      "title": "替换当前文稿？",
+      "paragraphs": [
+        "将替换画布中现有的 100 字文稿。"
+      ],
+      "iconBg": "rgb(238, 242, 255)",
+      "iconColor": "rgb(99, 102, 241)",
+      "buttons": [
+        {
+          "text": "取消",
+          "bg": "rgb(255, 255, 255)",
+          "left": 688,
+          "w": 56,
+          "h": 36,
+          "disabled": false
+        },
+        {
+          "text": "继续导入",
+          "bg": "rgb(79, 70, 229)",
+          "left": 753,
+          "w": 81,
+          "h": 36,
+          "disabled": false
+        }
+      ],
+      "modal": {
+        "w": 432,
+        "h": 151,
+        "maxWidth": "432px",
+        "borderRadius": "18px",
+        "padLeft": 22.5
+      },
+      "overflowRight": 0,
+      "hasInput": false,
+      "inputValue": null,
+      "focusIsInput": null,
+      "inputFullySelected": null,
+      "confirmDisabled": null,
+      "scrimCoversViewport": true
+    }
+  },
+  "toasts": {
+    "toast.info": {
+      "bg": "rgb(31, 41, 55)",
+      "text": "info：普通提示"
+    },
+    "toast.success": {
+      "bg": "rgb(5, 150, 105)",
+      "text": "success：成功提示"
+    },
+    "toast.error": {
+      "bg": "rgb(220, 38, 38)",
+      "text": "error：失败提示"
+    }
+  }
+}

@@ -4,6 +4,7 @@ import { SpeakerPanel } from "../components/SpeakerPanel";
 import { MonoEditor } from "../components/MonoEditor";
 import { GlossaryPanel } from "../components/GlossaryPanel";
 import { QueuePanel } from "../components/QueuePanel";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
@@ -64,6 +65,10 @@ export default function PodcastPage() {
   const [projectSaved, setProjectSaved] = useState(false);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [projectList, setProjectList] = useState<ProjectSwitcherItem[]>([]);
+
+  // 切换项目会覆盖画布与角色配置 → 用平台统一样式弹窗确认（替代原生 confirm）；
+  // 确认后才执行 run()。不确认则什么都不发生。
+  const [pendingSwitch, setPendingSwitch] = useState<{ name: string; run: () => void } | null>(null);
 
   const { voiceFiles, ttsOnline, ttsInfo, reloadVoices, memberEnforce, memberPer1000, memberMinCharge } = useAppInit();
   const { user } = useAuth();
@@ -165,25 +170,33 @@ export default function PodcastPage() {
     } finally { setSaving(false); }
   };
 
-  const handleSwitchProject = async (id: string) => {
-    if (script.trim() && !window.confirm("切换项目将替换当前文稿与角色配置，是否继续？")) return;
-    try {
-      const p = await api.getProject(id);
-      // 补全 voices 的 emotion 字段（兼容旧项目）
-      const fallbackEmo = { mode: 0 as const, audio_path: null, vector: Array(8).fill(0), weight: 0.65, text: null, random: false };
-      const vA: SpeakerConfig = { ...defaultProject().voices.A, ...p.voices.A };
-      const vB: SpeakerConfig = { ...defaultProject().voices.B, ...p.voices.B };
-      if (!vA.emotion) vA.emotion = fallbackEmo;
-      if (!vB.emotion) vB.emotion = fallbackEmo;
-      // 画布文本：新项目带 script；旧项目从 lines 迁移
-      const scriptText = typeof p.script === "string" ? p.script : podcastLinesToScript(p.lines || []);
-      setProjectId(p.id);
-      setName(p.name);
-      setVoices({ A: vA, B: vB });
-      setScript(scriptText);
-      setError(null); setGenerating(false);
-      showToast(`已加载: ${p.name}`);
-    } catch (e: any) { showToast(`加载失败: ${e.message}`); }
+  const handleSwitchProject = (id: string) => {
+    const doSwitch = async () => {
+      try {
+        const p = await api.getProject(id);
+        // 补全 voices 的 emotion 字段（兼容旧项目）
+        const fallbackEmo = { mode: 0 as const, audio_path: null, vector: Array(8).fill(0), weight: 0.65, text: null, random: false };
+        const vA: SpeakerConfig = { ...defaultProject().voices.A, ...p.voices.A };
+        const vB: SpeakerConfig = { ...defaultProject().voices.B, ...p.voices.B };
+        if (!vA.emotion) vA.emotion = fallbackEmo;
+        if (!vB.emotion) vB.emotion = fallbackEmo;
+        // 画布文本：新项目带 script；旧项目从 lines 迁移
+        const scriptText = typeof p.script === "string" ? p.script : podcastLinesToScript(p.lines || []);
+        setProjectId(p.id);
+        setName(p.name);
+        setVoices({ A: vA, B: vB });
+        setScript(scriptText);
+        setError(null); setGenerating(false);
+        showToast(`已加载: ${p.name}`);
+      } catch (e: any) { showToast(`加载失败: ${e.message}`); }
+    };
+    // 画布有内容时才需确认（平台统一样式弹窗，替代原生 confirm）
+    if (script.trim()) {
+      const target = projectList.find(x => x.id === id);
+      setPendingSwitch({ name: target?.name ?? "该存档", run: () => void doSwitch() });
+      return;
+    }
+    void doSwitch();
   };
 
   const handleDeleteProject = async (id: string) => {
@@ -334,6 +347,27 @@ export default function PodcastPage() {
           />
         </aside>
       </div>
+
+      {/* 切换项目前的覆盖确认（平台统一样式，替代原生 confirm） */}
+      <ConfirmDialog
+        open={!!pendingSwitch}
+        tone="default"
+        title="切换项目？"
+        description={
+          <>
+            将加载存档「
+            <span className="font-medium text-gray-800">{pendingSwitch?.name}</span>
+            」，替换当前对话文稿与角色配置。
+          </>
+        }
+        confirmText="继续切换"
+        onCancel={() => setPendingSwitch(null)}
+        onConfirm={() => {
+          const run = pendingSwitch?.run;
+          setPendingSwitch(null);
+          run?.();
+        }}
+      />
 
       <ToastNode toast={toast} />
     </div>

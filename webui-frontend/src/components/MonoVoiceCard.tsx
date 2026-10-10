@@ -6,7 +6,9 @@ import { useEffect, useRef, useState } from "react";
 import { MicVocal, Play, Square, AudioLines, Upload } from "lucide-react";
 import { Card, CardContent, Button } from "./ui";
 import { VoicePicker } from "./VoicePicker";
+import { PromptDialog } from "./PromptDialog";
 import { api } from "@/api/client";
+import { toast } from "@/lib/toast";
 import type { VoiceFile } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +39,8 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
   const [showVoicePicker, setShowVoicePicker] = useState(false);
   const [speedText, setSpeedText] = useState(speed.toFixed(2));
   const [presetVoices, setPresetVoices] = useState<PresetVoices>({ female: [], male: [], emotion: [] });
+  /** 选好文件后先进命名弹窗（平台统一样式，替代原生 window.prompt） */
+  const [pendingUpload, setPendingUpload] = useState<File | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -73,7 +77,7 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
 
   const selectPreset = async (name: string) => {
     try { const r = await api.uploadPresetToTTS(name); onChange({ voice_path: r.path, voice_name: r.name }); }
-    catch (e) { alert("加载预设音色失败: " + e); }
+    catch (e) { toast.error("加载预设音色失败: " + e); }
   };
 
   const handleVoiceSelect = (path: string, name: string) => {
@@ -85,12 +89,17 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
   };
 
   const handleFileSelect = (file: File) => {
-    const name = window.prompt("音频名称", file.name.replace(/\.[^.]+$/, ""));
-    if (!name?.trim()) return;
+    setPendingUpload(file);
+  };
+
+  const confirmUpload = (name: string) => {
+    const file = pendingUpload;
+    setPendingUpload(null);
+    if (!file) return;
     setUploading(true);
-    onUpload(file, name.trim())
+    onUpload(file, name)
       .then(result => { if (result) onChange({ voice_path: result.path, voice_name: result.name }); })
-      .catch((e: any) => alert("上传失败: " + e.message))
+      .catch((e: any) => toast.error("上传失败: " + e.message))
       .finally(() => setUploading(false));
   };
 
@@ -178,6 +187,19 @@ export function MonoVoiceCard({ voice, speed, onChange, voiceFiles, onUpload }: 
 
       <input ref={fileRef} type="file" accept="audio/*" className="hidden"
         onChange={e => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ""; }} />
+
+      {/* 上传命名弹窗（平台统一样式，替代原生 window.prompt） */}
+      <PromptDialog
+        open={!!pendingUpload}
+        title="保存上传的音频"
+        label="音频名称"
+        description={pendingUpload ? <>原始文件: {pendingUpload.name}</> : undefined}
+        defaultValue={pendingUpload ? pendingUpload.name.replace(/\.[^.]+$/, "") : ""}
+        confirmText="保存并使用"
+        busy={uploading}
+        onCancel={() => setPendingUpload(null)}
+        onConfirm={confirmUpload}
+      />
     </Card>
   );
 }

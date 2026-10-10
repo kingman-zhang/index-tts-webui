@@ -1,0 +1,26 @@
+{
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "dialog": {
+    "title": "切换项目？",
+    "paragraphs": [
+      "将加载存档「存档甲」，替换画布中现有的 981 字文稿。"
+    ],
+    "buttons": [
+      "取消",
+      "继续切换"
+    ]
+  },
+  "interactions": [
+    {
+      "step": "取消",
+      "canvasChanged": false
+    },
+    {
+      "step": "继续切换",
+      "canvasChanged": true
+    }
+  ]
+}

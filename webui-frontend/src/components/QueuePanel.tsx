@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, AlertTriangle, X, History } from "lucide-react";
+import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X, History } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { api } from "@/api/client";
+import { toast } from "@/lib/toast";
 import { cn, audioDownloadName } from "@/lib/utils";
 
 interface QueueTask {
@@ -224,7 +226,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     const wasCancelling = !!tasks.find(t => t.id === id)?.cancel_requested;
     const res = await api.cancelQueueTask(id);
     if (res?.cancelling && wasCancelling) {
-      window.alert("该任务仍有执行器在运行，已再次请求取消；当前分段合成结束后会自动移除。");
+      toast.info("该任务仍有执行器在运行，已再次请求取消；当前分段合成结束后会自动移除。");
     }
     load(true);
   };
@@ -237,7 +239,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     try {
       await cancel(pendingDelete.id);
     } catch (e: any) {
-      window.alert(`删除失败：${e?.message ?? e}`);
+      toast.error(`删除失败：${e?.message ?? e}`);
     } finally {
       setDeleting(false);
       setPendingDelete(null);
@@ -253,7 +255,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       await api.clearFinishedTasks(activeKind);
       await load(true);
     } catch (e: any) {
-      window.alert(`清空失败：${e?.message ?? e}`);
+      toast.error(`清空失败：${e?.message ?? e}`);
     } finally {
       setClearing(false);
       setClearConfirm(null);
@@ -272,7 +274,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       await api.pauseQueuedTasks(activeKind);
       await load(true);
     } catch (e: any) {
-      window.alert(`暂停排队任务失败: ${e.message}`);
+      toast.error(`暂停排队任务失败: ${e.message}`);
     } finally {
       setBulkBusy(false);
     }
@@ -285,7 +287,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       await api.resumePausedTasks(activeKind);
       await load(true);
     } catch (e: any) {
-      window.alert(`恢复暂停任务失败: ${e.message}`);
+      toast.error(`恢复暂停任务失败: ${e.message}`);
     } finally {
       setBulkBusy(false);
     }
@@ -306,7 +308,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       await api.updateQueueTaskName(task.id, nextName);
       load(true);
     } catch (e: any) {
-      window.alert(`修改任务名称失败: ${e.message}`);
+      toast.error(`修改任务名称失败: ${e.message}`);
       load(true);
     }
   };
@@ -380,7 +382,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     try {
       await api.reorderQueue(newKindOrder, activeKind);
     } catch (e: any) {
-      window.alert(`排序失败: ${e.message}`);
+      toast.error(`排序失败: ${e.message}`);
       load(true);
     }
   };
@@ -708,6 +710,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
           </>
         }
         warning="删除后无法恢复。"
+        confirmText="删除"
         onCancel={() => setPendingDelete(null)}
         onConfirm={confirmDelete}
       />
@@ -732,63 +735,5 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
         onConfirm={clearFinished}
       />
     </Card>
-  );
-}
-
-/** 二次确认弹窗。删除单条 / 清空批量两处共用同一套外观，避免两处样式漂移。
- *
- *  为什么不用 `window.confirm`：要显示**具体对象**（任务名、条数）才有防误删的意义，
- *  原生 confirm 只能给一段纯文本、样式也突兀。项目里另一处删音色用的是 confirm，
- *  但那里删的是用户自己刚上传的文件、且没有"批量"这一层，口径不同。
- *
- *  Esc = 取消：高风险动作的默认键位要落在安全的一侧（顺手一按不会删掉东西）。
- *  遮罩同理；确认按钮在右、用红色，取消在左、用浅色。
- */
-function ConfirmDialog({
-  open, title, description, warning, confirmText = "删除", busy = false, onCancel, onConfirm,
-}: {
-  open: boolean;
-  title: string;
-  description: React.ReactNode;
-  warning: string;
-  confirmText?: string;
-  busy?: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, busy, onCancel]);
-
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/40" onClick={() => { if (!busy) onCancel(); }} />
-      <div className="relative w-full max-w-sm rounded-2xl bg-white shadow-xl p-5">
-        <div className="flex items-start gap-2.5">
-          <div className="w-8 h-8 shrink-0 rounded-full bg-red-50 flex items-center justify-center">
-            <AlertTriangle className="w-4 h-4 text-red-500" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-gray-800">{title}</h3>
-            <p className="mt-1.5 text-xs text-gray-600 leading-5 break-words">{description}</p>
-            <p className="mt-1.5 text-xs font-medium text-red-500">{warning}</p>
-          </div>
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={onCancel} disabled={busy}>
-            取消
-          </Button>
-          <Button variant="destructive" size="sm" icon={Trash2} onClick={onConfirm} disabled={busy}>
-            {busy ? `${confirmText}中…` : confirmText}
-          </Button>
-        </div>
-      </div>
-    </div>
   );
 }

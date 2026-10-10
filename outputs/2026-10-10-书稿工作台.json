@@ -1,0 +1,25 @@
+{
+  "viewport": {
+    "width": 1560,
+    "height": 940
+  },
+  "chapters": [
+    "第一章 起点",
+    "第二章 承",
+    "第三章 转"
+  ],
+  "submits": [
+    {
+      "project_name": "第一章 起点",
+      "lines": 3
+    },
+    {
+      "project_name": "第二章 承",
+      "lines": 4
+    },
+    {
+      "project_name": "第三章 转",
+      "lines": 2
+    }
+  ]
+}

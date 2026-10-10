@@ -5,9 +5,12 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Upload, Play, Square, AudioLines, FolderOpen, Pencil, Trash2 } from "lucide-react";
-import { Card, CardContent, Button, Badge, Label } from "./ui";
+import { Card, CardContent, Button, Badge } from "./ui";
 import { VoicePicker } from "./VoicePicker";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { PromptDialog } from "./PromptDialog";
 import { api } from "@/api/client";
+import { toast } from "@/lib/toast";
 import type { SpeakerConfig, VoiceFile } from "@/types";
 import { cn } from "@/lib/utils";
 
@@ -66,10 +69,22 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   const [showVoicePicker, setShowVoicePicker] = useState(false);
   const [savedPresets, setSavedPresets] = useState<any[]>([]);
   const [showPresetList, setShowPresetList] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
   const [uploadDialog, setUploadDialog] = useState<{ file: File } | null>(null);
+  /** 改名弹窗目标（角色预设 / 音色）——平台统一样式，替代原生 window.prompt */
+  const [renamePresetTarget, setRenamePresetTarget] = useState<{ id: string; name: string } | null>(null);
+  const [renameVoiceTarget, setRenameVoiceTarget] = useState<VoiceFile | null>(null);
   const [speedText, setSpeedText] = useState((config.speed ?? 1.0).toFixed(2));
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // 平台统一确认弹窗：删除角色预设 / 删除音色两处共用（替代原生 window.confirm，
+  // 后者样式与平台不一致，也无法展示具体对象）。确认后才执行 run()。
+  const [confirmState, setConfirmState] = useState<{
+    title: string;
+    description: React.ReactNode;
+    warning?: string;
+    run: () => void;
+  } | null>(null);
+
   const c = COLORS[speakerKey];
 
   useEffect(() => {
@@ -109,24 +124,23 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
   };
 
   const handleFileSelect = (file: File) => {
-    setRenameValue(file.name.replace(/\.[^.]+$/, ""));
     setUploadDialog({ file });
   };
 
-  const confirmUpload = async () => {
-    if (!uploadDialog || !renameValue.trim()) return;
+  const confirmUpload = (name: string) => {
+    const target = uploadDialog;
+    setUploadDialog(null);
+    if (!target) return;
     setUploading(true);
-    try {
-      const result = await onUpload(uploadDialog.file, renameValue.trim());
-      if (result) onChange({ voice_path: result.path, voice_name: result.name });
-      setUploadDialog(null);
-    } catch (e: any) { alert("保存失败: " + e.message); }
-    finally { setUploading(false); }
+    onUpload(target.file, name)
+      .then(result => { if (result) onChange({ voice_path: result.path, voice_name: result.name }); })
+      .catch((e: any) => toast.error("保存失败: " + e.message))
+      .finally(() => setUploading(false));
   };
 
   const selectPreset = async (name: string) => {
     try { const r = await api.uploadPresetToTTS(name); onChange({ voice_path: r.path, voice_name: r.name }); }
-    catch (e) { alert("加载预设音色失败: " + e); }
+    catch (e) { toast.error("加载预设音色失败: " + e); }
   };
 
   const handleVoiceSelect = (path: string, name: string) => {
@@ -143,22 +157,47 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
       onChange({ voice_path: p.voice_path, voice_name: p.voice_name, speed: p.role_speed ?? p.speed ?? 1.0 });
       setShowPresetList(false);
     }
-    catch (e) { alert("加载失败: " + e); }
+    catch (e) { toast.error("加载失败: " + e); }
   };
 
-  const deletePreset = async (id: string, e: React.MouseEvent) => {
+  const deletePreset = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!window.confirm("确定删除这个角色预设吗？")) return;
-    await api.deleteVoicePreset(id);
-    const r = await api.listVoicePresets(); setSavedPresets(r.presets);
+    setConfirmState({
+      title: "删除这个角色预设？",
+      description: "该预设将从已保存列表中移除。",
+      warning: "删除后无法恢复。",
+      run: () => {
+        void (async () => {
+          await api.deleteVoicePreset(id);
+          const r = await api.listVoicePresets(); setSavedPresets(r.presets);
+        })();
+      },
+    });
   };
 
-  const renamePreset = async (preset: any, e: React.MouseEvent) => {
+  const renamePreset = (preset: any, e: React.MouseEvent) => {
     e.stopPropagation();
-    const next = window.prompt("请输入新的角色预设名称", preset.name);
-    if (!next?.trim()) return;
-    await api.renameVoicePreset(preset.id, next.trim());
-    const r = await api.listVoicePresets(); setSavedPresets(r.presets);
+    setRenamePresetTarget({ id: preset.id, name: preset.name });
+  };
+
+  const confirmRenamePreset = async (next: string) => {
+    const target = renamePresetTarget;
+    setRenamePresetTarget(null);
+    if (!target) return;
+    try {
+      await api.renameVoicePreset(target.id, next);
+      const r = await api.listVoicePresets(); setSavedPresets(r.presets);
+    } catch (e: any) {
+      toast.error("改名失败: " + (e?.message ?? e));
+    }
+  };
+
+  const confirmRenameVoice = async (next: string) => {
+    const target = renameVoiceTarget;
+    setRenameVoiceTarget(null);
+    if (!target) return;
+    try { await onRenameVoice(target, next); }
+    catch (e: any) { toast.error("改名失败: " + (e?.message ?? e)); }
   };
 
   return (
@@ -279,36 +318,64 @@ function SpeakerCard({ speakerKey, config, onChange, voiceFiles, onUpload, onRen
       <VoicePicker open={showVoicePicker} onClose={() => setShowVoicePicker(false)}
         currentPath={config.voice_path} voiceFiles={voiceFiles} presetVoices={presetVoices}
         onSelect={handleVoiceSelect} onPreview={preview} playingName={playingName}
-        onRename={voice => {
-          const next = window.prompt("请输入新的音色名称", voice.name.replace(/\.[^.]+$/, ""));
-          if (next?.trim()) onRenameVoice(voice, next.trim()).catch(e => alert("改名失败: " + e.message));
-        }}
+        onRename={voice => setRenameVoiceTarget(voice)}
         onDelete={voice => {
-          if (window.confirm(`确定删除音色“${voice.name}”吗？删除后不可恢复。`)) {
-            onDeleteVoice(voice).catch(e => alert("删除失败: " + e.message));
-          }
+          setConfirmState({
+            title: "删除这个音色？",
+            description: (
+              <>将删除音色「<span className="font-medium text-gray-800">{voice.name}</span>」。</>
+            ),
+            warning: "删除后不可恢复。",
+            run: () => { onDeleteVoice(voice).catch(e => toast.error("删除失败: " + (e?.message ?? e))); },
+          });
         }} />
 
-      {uploadDialog && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => !uploading && setUploadDialog(null)}>
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 p-4 space-y-3" onClick={e => e.stopPropagation()}>
-            <h3 className="text-sm font-semibold text-gray-800">保存上传的音频</h3>
-            <p className="text-[0.75rem] text-gray-400">原始文件: {uploadDialog.file.name}</p>
-            <div>
-              <Label className="text-[0.75rem]">音频名称</Label>
-              <input type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)}
-                className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm" autoFocus
-                onKeyDown={e => { if (e.key === "Enter") confirmUpload(); }} />
-            </div>
-            <div className="flex gap-2 justify-end">
-              <Button variant="outline" size="sm" onClick={() => setUploadDialog(null)} disabled={uploading}>取消</Button>
-              <Button size="sm" onClick={confirmUpload} disabled={uploading || !renameValue.trim()}>
-                {uploading ? "保存中..." : "保存并使用"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 上传命名 / 角色预设改名 / 音色改名：三处同为平台统一样式输入弹窗，替代原生 window.prompt */}
+      <PromptDialog
+        open={!!uploadDialog}
+        title="保存上传的音频"
+        label="音频名称"
+        description={uploadDialog ? <>原始文件: {uploadDialog.file.name}</> : undefined}
+        defaultValue={uploadDialog ? uploadDialog.file.name.replace(/\.[^.]+$/, "") : ""}
+        confirmText="保存并使用"
+        busy={uploading}
+        onCancel={() => setUploadDialog(null)}
+        onConfirm={confirmUpload}
+      />
+
+      <PromptDialog
+        open={!!renamePresetTarget}
+        title="重命名角色预设"
+        label="预设名称"
+        defaultValue={renamePresetTarget?.name ?? ""}
+        onCancel={() => setRenamePresetTarget(null)}
+        onConfirm={confirmRenamePreset}
+      />
+
+      <PromptDialog
+        open={!!renameVoiceTarget}
+        title="重命名音色"
+        label="音色名称"
+        description="只改显示名，不改音频文件本身。"
+        defaultValue={renameVoiceTarget ? renameVoiceTarget.name.replace(/\.[^.]+$/, "") : ""}
+        onCancel={() => setRenameVoiceTarget(null)}
+        onConfirm={confirmRenameVoice}
+      />
+
+      {/* 平台统一确认弹窗（删除角色预设 / 删除音色两处共用） */}
+      <ConfirmDialog
+        open={!!confirmState}
+        title={confirmState?.title ?? ""}
+        description={confirmState?.description ?? ""}
+        warning={confirmState?.warning}
+        confirmText="删除"
+        onCancel={() => setConfirmState(null)}
+        onConfirm={() => {
+          const run = confirmState?.run;
+          setConfirmState(null);
+          run?.();
+        }}
+      />
     </Card>
   );
 }

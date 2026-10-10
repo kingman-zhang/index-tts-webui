@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from "react";
 import { Search, X, Play, Square, Pencil, Trash2, SlidersHorizontal, MoreVertical, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/api/client";
+import { toast } from "@/lib/toast";
 import type { VoiceFile, BreezeblueVoice } from "@/types";
 
 interface PresetVoices {
@@ -182,7 +183,7 @@ export function VoicePicker({
         : [...current, voice.path];
       api.saveVoiceFavorites(next).catch(() => {
         setFavoritePaths(current);
-        alert("收藏保存失败，请检查 WebUI 后端服务");
+        toast.error("收藏保存失败，请检查 WebUI 后端服务");
       });
       return next;
     });
