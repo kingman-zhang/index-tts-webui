@@ -20,14 +20,13 @@ from __future__ import annotations
 import os
 import re
 import secrets
-import threading
 import time
 import uuid
-from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional
 
 from . import store
+from .store_contract import ORDER_PAID, ORDER_PENDING
 from .security import hash_password, new_token, verify_password
 from . import mailer
 from . import packs as _packs
@@ -111,7 +110,8 @@ def resolve_token(token: Optional[str]) -> Optional[dict]:
     session = sessions.get(token)
     if not session or session.get("expires_ts", 0) < time.time():
         return None
-    user = store.load_users().get(session["user_id"])
+    # 只取这一个用户 —— 不再为了鉴权把整张用户表反序列化一遍（Gate 2）
+    user = store.get_user(session["user_id"])
     if not user or user.get("disabled"):
         return None
     return user
@@ -145,9 +145,6 @@ def register(username: str, password: str, nickname: str = "") -> dict:
         raise MemberError("用户名需 2-24 位，仅限中英文、数字、下划线、连字符")
     if len(password or "") < 6:
         raise MemberError("密码至少 6 位")
-    users = store.load_users()
-    if any(u["username"] == username for u in users.values()):
-        raise MemberError("用户名已被注册")
     user_id = f"u_{uuid.uuid4().hex[:12]}"
     salt, pwd_hash = hash_password(password)
     user = {
@@ -162,11 +159,15 @@ def register(username: str, password: str, nickname: str = "") -> dict:
         "created_at": datetime.now().isoformat(),
         "last_login_at": None,
     }
-    users[user_id] = user
-    store.save_users(users)
+    try:
+        # 原子建号：mongo 侧由 username/email 唯一索引保证并发下只成功一个
+        store.create_user(user)
+    except store.DuplicateUser as e:
+        raise MemberError("用户名已被注册" if e.field == "username" else "该邮箱已注册，可直接登录",
+                          400 if e.field == "username" else 409) from e
     if REG_BONUS > 0:
         _apply_delta(user, REG_BONUS, "earn", "注册赠送")
-        user = store.load_users()[user_id]  # 取加赠后的最新数据返回给前端
+        user = store.get_user(user_id) or user  # 取加赠后的最新数据返回给前端
     token = create_session(user_id)
     return {"token": token, "user": public_user(user)}
 
@@ -174,17 +175,14 @@ def register(username: str, password: str, nickname: str = "") -> dict:
 def login(identifier: str, password: str) -> dict:
     """登录。identifier 可以是用户名或邮箱（邮箱注册的用户用邮箱登录）。"""
     ident = (identifier or "").strip()
-    users = store.load_users()
-    user = next(
-        (u for u in users.values() if u["username"] == ident or (u.get("email") or "") == ident.lower()),
-        None,
-    )
+    user = store.find_user(ident)
     if not user or not verify_password(password or "", user["salt"], user["password_hash"]):
         raise MemberError("用户名/邮箱或密码错误", 401)
     if user.get("disabled"):
         raise MemberError("账号已被禁用，请联系管理员", 403)
     user["last_login_at"] = datetime.now().isoformat()
-    store.save_users(users)
+    # 只改这一个用户的这一个字段（原来是"读整份 → 改 → 盖回去"，并发会丢别人的更新）
+    store.update_user_fields(user["user_id"], {"last_login_at": user["last_login_at"]})
     token = create_session(user["user_id"])
     return {"token": token, "user": public_user(user)}
 
@@ -202,8 +200,7 @@ def request_email_code(email: str) -> dict:
         raise MemberError("邮箱格式不正确")
     if not mailer.configured():
         raise MemberError("邮箱服务未配置（服务端需设置 SMTP_* 环境变量）", 503)
-    users = store.load_users()
-    if any((u.get("email") or "") == email for u in users.values()):
+    if store.find_user(email):
         raise MemberError("该邮箱已注册，可直接登录", 409)
     now = time.time()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -258,13 +255,12 @@ def register_email(email: str, code: str, password: str, nickname: str = "") -> 
         store.save_email_codes(codes)
         remain = EMAIL_CODE_MAX_ATTEMPTS - entry["attempts"]
         raise MemberError(f"验证码错误（剩余 {max(0, remain)} 次机会）")
-    users = store.load_users()
-    if any((u.get("email") or "") == email for u in users.values()):
+    if store.find_user(email):
         raise MemberError("该邮箱已注册，可直接登录", 409)
     # 用户名派生：邮箱前缀过滤成合法字符，冲突则加随机后缀
     base = re.sub(r"[^a-zA-Z0-9_\-\u4e00-\u9fa5]", "", email.split("@")[0])[:20] or "user"
     username = base
-    while any(u["username"] == username for u in users.values()):
+    while store.find_user(username):
         username = f"{base}_{uuid.uuid4().hex[:4]}"
     # 验证通过：作废验证码（一次性）
     codes.pop(email, None)
@@ -285,11 +281,15 @@ def register_email(email: str, code: str, password: str, nickname: str = "") -> 
         "created_at": datetime.now().isoformat(),
         "last_login_at": None,
     }
-    users[user_id] = user
-    store.save_users(users)
+    try:
+        store.create_user(user)   # 原子建号（并发下用户名/邮箱唯一）
+    except store.DuplicateUser as e:
+        if e.field == "email":
+            raise MemberError("该邮箱已注册，可直接登录", 409) from e
+        raise MemberError("用户名已被注册") from e
     if REG_BONUS > 0:
         _apply_delta(user, REG_BONUS, "earn", "注册赠送")
-        user = store.load_users()[user_id]
+        user = store.get_user(user_id) or user
     token = create_session(user_id)
     return {"token": token, "user": public_user(user)}
 
@@ -297,36 +297,38 @@ def register_email(email: str, code: str, password: str, nickname: str = "") -> 
 # ─── 资料编辑 ───────────────────────────────────────────────
 
 def update_profile(user: dict, nickname: Optional[str] = None, bio: Optional[str] = None) -> dict:
-    users = store.load_users()
-    target = users.get(user["user_id"])
-    if not target:
-        raise MemberError("用户不存在", 404)
+    fields: dict = {}
     if nickname is not None:
         nickname = nickname.strip()
         if not (1 <= len(nickname) <= 24):
             raise MemberError("昵称需 1-24 个字符")
-        target["nickname"] = nickname
+        fields["nickname"] = nickname
     if bio is not None:
         if len(bio) > 200:
             raise MemberError("简介最多 200 字")
-        target["bio"] = bio
-    target["updated_at"] = datetime.now().isoformat()
-    store.save_users(users)
+        fields["bio"] = bio
+    fields["updated_at"] = datetime.now().isoformat()
+    # 只改自己的文档（原来"读整份 → 改 → 盖回去"会覆盖别人的并发更新）
+    target = store.update_user_fields(user["user_id"], fields)
+    if not target:
+        raise MemberError("用户不存在", 404)
     return public_user(target)
 
 
 def change_password(user: dict, old_password: str, new_password: str) -> None:
-    users = store.load_users()
-    target = users.get(user["user_id"])
+    target = store.get_user(user["user_id"])
     if not target:
         raise MemberError("用户不存在", 404)
     if not verify_password(old_password or "", target["salt"], target["password_hash"]):
         raise MemberError("当前密码错误")
     if len(new_password or "") < 6:
         raise MemberError("新密码至少 6 位")
-    target["salt"], target["password_hash"] = hash_password(new_password)
-    target["updated_at"] = datetime.now().isoformat()
-    store.save_users(users)
+    salt, pwd_hash = hash_password(new_password)
+    store.update_user_fields(user["user_id"], {
+        "salt": salt,
+        "password_hash": pwd_hash,
+        "updated_at": datetime.now().isoformat(),
+    })
     # 改密后吊销该用户全部会话（除当前）——此处简单起见全部吊销，前端会跳登录页
     sessions = store.load_sessions()
     changed = False
@@ -338,70 +340,44 @@ def change_password(user: dict, old_password: str, new_password: str) -> None:
 
 
 # ─── 积分核心 ───────────────────────────────────────────────
-
-# 同一用户的「读 → 判断 → 写」必须串行，否则并发请求会各读到旧状态再各自写回。
-# 真实踩到的后果：两个并发签到同时通过「今天是否已签到」检查，各发一次积分
-# （2026-09-29 排期表 P1）。store 的锁只保证**单次**读/写原子，
-# 保护不了跨读写的业务判断，所以要在业务层加锁。
-# 刻意按 user_id 分锁：不同用户互不阻塞；锁本身很小，几千用户量级可接受。
-# 只覆盖**单进程**；将来若上多 worker，需换成文件锁（fcntl）并复查当日记录。
-_user_locks: dict = {}
-_user_locks_guard = threading.Lock()
-# 优惠码是**跨用户共享**的资源，同一用户的锁管不住「两个人同时兑同一个单次码」，
-# 所以兑换的读码→占坑→写回再用一把进程级锁串行化（兑换是低频操作，不值得更细的锁）。
-_redeem_lock = threading.RLock()
-# 订单的「读 → 判断状态 → 入账 → 写回状态」同样不能并发：同一个订单被两个回调
-# （用户连点、或支付平台重试推送）同时处理就会重复发积分。订单表是全局共享资源
-# （回调按 out_trade_no 找单，不认用户），所以用一把进程级锁串行化。
-_order_lock = threading.RLock()
-
-
-@contextmanager
-def user_lock(user_id: str):
-    """按用户互斥（可重入：checkin 内部再调 _apply_delta 不会自锁）。"""
-    with _user_locks_guard:
-        lock = _user_locks.setdefault(user_id, threading.RLock())
-    with lock:
-        yield
+#
+# 2026-10-12（Gate 2）：**这里原有的三把进程内锁已全部删除**
+# （`_user_locks` / `_redeem_lock` / `_order_lock`，都是 threading.RLock）。
+# 原因是它们只覆盖单进程：`main.run()` 一旦传了 workers、或起了第二个容器做
+# 滚动发布，同一订单就会被两个进程同时入账（支付回调天然是并发重试的）。
+#
+# 现在"原子性"下沉到存储层，业务层不再需要任何锁：
+#   file  后端 = 模块锁内整段完成（仍是单进程语义，但接口与 mongo 一致）
+#   mongo 后端 = 条件 $inc（扣费）/ 唯一索引（幂等）/ 单文档 CAS（抢单）
+# 详见 app/membership/store_contract.py 与 STORAGE_MIGRATION_PLAN.md §3.2。
 
 
 def _apply_delta(user: dict, delta: int, kind: str, reason: str, ref: str = "",
                  log_id: Optional[str] = None) -> int:
-    """写入积分变动 + 流水。delta 可正可负；余额不足时抛错（kind=spend）。"""
-    with user_lock(user["user_id"]):
-        users = store.load_users()
-        target = users.get(user["user_id"])
-        if not target:
-            raise MemberError("用户不存在", 404)
-        new_balance = target.get("points", 0) + delta
-        if new_balance < 0:
-            raise MemberError(f"积分不足（当前 {target.get('points', 0)}，需要 {-delta}）", 402)
-        target["points"] = new_balance
-        target["updated_at"] = datetime.now().isoformat()
-        store.save_users(users)
-        log_entry = {
-            "id": log_id or f"pl_{uuid.uuid4().hex[:12]}",
-            "user_id": target["user_id"],
-            "delta": delta,
-            "balance_after": new_balance,
-            "kind": kind,  # earn/spend/redeem/checkin/grant/refund/purchase
-            "reason": reason,
-            "ref": ref,
-            "created_at": datetime.now().isoformat(),
-        }
-        store.append_point_log(log_entry)
-        _trim_logs(target["user_id"])
-        return new_balance
+    """写入积分变动 + 流水，返回新余额。delta 可正可负。
 
+    这是**所有**积分变动的唯一出口（扣费/退款/入账/赠送/签到/兑换都经此），
+    所以原子性与幂等只需在这一处保证。余额不足抛 MemberError(402)。
 
-def _trim_logs(user_id: str) -> None:
-    """每用户流水超出上限时，从尾部（最旧）截断。
-
-    裁剪实现在 store 层（`trim_point_logs`），上限值 `MAX_POINT_LOGS_PER_USER`
-    是业务策略所以留在这里传入 —— 原先这里直接操作 `store._lock` / `_read` /
-    `_write` 私有 API，2026-10-12 抽存储接口时收敛掉。
+    ⚠️ `store.AlreadyApplied`（幂等命中）**不在这里翻译** —— 退款与订单入账对
+    "已经入过账"的处理不同（一个是静默返回，一个是补状态），由各自调用处决定。
     """
-    store.trim_point_logs(user_id, MAX_POINT_LOGS_PER_USER)
+    entry = {
+        "id": log_id or f"pl_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "delta": int(delta),
+        "kind": kind,  # earn/spend/redeem/checkin/grant/refund/purchase
+        "reason": reason,
+        "ref": ref,
+        "created_at": datetime.now().isoformat(),
+    }
+    try:
+        # 流水上限（MAX_POINT_LOGS_PER_USER）是业务策略，由这里传下去
+        return store.apply_point_delta(entry, trim_keep=MAX_POINT_LOGS_PER_USER)
+    except store.UserNotFound as e:
+        raise MemberError("用户不存在", 404) from e
+    except store.InsufficientPoints as e:
+        raise MemberError(f"积分不足（当前 {e.balance}，需要 {e.need}）", 402) from e
 
 
 def list_point_logs(user_id: str, offset: int = 0, limit: int = 20) -> dict:
@@ -441,40 +417,37 @@ def create_redeem_codes(count: int, points: int, max_uses: int = 1,
     return created
 
 
+# 优惠码不可用的**枚举原因** → 用户文案。存储层只给枚举（那是数据事实），
+# 文案是业务的事，所以在这一层翻译。
+_CODE_ERRORS = {
+    store.CodeUnavailable.NOT_FOUND: "优惠码不存在",
+    store.CodeUnavailable.DISABLED: "优惠码已停用",
+    store.CodeUnavailable.EXPIRED: "优惠码已过期",
+    store.CodeUnavailable.EXHAUSTED: "优惠码已被使用",
+    store.CodeUnavailable.ALREADY_USED: "您已使用过该优惠码",
+}
+
+
 def redeem(user: dict, code: str) -> dict:
+    """兑换优惠码。
+
+    2026-10-12（Gate 2）：占坑不再是"读码 → 校验 → 写回"，而是存储层的
+    **一次原子更新**（mongo 侧把"存在/未停用/未过期/有余量/本人没兑过"五项
+    全塞进查询条件，其中 `used_count < max_uses` 用 `$expr` 比较两个字段）。
+    并发抢同一张单次码时只可能有一个成功 —— 不再依赖进程级锁。
+    """
     code = (code or "").strip().upper()
-    # 与签到同类的竞态：读码 → 校验 → 占坑 → 写回，中间被并发插入就会超发
-    # （同一用户重复兑 / 单次码被两人同时兑）。同一用户内用 user_lock，
-    # 跨用户对同一码的争抢用进程级 _redeem_lock 串行化。仍只覆盖单进程。
-    with _redeem_lock, user_lock(user["user_id"]):
-        codes = store.load_redeem_codes()
-        entry = codes.get(code)
-        if not entry:
-            raise MemberError("优惠码不存在")
-        if entry.get("disabled"):
-            raise MemberError("优惠码已停用")
-        if entry.get("expires_ts") and entry["expires_ts"] < time.time():
-            raise MemberError("优惠码已过期")
-        if entry.get("used_count", 0) >= entry.get("max_uses", 1):
-            raise MemberError("优惠码已被使用")
-        if any(u["user_id"] == user["user_id"] for u in entry.get("used_by", [])):
-            raise MemberError("您已使用过该优惠码")
-        # 先占坑再发积分，防止并发重复兑换
-        entry["used_count"] = entry.get("used_count", 0) + 1
-        entry["used_by"].append({
-            "user_id": user["user_id"],
-            "username": user["username"],
-            "at": datetime.now().isoformat(),
-        })
-        store.save_redeem_codes(codes)
-        try:
-            balance = _apply_delta(user, entry["points"], "redeem", f"优惠码兑换 {code}", ref=code)
-        except MemberError:
-            # 理论上不会发生（兑换只加不减），占坑回滚保平安
-            entry["used_count"] -= 1
-            entry["used_by"] = [u for u in entry["used_by"] if u["user_id"] != user["user_id"]]
-            store.save_redeem_codes(codes)
-            raise
+    try:
+        entry = store.claim_redeem_code(code, user["user_id"], user["username"])
+    except store.CodeUnavailable as e:
+        raise MemberError(_CODE_ERRORS.get(e.reason, "优惠码不可用")) from e
+
+    try:
+        balance = _apply_delta(user, entry["points"], "redeem", f"优惠码兑换 {code}", ref=code)
+    except MemberError:
+        # 理论上不会发生（兑换只加不减）；占坑回滚保平安
+        store.release_redeem_code(code, user["user_id"])
+        raise
     return {"added": entry["points"], "balance": balance, "code": code}
 
 
@@ -484,18 +457,12 @@ def checkin(user: dict) -> dict:
     if CHECKIN_BONUS <= 0:
         raise MemberError("签到功能未开启")
     today = datetime.now().strftime("%Y-%m-%d")
-    # 整段（读 → 判断今天是否已签 → 写 → 发积分）必须在同一临界区里：
-    # store 的锁只让单次读写原子，挡不住「两个请求都读到未签到」。
-    with user_lock(user["user_id"]):
-        data = store.load_checkins()
-        days = data.setdefault(user["user_id"], set())
-        days = set(days)
-        if today in days:
-            raise MemberError("今天已经签到过啦", 409)
-        days.add(today)
-        data[user["user_id"]] = list(days)
-        store.save_checkins(data)
-        balance = _apply_delta(user, CHECKIN_BONUS, "checkin", f"每日签到 {today}")
+    # 原子签到：`(user_id, date)` 的唯一性由存储层保证（mongo 用 `_id` 复合主键，
+    # file 用模块锁）。并发 8 个请求也只有 1 个能插入成功，其余收到 409 ——
+    # 不再需要"读签到表 → 判断 → 写回"那段临界区。
+    if not store.insert_checkin_unique(user["user_id"], today):
+        raise MemberError("今天已经签到过啦", 409)
+    balance = _apply_delta(user, CHECKIN_BONUS, "checkin", f"每日签到 {today}")
     return {"added": CHECKIN_BONUS, "balance": balance, "date": today}
 
 
@@ -520,10 +487,8 @@ def checkin_status(user: dict) -> dict:
 #   ③ 入账金额以**订单快照**为准，不信回调传来的数字（只用来校验一致性）。
 
 ORDER_ID_PREFIX = "ord_"
-# 订单状态：pending（待支付）/ paid（已支付并已入账）。
-# 刻意不做 closed/expired —— 未支付订单挂着无害，且没有清理任务要维护。
-ORDER_PENDING = "pending"
-ORDER_PAID = "paid"
+# 订单状态常量（ORDER_PENDING / ORDER_PAID）定义在 store_contract —— 存储层
+# （CAS 抢单）与业务层共用同一份，避免两处字面量各写一份而漂移。
 
 
 def _est_chars(points: int) -> Optional[int]:
@@ -576,15 +541,12 @@ def create_order(user: dict, pack_id: str) -> dict:
         "created_at": datetime.now().isoformat(),
         "paid_at": None,
     }
-    with _order_lock:
-        orders = store.load_orders()
-        orders[order_id] = order
-        store.save_orders(orders)
+    store.insert_order(order)
     return order
 
 
 def get_order(user: dict, order_id: str) -> dict:
-    order = store.load_orders().get(order_id)
+    order = store.get_order(order_id)
     # 不区分「不存在」与「不是你的」——避免用订单号探测别人下过什么单。
     if not order or order.get("user_id") != user["user_id"]:
         raise MemberError("订单不存在", 404)
@@ -599,81 +561,74 @@ def list_orders(user: dict, offset: int = 0, limit: int = 20) -> dict:
     return {"total": total, "offset": offset, "orders": page}
 
 
-def _has_order_credit(order_id: str) -> bool:
-    """该订单是否已经入过账（以积分流水为准 —— 它是唯一不会丢的事实）。"""
-    ref = f"order:{order_id}"
-    return any(
-        e.get("ref") == ref and e.get("kind") == "purchase"
-        for e in store.load_point_logs()
-    )
-
-
 def settle_order(order_id: str, provider: str, amount_fen: Optional[int] = None,
                  out_trade_no: str = "") -> dict:
     """支付成功入账（**幂等**）。真实回调与模拟支付共用这一条路径。
 
-    - 已支付过（或流水里已有入账记录）→ 直接返回 already_paid，**不再发积分**。
-    - amount_fen 非空时与订单金额比对，不一致则拒（防止回调被篡改金额）。
-    - provider 只用于记录，不参与判断（通道差异在 pay.py 里消化）。
+    2026-10-12（Gate 2）改造后的时序 —— 这是"同一订单只入账一次"的关键：
+
+      1. 读订单（不存在 → 404）、校验支付金额、确认用户还在；
+      2. **CAS 抢单**：`pending → paid` 的**单文档原子更新**。抢不到 ⇒ 已入账过，
+         直接返回 already_paid。并发回调（平台重推、用户连点）里**只有一个抢得到**
+         —— 不再依赖进程级锁，多 worker / 多容器下同样成立；
+      3. 抢到才发积分：`apply_point_delta(ref="order:{id}", kind="purchase")`。
+         若该流水已存在（上次崩在"已入账、未改状态"之间），`(user_id, ref, kind)`
+         的**唯一索引**会挡下并抛 `AlreadyApplied` —— 此时状态已由第 2 步补成 paid，
+         只需回填流水号即可。（原先这段是 `_has_order_credit()` 扫全表判断的补偿分支，
+         现已由 CAS + 唯一索引覆盖，且没有 TOCTOU 窗口。）
+
+    ⚠️ 残余窗口（已知、明确接受）：第 2 步抢到状态后、第 3 步发出积分前进程被杀
+       ⇒ 订单 `paid` 但无 `purchase` 流水。**不静默修** —— 由 `tools/reconcile.py`
+       报出来人工处置（见 STORAGE_MIGRATION_PLAN.md §6 与 Gate 4）。
     """
-    with _order_lock:
-        orders = store.load_orders()
-        order = orders.get(order_id)
-        if not order:
-            raise MemberError("订单不存在", 404)
-        if amount_fen is not None and int(amount_fen) != int(order["amount_fen"]):
-            raise MemberError(
-                f"支付金额与订单不一致（订单 {order['amount_fen']} 分，收到 {amount_fen} 分）", 400
-            )
-        user = store.load_users().get(order["user_id"])
-        if not user:
-            raise MemberError("订单对应用户不存在", 404)
+    order = store.get_order(order_id)
+    if not order:
+        raise MemberError("订单不存在", 404)
+    if amount_fen is not None and int(amount_fen) != int(order["amount_fen"]):
+        raise MemberError(
+            f"支付金额与订单不一致（订单 {order['amount_fen']} 分，收到 {amount_fen} 分）", 400
+        )
+    user_id = order["user_id"]
+    if not store.get_user(user_id):
+        raise MemberError("订单对应用户不存在", 404)
 
-        if order.get("status") == ORDER_PAID:
-            return {"order": order, "added": 0, "balance": user.get("points", 0), "already_paid": True}
-        # 状态没落成 paid、但流水里已有入账 ⇒ 上次崩在「已入账、未改状态」之间，补状态即可。
-        if _has_order_credit(order_id):
-            order["status"] = ORDER_PAID
-            order["paid_at"] = order.get("paid_at") or datetime.now().isoformat()
-            order["provider"] = order.get("provider") or provider
-            orders[order_id] = order
-            store.save_orders(orders)
-            return {"order": order, "added": 0, "balance": user.get("points", 0), "already_paid": True}
+    claimed = store.claim_order(order_id, provider, out_trade_no or order.get("out_trade_no") or "")
+    if claimed is None:
+        cur = store.get_order(order_id) or order
+        u = store.get_user(user_id) or {}
+        return {"order": cur, "added": 0, "balance": u.get("points", 0), "already_paid": True}
 
-        log_id = f"pl_{uuid.uuid4().hex[:12]}"
+    log_id = f"pl_{uuid.uuid4().hex[:12]}"
+    try:
         balance = _apply_delta(
-            user, order["points"], "purchase",
-            f"购买{order['pack_name']}（{order['points']} 积分）",
+            {"user_id": user_id}, claimed["points"], "purchase",
+            f"购买{claimed['pack_name']}（{claimed['points']} 积分）",
             ref=f"order:{order_id}", log_id=log_id,
         )
-        order["status"] = ORDER_PAID
-        order["provider"] = provider
-        order["out_trade_no"] = out_trade_no or order.get("out_trade_no") or order_id
-        order["credit_log_id"] = log_id
-        order["paid_at"] = datetime.now().isoformat()
-        orders[order_id] = order
-        store.save_orders(orders)
-        return {"order": order, "added": order["points"], "balance": balance, "already_paid": False}
+    except store.AlreadyApplied:
+        # 流水已存在 ⇒ 上次崩在"已入账、未改状态"之间；状态这次已补成 paid
+        store.mark_order_credited(order_id, "")
+        cur = store.get_order(order_id) or claimed
+        u = store.get_user(user_id) or {}
+        return {"order": cur, "added": 0, "balance": u.get("points", 0), "already_paid": True}
+
+    store.mark_order_credited(order_id, log_id)
+    return {"order": {**claimed, "credit_log_id": log_id}, "added": claimed["points"],
+            "balance": balance, "already_paid": False}
 
 
 def settle_by_out_trade_no(out_trade_no: str, provider: str,
                            amount_fen: Optional[int] = None) -> dict:
     """按商户订单号找单并入账（真实支付回调入口）。
 
-    找单**扫全表**：真实通道只回传 out_trade_no，不回传我们的内部 order_id，
-    而 out_trade_no 默认就等于 order_id —— 但用户可能在对接后自定义过它。
+    真实通道只回传 out_trade_no、不回传我们的内部 order_id，而 out_trade_no
+    默认就等于 order_id（用户也可能在对接后自定义过它）—— 两种都试。
+    2026-10-12（Gate 2）：找单走 `orders.out_trade_no` **索引**，不再扫全表。
     """
     target = (out_trade_no or "").strip()
     if not target:
         raise MemberError("缺少商户订单号", 400)
-    orders = store.load_orders()
-    order = orders.get(target)
-    if not order:
-        order = next(
-            (o for o in orders.values()
-             if o.get("out_trade_no") == target or o.get("order_id") == target),
-            None,
-        )
+    order = store.find_order(target)
     if not order:
         raise MemberError("订单不存在", 404)
     return settle_order(order["order_id"], provider, amount_fen=amount_fen, out_trade_no=target)
@@ -743,44 +698,38 @@ def charge_for_task(user: dict, lines: list, task_id: str) -> dict:
     """提交任务时预扣积分。成本为 0 时返回 {"balance": 当前, "log_id": ""}。
 
     返回 log_id 供退款幂等：每个扣费记录只允许对应一笔退款。
+
+    2026-10-12（Gate 2）：**余额预检已删除**。"先查余额、再扣费"之间有窗口
+    （并发时会给出错误的"积分不足"）；现在余额是否够是 `$inc` 的**查询条件**，
+    判断与扣减在同一次原子往返里完成。
     """
     cost = estimate_task_cost(lines)
     if cost <= 0:
         return {"balance": user.get("points", 0), "log_id": ""}
-    users = store.load_users()
-    target = users.get(user["user_id"])
-    if not target:
-        raise MemberError("用户不存在", 404)
-    balance = target.get("points", 0)
-    if balance < cost:
-        raise MemberError(f"积分不足（当前 {balance}，本次任务需 {cost}）", 402)
     log_id = f"pl_{uuid.uuid4().hex[:12]}"
-    new_balance = _apply_delta(target, -cost, "spend", f"合成扣费 {task_id}", ref=task_id, log_id=log_id)
+    new_balance = _apply_delta(user, -cost, "spend", f"合成扣费 {task_id}",
+                               ref=task_id, log_id=log_id)
     return {"balance": new_balance, "log_id": log_id}
 
 
 def refund_task_charge(user_id: str, task_id: str, amount: int, charge_log_id: str = "") -> None:
     """任务失败/取消/中断时退还预扣积分。
 
-    幂等：以 f"{task_id}:{charge_log_id}" 作为退款 ref，同一笔扣费只会退一次。
+    幂等：以 `f"{task_id}:{charge_log_id}"` 作为退款 ref —— 同一笔扣费只退一次。
+
+    2026-10-12（Gate 2）：幂等判据从"先查流水、再退"（有 TOCTOU 窗口，并发两个
+    退款请求可同时通过检查）换成**依赖唯一索引** —— 重复退款会撞
+    `(user_id, ref, kind=refund)` 唯一索引并抛 AlreadyApplied。更硬，且没有窗口。
     """
     if amount <= 0:
         return
-    users = store.load_users()
-    user = users.get(user_id)
-    if not user:
+    if not store.get_user(user_id):
         return
     refund_ref = f"{task_id}:{charge_log_id or 'legacy'}"
-    if _has_refund(user_id, refund_ref):
-        return
-    _apply_delta(user, amount, "refund", f"任务退款 {task_id}", ref=refund_ref)
-
-
-def _has_refund(user_id: str, ref: str) -> bool:
-    return any(
-        e.get("user_id") == user_id and e.get("ref") == ref and e.get("kind") == "refund"
-        for e in store.load_point_logs()
-    )
+    try:
+        _apply_delta({"user_id": user_id}, amount, "refund", f"任务退款 {task_id}", ref=refund_ref)
+    except store.AlreadyApplied:
+        return   # 已经退过（或正在退）—— 静默返回，这是本函数的幂等语义
 
 
 def rebalance_task_charge(user: dict, lines: list, task_id: str,
@@ -790,35 +739,27 @@ def rebalance_task_charge(user: dict, lines: list, task_id: str,
     diff = new_cost - prev_charged
     log_id = prev_log_id
     if diff > 0:
-        users = store.load_users()
-        target = users.get(user["user_id"])
-        if not target:
-            raise MemberError("用户不存在", 404)
-        if target.get("points", 0) < diff:
-            raise MemberError(f"积分不足（当前 {target.get('points', 0)}，还需 {diff}）", 402)
-        _apply_delta(target, -diff, "spend", f"任务改稿补扣 {task_id}", ref=task_id)
+        # 余额够不够由存储层的原子条件判断（不再"先查后写"）
+        _apply_delta(user, -diff, "spend", f"任务改稿补扣 {task_id}", ref=task_id)
     elif diff < 0:
-        users = store.load_users()
-        target = users.get(user["user_id"])
-        if target:
-            _apply_delta(target, -diff, "refund", f"任务改稿退差 {task_id}", ref=task_id)
+        # ⚠️ 这里的 ref **刻意留空**：改稿退差**不是幂等操作**（每改一次稿就该退一次），
+        # 若填 task_id 会撞 `(user_id, ref, kind=refund)` 唯一索引，第二次改稿就退不了。
+        # 任务号已写在 reason 里，信息没有丢。
+        if store.get_user(user["user_id"]):
+            _apply_delta(user, -diff, "refund", f"任务改稿退差 {task_id}", ref="")
     return {"charged": new_cost, "log_id": log_id}
 
 
 # ─── 管理端 ─────────────────────────────────────────────────
 
 def admin_grant_points(username_or_id: str, delta: int, reason: str) -> dict:
-    users = store.load_users()
-    user = next(
-        (u for u in users.values() if u["username"] == username_or_id or u["user_id"] == username_or_id),
-        None,
-    )
+    user = store.find_user(username_or_id)
     if not user:
         raise MemberError("用户不存在", 404)
     if delta == 0:
         raise MemberError("变动值不能为 0")
     balance = _apply_delta(user, delta, "grant", reason or "管理员调整")
-    return {"user": public_user(store.load_users()[user["user_id"]]), "balance": balance}
+    return {"user": public_user(store.get_user(user["user_id"]) or user), "balance": balance}
 
 
 def admin_list_users(query: str = "") -> list[dict]:
@@ -834,15 +775,10 @@ def admin_list_users(query: str = "") -> list[dict]:
 
 
 def admin_set_disabled(username_or_id: str, disabled: bool) -> dict:
-    users = store.load_users()
-    user = next(
-        (u for u in users.values() if u["username"] == username_or_id or u["user_id"] == username_or_id),
-        None,
-    )
+    user = store.find_user(username_or_id)
     if not user:
         raise MemberError("用户不存在", 404)
-    user["disabled"] = disabled
-    store.save_users(users)
+    user = store.update_user_fields(user["user_id"], {"disabled": disabled}) or user
     if disabled:
         # 禁用即踢下线
         sessions = store.load_sessions()

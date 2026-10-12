@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""创建 / 校验 MongoDB 账本的索引（**幂等，可重复跑**）。
+
+为什么这是个正式脚本而不是"顺手在代码里建一下"
+--------------------------------------------
+**唯一索引是资金安全的第一道防线**：「先查后写」无论加什么锁都有窗口，
+数据库唯一约束没有窗口。所以它是**上线前置步骤**，不是可选优化。
+（见 STORAGE_MIGRATION_PLAN.md §3.2 / Gate 2 / Gate 4 检查清单。）
+
+索引清单与理由
+--------------
+| 集合 | 键 | 唯一 | 作用 |
+|---|---|---|---|
+| `users` | `username` | ✅ | 并发同名注册只能成功一个 |
+| `users` | `email` | ✅（partial） | 并发同邮箱注册；**无 email 的用户不参与索引** |
+| `point_logs` | `user_id,ref,kind` | ✅（partial） | **幂等第一防线**：重复退款/重复入账被硬挡下 |
+| `point_logs` | `user_id,created_at` | — | 某用户流水分页与裁剪 |
+| `point_logs` | `created_at` | — | 对账/列表按时间倒序 |
+| `orders` | `out_trade_no` | — | 真实回调只回传商户订单号，按它找单 |
+
+⚠️ `point_logs` 的唯一索引**刻意只覆盖 `refund` / `purchase`**（`partialFilterExpression`）：
+   - 只有这两类会被"重复触发"（退款重试、支付平台回调重推）；
+   - `spend` **绝不能**纳入 —— `routes/queue.py:retry_queue_task` 重试时**复用同一个
+     `task_id`** 并重新预扣积分，把 `spend` 纳入唯一索引会让重试的扣费被自己挡住。
+   （常量定义见 `app/membership/store_contract.py:IDEMPOTENT_KINDS`。）
+
+用法
+----
+    cd webui-backend
+    env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy NO_PROXY='*' \\
+        python tools/init_indexes.py            # 创建（已存在则跳过，定义不同会报错）
+    ... python tools/init_indexes.py --check    # 只检查，缺索引则退出码 1（上线前自检）
+
+退出码：0 = 全部就位；1 = 有缺失或创建失败；2 = 连不上数据库。
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.db import DBUnavailable, get_mongo_db  # noqa: E402
+from app.membership.store_contract import IDEMPOTENT_KINDS  # noqa: E402
+from app.config import MONGO_DB  # noqa: E402
+
+# (集合, 键, 选项) —— 选项里显式给 name，好让 --check 按名字比对
+INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
+    ("users", [("username", 1)],
+     {"unique": True, "name": "uniq_username"}),
+    ("users", [("email", 1)],
+     {"unique": True, "name": "uniq_email",
+      # 只索引"非空字符串"的 email —— 用户名注册的用户没有 email 字段，
+      # 不加这个条件会让多个无 email 用户互相冲突（null 重复）。
+      "partialFilterExpression": {"email": {"$type": "string", "$gt": ""}}}),
+    ("point_logs", [("user_id", 1), ("ref", 1), ("kind", 1)],
+     {"unique": True, "name": "uniq_idempotent",
+      # 见上方说明：只覆盖 refund / purchase（$or 是 partialFilterExpression
+      # 明确支持的形式；$in 在部分版本上不被接受）。
+      "partialFilterExpression": {
+          "ref": {"$type": "string", "$gt": ""},
+          "$or": [{"kind": "refund"}, {"kind": "purchase"}],
+      }}),
+    ("point_logs", [("user_id", 1), ("created_at", -1)],
+     {"name": "user_recent"}),
+    ("point_logs", [("created_at", -1)],
+     {"name": "recent"}),
+    ("orders", [("out_trade_no", 1)],
+     {"name": "by_out_trade_no"}),
+)
+
+
+def _describe(keys: list, opts: dict) -> str:
+    s = ", ".join(f"{k}:{v}" for k, v in keys)
+    if opts.get("unique"):
+        s += " unique"
+    if opts.get("partialFilterExpression"):
+        s += " partial"
+    return s
+
+
+def ensure_indexes(db, verbose: bool = True) -> int:
+    """创建清单里的全部索引（幂等）。返回**失败个数**（0 = 全就位）。
+
+    抽成函数是为了让测试也能用**同一份索引定义** —— 否则测试里另写一套，
+    两边迟早漂移（那样唯一索引就白建了）。
+    """
+    failures = 0
+    for coll_name, keys, opts in INDEXES:
+        coll = db[coll_name]
+        name = opts["name"]
+        if name in {i["name"] for i in coll.list_indexes()}:
+            if verbose:
+                print(f"  ✓ {coll_name}.{name:18s} ({_describe(keys, opts)}) 已存在")
+            continue
+        try:
+            coll.create_index(keys, **opts)
+            if verbose:
+                print(f"  ➕ {coll_name}.{name:18s} ({_describe(keys, opts)}) 已创建")
+        except Exception as e:   # 同名索引定义冲突等
+            print(f"  ✗ {coll_name}.{name:18s} 创建失败：{type(e).__name__}: {e}",
+                  file=sys.stderr)
+            failures += 1
+    return failures
+
+
+def check_indexes(db, verbose: bool = True) -> int:
+    """只检查不创建。返回**缺失个数**（0 = 全就位）。"""
+    missing = 0
+    for coll_name, keys, opts in INDEXES:
+        name = opts["name"]
+        if name in {i["name"] for i in db[coll_name].list_indexes()}:
+            if verbose:
+                print(f"  ✓ {coll_name}.{name:18s} ({_describe(keys, opts)}) 已存在")
+        else:
+            print(f"  ✗ {coll_name}.{name:18s} ({_describe(keys, opts)}) **缺失**")
+            missing += 1
+    return missing
+
+
+def main() -> int:
+    check_only = "--check" in sys.argv
+    try:
+        db = get_mongo_db()
+        db.command("ping")
+    except DBUnavailable as e:
+        print(f"✗ 连不上 MongoDB：{e}", file=sys.stderr)
+        return 2
+
+    print(f"MongoDB 库 = {MONGO_DB}；模式 = {'只检查' if check_only else '创建/校验'}")
+    print(f"期望索引 = {len(INDEXES)} 个\n")
+
+    bad = check_indexes(db) if check_only else ensure_indexes(db)
+
+    print()
+    if bad:
+        what = "缺失" if check_only else "创建失败"
+        print(f"✗ {bad} 个索引{what} —— 上线前必须解决（唯一索引是幂等防线）")
+        return 1
+    if check_only:
+        print("✓ 全部索引就位")
+    else:
+        print(f"✓ 完成。幂等规则：kind ∈ {IDEMPOTENT_KINDS} 的流水按 (user_id, ref, kind) 唯一")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

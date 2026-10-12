@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """会员模块单测（自跑脚本，项目惯例非 pytest）。
 
-用法：/Users/zhangjianwen/.workbuddy/binaries/python/envs/default/bin/python tests/test_membership.py
-隔离：临时 DATA_DIR，不污染真实数据。
+用法：
+    # 文件后端（默认，与生产默认一致）
+    python tests/test_membership.py
+    # MongoDB 后端 —— 用**独立测试库** podcast_test，不碰生产库
+    TEST_MEMBER_STORE=mongo python tests/test_membership.py
+
+**同一套断言跑两个后端**，用来证明切换存储后行为等价（Gate 2 的核心验收：
+原先靠三把进程内锁保证的"并发只成功一次"，现在靠存储层的原子能力保证）。
+隔离：临时 DATA_DIR；mongo 模式额外用独立库名并在开跑前清空。
 """
 
 from __future__ import annotations
@@ -15,12 +22,33 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+# 后端由环境变量切换；默认 file（与生产默认一致）
+TEST_BACKEND = (os.environ.get("TEST_MEMBER_STORE") or "file").strip().lower()
+
 TMP = tempfile.mkdtemp(prefix="wb-member-test-")
 os.environ["DATA_DIR"] = TMP
+os.environ["MEMBER_STORE"] = TEST_BACKEND
 os.environ["MEMBER_ADMIN_TOKEN"] = "test-admin-token"
 os.environ["MEMBER_REG_BONUS"] = "100"
 os.environ.pop("MEMBER_CHECKIN_BONUS", None)
 os.environ["MEMBER_ENFORCE"] = "0"
+if TEST_BACKEND == "mongo":
+    # ⚠️ 绝不能用生产库名（podcast）—— 本测试会清空集合
+    os.environ["MONGO_DB"] = os.environ.get("TEST_MONGO_DB", "podcast_test")
+    # 本测试默认屏蔽 .env（保证"默认值回归"不被真实配置干扰）；mongo 模式需要连接串，
+    # 所以只把**连接相关**的那几项在 import app.config **之前**补回来 ——
+    # config / db 都是 import 时读环境变量的，之后再赋值就晚了。
+    # （只挑这几项：整份加载 .env 会把 MEMBER_ENFORCE=1 之类的真实配置带进来。）
+    if not os.environ.get("MONGO_URL"):
+        _env_file = Path(__file__).resolve().parents[1] / ".env"
+        if _env_file.exists():
+            for _line in _env_file.read_text(encoding="utf-8").splitlines():
+                _line = _line.strip()
+                if not _line or _line.startswith("#") or "=" not in _line:
+                    continue
+                _k, _, _v = _line.partition("=")
+                if _k.strip() in ("MONGO_URL", "REDIS_URL", "REDIS_KEY_PREFIX"):
+                    os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -58,7 +86,30 @@ def svc_register(username, password, nickname=""):
         return None, e
 
 
+def _prepare_mongo() -> None:
+    """mongo 模式开跑前：清空测试库 + 建索引。
+
+    索引必须与生产一致 —— **唯一索引正是本测试要验证的东西**
+    （并发签到只成功一次、单次码只被兑走一次，靠的就是它）。
+    """
+    from app.config import MONGO_DB
+    if MONGO_DB == "podcast":
+        raise SystemExit("拒绝在库 'podcast' 上跑测试（那是生产库）—— 请设置 TEST_MONGO_DB")
+    from app.db import get_mongo_db
+    from tools.init_indexes import ensure_indexes
+    db = get_mongo_db()
+    db.command("ping")
+    for name in ("users", "sessions", "point_logs", "redeem_codes",
+                 "checkins", "orders", "email_codes"):
+        db[name].drop()
+    if ensure_indexes(db, verbose=False):
+        raise SystemExit("测试库索引创建失败（见上方输出）")
+    print(f"（后端 = mongo，库 = {MONGO_DB}：已清空并建好索引）\n")
+
+
 def main():
+    if TEST_BACKEND == "mongo":
+        _prepare_mongo()
     print("── 注册（service 层） ──")
     body, e = svc_register("张三", "pass123", "三哥")
     check("注册成功", body is not None, str(e))
