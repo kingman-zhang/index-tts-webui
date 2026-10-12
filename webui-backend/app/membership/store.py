@@ -1,149 +1,148 @@
-"""会员模块存储层：JSON 文件持久化（与项目 stores.py 风格一致）。
+"""会员模块存储门面：按 `MEMBER_STORE` 选择后端实现。
 
-文件布局（DATA_DIR/members/）：
-  users.json         用户表 {user_id: {...}}
-  sessions.json      会话表 {token: {...}}
-  point_logs.json    积分流水（追加列表，新记录在前）
-  redeem_codes.json  优惠码 {code: {...}}
-  checkins.json      签到记录 {user_id: {"2026-09-19", ...}}
-  orders.json        积分购买订单 {order_id: {...}}（充值链路，2026-10-05 新增）
+| `MEMBER_STORE` | 实现 | 状态 |
+|---|---|---|
+| `file`（**默认**） | `store_file.py`（JSON 文件） | 与历史行为**完全一致** |
+| `mongo` | `store_mongo.py`（MongoDB 账本） | 见 STORAGE_MIGRATION_PLAN.md 的 Gate 2 |
 
-并发策略：模块级 threading.Lock 串行化读改写；写入采用 tmp+replace 原子替换。
-规模预期（几百~几千用户、几万条流水）下 JSON 文件足够；日后可平滑迁移 SQLite，
-service 层接口不变。
+**接口契约**（两个后端都必须满足，见 `_REQUIRED_API`）：
+
+- 读函数返回**整份**数据（`dict` / `list`）；
+- 写函数接收**整份**数据并覆盖写；
+- `trim_point_logs(user_id, keep)` 负责「每用户流水上限」的裁剪
+  （上限值本身是业务策略，由 service 层传入）；
+- 函数签名与语义一经冻结，service 层不再感知后端差异。
+
+⚠️ **本模块只做转发，不含业务逻辑**；后端差异全部由被选中的实现承担。
+⚠️ 刻意**不做**「mongo 连不上就退回 file」这种兜底：两个后端的存储形态不同，
+   静默切换会让系统读到另一本（空的）账 —— 宁可启动即失败。
 """
 
 from __future__ import annotations
 
-import json
-import os
-import threading
-from pathlib import Path
-from typing import Any, Optional
+from ..config import MEMBER_STORE
 
-from ..config import DATA_DIR
+# ─── 后端选择（import 期一次决定）────────────────────────────
 
-MEMBERS_DIR = DATA_DIR / "members"
-MEMBERS_DIR.mkdir(parents=True, exist_ok=True)
+_SUPPORTED = ("file", "mongo")
 
-USERS_FILE = MEMBERS_DIR / "users.json"
-SESSIONS_FILE = MEMBERS_DIR / "sessions.json"
-POINT_LOGS_FILE = MEMBERS_DIR / "point_logs.json"
-REDEEM_CODES_FILE = MEMBERS_DIR / "redeem_codes.json"
-CHECKINS_FILE = MEMBERS_DIR / "checkins.json"
-
-_lock = threading.RLock()
-
-
-def _read(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
+if MEMBER_STORE == "mongo":
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # 损坏时备份原文件并返回默认值，避免整站不可用
-        backup = path.with_suffix(path.suffix + ".corrupt")
-        try:
-            os.replace(path, backup)
-        except OSError:
-            pass
-        return default
+        from . import store_mongo as _impl
+    except ImportError as _e:  # ModuleNotFoundError 是其子类
+        raise RuntimeError(
+            f"MEMBER_STORE=mongo，但 Mongo 后端尚未就绪：{_e}\n"
+            f"当前可用后端：file。请先完成 STORAGE_MIGRATION_PLAN.md 的 Gate 2，"
+            f"或把 .env 里的 MEMBER_STORE 改回 file。"
+        ) from _e
+else:
+    # 其余取值统一按 file 处理；非法值在下面拦下（不静默回退）。
+    from . import store_file as _impl
+
+if MEMBER_STORE not in _SUPPORTED:
+    raise RuntimeError(
+        f"MEMBER_STORE={MEMBER_STORE!r} 不是受支持的后端；可选：{'、'.join(_SUPPORTED)}。"
+        f"（配置见 .env / app/config.py）"
+    )
 
 
-def _write(path: Path, data: Any) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+# 接口契约：新增后端必须提供以下全部函数，否则 **import 期即失败**（fail fast，
+# 而不是等某个请求调用到才发现）。顺序与 service 层依赖一致。
+_REQUIRED_API = (
+    "load_users", "save_users",
+    "load_sessions", "save_sessions",
+    "load_point_logs", "append_point_log", "trim_point_logs",
+    "load_redeem_codes", "save_redeem_codes",
+    "load_checkins", "save_checkins",
+    "load_orders", "save_orders",
+    "load_email_codes", "save_email_codes",
+)
+
+_missing = [name for name in _REQUIRED_API if not hasattr(_impl, name)]
+if _missing:
+    raise RuntimeError(
+        f"存储后端 {_impl.__name__!r} 未实现以下接口：{_missing}；"
+        f"完整契约见 app/membership/store.py 的 _REQUIRED_API。"
+    )
 
 
-# ─── 用户 ───────────────────────────────────────────────────
+# ─── 接口实现（显式转发，签名即契约）──────────────────────────
+# 刻意写成显式函数而非 `globals().update(...)` 批量绑定：这样 `store.load_users`
+# 的签名在源码里可见，IDE / 类型检查能识别，新增后端时也一眼看出要补齐哪些。
+
+# 用户
 
 def load_users() -> dict:
-    with _lock:
-        return _read(USERS_FILE, {})
+    return _impl.load_users()
 
 
 def save_users(users: dict) -> None:
-    with _lock:
-        _write(USERS_FILE, users)
+    _impl.save_users(users)
 
 
-# ─── 会话 ───────────────────────────────────────────────────
+# 会话
 
 def load_sessions() -> dict:
-    with _lock:
-        return _read(SESSIONS_FILE, {})
+    return _impl.load_sessions()
 
 
 def save_sessions(sessions: dict) -> None:
-    with _lock:
-        _write(SESSIONS_FILE, sessions)
+    _impl.save_sessions(sessions)
 
 
-# ─── 积分流水 ───────────────────────────────────────────────
+# 积分流水
 
 def load_point_logs() -> list:
-    with _lock:
-        return _read(POINT_LOGS_FILE, [])
+    return _impl.load_point_logs()
 
 
 def append_point_log(entry: dict) -> None:
-    """追加一条流水（新记录插到最前，读取时天然按时间倒序）。"""
-    with _lock:
-        logs = _read(POINT_LOGS_FILE, [])
-        logs.insert(0, entry)
-        _write(POINT_LOGS_FILE, logs)
+    _impl.append_point_log(entry)
 
 
-# ─── 优惠码 ─────────────────────────────────────────────────
+def trim_point_logs(user_id: str, keep: int) -> None:
+    _impl.trim_point_logs(user_id, keep)
+
+
+# 优惠码
 
 def load_redeem_codes() -> dict:
-    with _lock:
-        return _read(REDEEM_CODES_FILE, {})
+    return _impl.load_redeem_codes()
 
 
 def save_redeem_codes(codes: dict) -> None:
-    with _lock:
-        _write(REDEEM_CODES_FILE, codes)
+    _impl.save_redeem_codes(codes)
 
 
-# ─── 签到 ───────────────────────────────────────────────────
+# 签到
 
 def load_checkins() -> dict:
-    with _lock:
-        return _read(CHECKINS_FILE, {})
+    return _impl.load_checkins()
 
 
 def save_checkins(data: dict) -> None:
-    with _lock:
-        _write(CHECKINS_FILE, data)
+    _impl.save_checkins(data)
 
 
-# ─── 积分购买订单 ───────────────────────────────────────────
-
-ORDERS_FILE = MEMBERS_DIR / "orders.json"
-
+# 积分购买订单
 
 def load_orders() -> dict:
-    with _lock:
-        return _read(ORDERS_FILE, {})
+    return _impl.load_orders()
 
 
 def save_orders(orders: dict) -> None:
-    with _lock:
-        _write(ORDERS_FILE, orders)
+    _impl.save_orders(orders)
 
 
-# ─── 邮箱验证码 ─────────────────────────────────────────────
-
-EMAIL_CODES_FILE = MEMBERS_DIR / "email_codes.json"
-
+# 邮箱验证码
 
 def load_email_codes() -> dict:
-    with _lock:
-        return _read(EMAIL_CODES_FILE, {})
+    return _impl.load_email_codes()
 
 
 def save_email_codes(data: dict) -> None:
-    with _lock:
-        _write(EMAIL_CODES_FILE, data)
+    _impl.save_email_codes(data)
+
+
+# 供自检 / 日志用：当前生效的后端名（`/api/version` 之类可回报）
+BACKEND = MEMBER_STORE

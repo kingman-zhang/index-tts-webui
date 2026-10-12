@@ -395,14 +395,13 @@ def _apply_delta(user: dict, delta: int, kind: str, reason: str, ref: str = "",
 
 
 def _trim_logs(user_id: str) -> None:
-    """每用户流水超出上限时，从尾部（最旧）截断。"""
-    with store._lock:
-        logs = store._read(store.POINT_LOGS_FILE, [])
-        mine = [i for i, e in enumerate(logs) if e.get("user_id") == user_id]
-        if len(mine) > MAX_POINT_LOGS_PER_USER:
-            drop_indexes = set(mine[MAX_POINT_LOGS_PER_USER:])
-            logs = [e for i, e in enumerate(logs) if i not in drop_indexes]
-            store._write(store.POINT_LOGS_FILE, logs)
+    """每用户流水超出上限时，从尾部（最旧）截断。
+
+    裁剪实现在 store 层（`trim_point_logs`），上限值 `MAX_POINT_LOGS_PER_USER`
+    是业务策略所以留在这里传入 —— 原先这里直接操作 `store._lock` / `_read` /
+    `_write` 私有 API，2026-10-12 抽存储接口时收敛掉。
+    """
+    store.trim_point_logs(user_id, MAX_POINT_LOGS_PER_USER)
 
 
 def list_point_logs(user_id: str, offset: int = 0, limit: int = 20) -> dict:

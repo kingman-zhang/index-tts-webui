@@ -223,6 +223,26 @@ QUEUE_DIR = DATA_DIR / "queue"
 QUEUE_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_ORDER_FILE = QUEUE_DIR / "_queue_order.json"
 
+# ─── 存储后端（2026-10-12：账本可从 JSON 文件切到 MongoDB）────────────
+# 完整方案见 STORAGE_MIGRATION_PLAN.md。三条要点：
+#   * MEMBER_STORE=file（默认）—— 与历史行为**完全一致**，不引入任何新依赖；
+#   * MEMBER_STORE=mongo —— 账本进 MongoDB（Gate 2 落地后可切换，见 membership/store.py）；
+#   * 刻意**不做**「mongo 连不上就退回 file」的兜底：两后端存储形态不同，
+#     静默切换会让系统读到另一本（空的）账 —— 宁可启动即失败。
+# ⚠️ 凭据只放 .env（已被 .gitignore 忽略）：不要把连接串写进代码、文档或提交记录。
+MEMBER_STORE = (os.environ.get("MEMBER_STORE", "file") or "file").strip().lower()
+# Mongo 连接串，如 mongodb://用户:口令@主机:端口/?authSource=admin
+MONGO_URL = os.environ.get("MONGO_URL", "").strip()
+# 库名。与同实例上别的项目靠**独立 database** 隔离（连接串里的库名不参与鉴权时用它）。
+MONGO_DB = (os.environ.get("MONGO_DB", "podcast") or "podcast").strip()
+# Redis 连接串，如 redis://:口令@主机:端口/库号（db 号写进 URL 最后一段）
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+# ⚠️ Redis 与别的项目**共用实例**，所有 key 必须带本前缀（见 app/db.py:redis_key）。
+# 这里去掉尾部冒号，拼接时统一补，避免出现 `podcast::session` 这种双冒号。
+REDIS_KEY_PREFIX = (os.environ.get("REDIS_KEY_PREFIX", "podcast") or "podcast").strip().rstrip(":")
+# 连库超时（毫秒）。Mongo 默认 serverSelectionTimeoutMS=30s 会把接口挂死，这里默认 3s 快速失败。
+DB_TIMEOUT_MS = max(200, int(os.environ.get("DB_TIMEOUT_MS", "3000")))
+
 # ─── 双人播客默认静音与生成参数（管理员在 .env 调整即可，无需动代码）───
 # 静音三项（毫秒）：段内分句间 / 同行连续发言间隔 / 说话人切换间隔。
 # 前端不再提供配置 UI，提交时不带 silence/params，由这里的值兜底。
