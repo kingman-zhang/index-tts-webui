@@ -5,6 +5,10 @@
 > 撰写依据：`app/membership/{store,service,routes,pay}.py`、`app/{stores,queue_state,voice_store}.py`、
 > `app/main.py`、`app/config.py` 的实际代码，以及 `data/members/` 的真实数据形态（2026-10-12 实测）。
 
+> **实施进度**：Gate 0 ✅ 前置验证 ｜ Gate 1 ✅ 抽存储适配层 `650dd64` ｜
+> **Gate 2 ✅ 账本切 Mongo `f8abb0d`** ｜ Gate 3 ⏳ 会话入 Redis ｜ Gate 4 ⏳ 对账 / 上线清单。
+> 下文 §5 各 Gate 的清单保留**原始设计**；实际落地与它的差异，见各 Gate 标题下的「实际落地」注。
+
 ---
 
 ## 0. 结论先行
@@ -27,7 +31,7 @@
 
 > ✅ **前置条件已全部验证通过**（2026-10-12 21:40 实测）：Mongo / Redis 均连通，权限、拓扑、
 > 命名空间全部确认 —— 详见 §5.1 实测结果。
-> **需要你拍板的只剩两项**：本期范围、方案路径（§8）。
+> ✅ **两项已拍板**（本期范围、方案路径，见 §8）：**B 分层迁移 + 范围 a**，Gate 1 / Gate 2 已落地。
 
 ---
 
@@ -299,18 +303,17 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
 但本项目**既有的启动约定**就是去代理（`start.sh` 的上游用法），
 **`.env` 的 `NO_PROXY` 应补上 `192.168.31.238`**，避免将来用 httpx 访问同网段服务时踩坑。
 
-#### 5.3 仍需你拍板（2 项）
+#### 5.3 已拍板（2026-10-12；原文保留备查）
 
-**① key / db 隔离**（已定方案，仅告备）：
-- Mongo 用独立 database `podcast` —— 与 `companion` 等现有库天然隔离 ✅
-- Redis 用 **db02 + 统一 key 前缀 `podcast:`** —— 前缀**必须加**，否则 `session:*` 这类通用名会与同实例其他项目互踩
+**① key / db 隔离**：Mongo 用独立库 `podcast` —— 与 `companion` 等现有库天然隔离 ✅；
+Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `session:*` 这类通用名会与同实例其他项目互踩）✅
 
-**② 本期范围**：只做"账本上库 + 会话入 Redis"，**还是**同时接积分商城的真实支付通道？
-（**建议拆开** —— 存储改造与通道接入是两件独立的事，一次只动一处，便于定位问题与回滚。）
+**② 本期范围**：**B 分层迁移 + 范围 a** —— 只做"账本上库 + 会话入 Redis"，**不接真实支付通道**
+（存储改造与通道接入是两件独立的事，一次只动一处，便于定位问题与回滚）✅
 
 ---
 
-### Gate 1 — 抽出存储适配层（不改行为）
+### Gate 1 — 抽出存储适配层（不改行为）✅ **已完成**（提交 `650dd64`）
 
 - 把 `app/membership/store.py` 的函数签名**冻结为接口**（现在已经是纯函数式薄封装，天然适合）。
 - 新增 `app/db.py`：Mongo / Redis 连接管理（懒连接、超时、失败不阻塞启动）。
@@ -318,7 +321,25 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
 - 此时**行为零变化**，`MEMBER_STORE=file`（默认）走原路径。
 - 回归基线：`tests/test_membership.py` 全绿。
 
-### Gate 2 — 账本切 Mongo（核心）
+### Gate 2 — 账本切 Mongo（核心）✅ **已完成**（提交 `f8abb0d`）
+
+> **⚠️ 实际落地与下方原始设计的差异**（以代码为准，避免口径漂移）：
+> - 幂等防线索引实际为 `point_logs.{user_id, ref, kind}` **partial unique** —— 用
+>   `partialFilterExpression` 的 `$or` 列举 `kind ∈ {refund, purchase}`，**不是** `sparse`；
+>   比原设计多一个 `user_id` 维度（同一 ref 在不同用户下互不干扰）。
+> - ⚠️ **`spend` 刻意不纳入幂等索引**：`routes/queue.py:retry_queue_task` 重试时**复用同一
+>   `task_id`** 并重新预扣积分，把 `spend` 纳入会让重试的扣费被自己挡住。改稿退差的 ref
+>   亦**刻意留空**（非幂等操作，每次改稿都该退）。
+> - `users.user_id` / `orders.order_id` / `redeem_codes.code` **不再单独建唯一索引**：
+>   它们已经是 `_id`（`users._id=user_id` / `orders._id=order_id` / `redeem_codes._id=code` /
+>   `point_logs._id=id` / `checkins._id="{uid}:{date}"`），**主键天然唯一**，额外索引是冗余。
+> - 索引总数 = **6 个**（`users.uniq_username`、`users.uniq_email` partial、
+>   `point_logs.uniq_idempotent` partial、`point_logs.user_recent`、`point_logs.recent`、
+>   `orders.by_out_trade_no`），全部由 `tools/init_indexes.py` **幂等**创建，`--check` 供上线自检。
+> - 验证：`TEST_MEMBER_STORE=file|mongo` 双后端下 `test_store_backend.py` 31 项、
+>   `test_membership.py` 56 项全绿；并发签到 / 并发兑码**两后端都只成功 1 次**；全量离线回归 41/41。
+>   ⚠️ **两模式跑出「绿」意义不同**：`checkins`/`redeem_codes` 的唯一索引在 file 后端**不存在**
+>   （JSON 无约束力）⇒「唯一索引消灭锁」**只在 mongo 模式被真正验证**。
 
 - 实现 `store_mongo.py`：`users` / `orders` / `point_logs` / `redeem_codes` / `checkins` 五个集合。
 - **建索引**（这是资金安全的关键）：
@@ -373,28 +394,30 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
 
 ## 7. 改动清单与工作量
 
-| 文件 | 改动 | 规模 |
-|---|---|---|
-| `app/db.py` | **新增**：Mongo/Redis 连接管理 | ~80 行 |
-| `app/membership/store_mongo.py` | **新增**：五个集合的读写实现 | ~180 行 |
-| `app/membership/store.py` | 抽出接口 / 转 dispatch | ~40 行调整 |
-| `app/membership/service.py` | **删锁**，六个"读改写"→ 原子操作 | ~120 行调整 |
-| `app/config.py` + `.env.example` | 加 `MONGO_URL` / `REDIS_URL` / `MEMBER_STORE` | ~20 行 |
-| `requirements.txt` | `+ pymongo`（`+ redis`） | 2 行 |
-| `tools/reconcile.py` | **新增**：对账 | ~100 行 |
-| `tools/init_indexes.py` | **新增**：建索引（幂等，可重复跑） | ~50 行 |
+| 文件 | 改动 | 估算 | 实际 / 状态 |
+|---|---|---|---|
+| `app/db.py` | **新增**：Mongo/Redis 连接管理 | ~80 行 | 175 行 ✅ Gate 1 |
+| `app/membership/store_contract.py` | **新增**：跨后端共享常量与异常 | （原计划未列） | 87 行 ✅ Gate 2 |
+| `app/membership/store_mongo.py` | **新增**：七集合读写实现（原计划写"五个"） | ~180 行 | 456 行 ✅ Gate 2 |
+| `app/membership/store.py` | 抽出接口 / 转 dispatch 门面 | ~40 行 | 门面 30 接口 ✅ Gate 1/2 |
+| `app/membership/store_file.py` | 原 JSON 实现搬移 + 补原子接口 | （原计划未列） | +241 行 ✅ Gate 1/2 |
+| `app/membership/service.py` | **删锁**，六个"读改写"→ 原子操作 | ~120 行 | 434 行变更 ✅ Gate 2 |
+| `app/config.py` + `.env.example` | 加 `MONGO_URL` / `REDIS_URL` / `MEMBER_STORE` | ~20 行 | ✅ Gate 1 |
+| `requirements.txt` | `+ pymongo`（`+ redis`） | 2 行 | ✅ Gate 1 |
+| `tools/init_indexes.py` | **新增**：建索引（幂等，可重复跑） | ~50 行 | 150 行 ✅ Gate 2 |
+| `tools/reconcile.py` | **新增**：对账 | ~100 行 | ⏳ Gate 4 |
 
 **不触碰**：`queue_worker.py`、`mono_runner.py`、`podcast_runner.py`、`seg_cache.py`、`routes/queue.py` 的合成路径、前端。
 （`routes/queue.py` 只有扣费**调用点**不变 —— `charge_for_task` 签名保持一致。）
 
 ---
 
-## 8. 待你确认（2 项）
+## 8. 已确认（2026-10-12 拍板；原文保留备查）
 
-| # | 项 | 选项 | 我的建议 |
+| # | 项 | 选项 | 决定 |
 |---|---|---|---|
-| 1 | **本期范围** | (a) 只做「账本上库 + 会话入 Redis」<br>(b) 同时接真实支付通道 | **(a)** —— 两件事解耦，一次只动一处 |
-| 2 | **方案路径** | (a) **B 分层迁移**（改动收敛在 `membership/`）<br>(b) **C SQLite + 文件锁**（零新增服务） | **(a) B** —— 已有实例现成、部署是多机容器；<br>仅当"永远单机单实例"才选 C |
+| 1 | **本期范围** | (a) 只做「账本上库 + 会话入 Redis」<br>(b) 同时接真实支付通道 | ✅ **(a)** —— 两件事解耦，一次只动一处 |
+| 2 | **方案路径** | (a) **B 分层迁移**（改动收敛在 `membership/`）<br>(b) **C SQLite + 文件锁**（零新增服务） | ✅ **(a) B** —— 已有实例现成、部署是多机容器 |
 
 **已确认、无需再议**（Gate 0 实测）：网络连通 ✅｜Mongo **6.0.28 单节点** ✅｜Redis **7.4.9 standalone / db2 空** ✅｜
 `root@admin` 具备建库建索引权限 ✅｜`podcast` 库全新、与 `companion` 等隔离 ✅。
