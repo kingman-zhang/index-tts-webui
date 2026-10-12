@@ -6,7 +6,8 @@
 > `app/main.py`、`app/config.py` 的实际代码，以及 `data/members/` 的真实数据形态（2026-10-12 实测）。
 
 > **实施进度**：Gate 0 ✅ 前置验证 ｜ Gate 1 ✅ 抽存储适配层 `650dd64` ｜
-> **Gate 2 ✅ 账本切 Mongo `f8abb0d`** ｜ Gate 3 ⏳ 会话入 Redis ｜ Gate 4 ⏳ 对账 / 上线清单。
+> Gate 2 ✅ 账本切 Mongo `f8abb0d` ｜ Gate 3 ⏳ 会话入 Redis ｜
+> **Gate 4 ◐ 对账工具 `tools/reconcile.py` 已落地**，上线清单待部署时执行。
 > 下文 §5 各 Gate 的清单保留**原始设计**；实际落地与它的差异，见各 Gate 标题下的「实际落地」注。
 
 ---
@@ -364,17 +365,28 @@ Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `sessio
 
 ### Gate 4 — 对账工具与安全收尾
 
-- 新增 `tools/reconcile.py`：
-  - 校验 `users.points == sum(point_logs.delta)`（**有账本之后才做得成的事**）
-  - 找出 `status=paid` 但无对应 `purchase` 流水的订单（应为 0）
-  - 找出 `status=pending` 超过 N 小时的订单（人工核对）
-- **上线前检查清单**：
-  - [ ] `MEMBER_MOCK_PAY=0`（并把代码默认值也改成 `0`）
-  - [ ] `PAY_NOTIFY_SECRET` 已配置（否则回调端点 503 —— 这是设计如此，不是 bug）
-  - [ ] `MEMBER_ENFORCE` / `MEMBER_REQUIRE_LOGIN` 取值确认
-  - [ ] Mongo 连接串**只放 `.env`，不入 git**
-  - [ ] `mongodump` 定时备份（账本必须可恢复）
-  - [ ] 后端连接 Mongo 的**超时**已设（默认 30s 会把接口拖死）
+**① 对账工具 `tools/reconcile.py` ✅ 已完成**（2026-10-12）
+
+> 实现比原设计多出两条判据（原设计只有 `Σ delta == points`）：
+> - **权威判据换成「最新一条流水的 `balance_after` == `points`」** —— 因为 `Σ delta` 在
+>   **流水被裁剪**之后必然不等（`MAX_POINT_LOGS_PER_USER=500`，超限丢最旧的），不能当唯一判据。
+>   `Σ delta` 降级为**仅在未裁剪时**适用的严格佐证。
+> - **新增 `balance_after` 链连续性检查** ⇒ 直接定位**漂移开始的那一条**（比"合计不符"更有用）。
+>
+> 其余：订单×流水互证（`paid` 无流水 / 有流水非 `paid` / 挂单超时）、重复的幂等流水、
+> 孤儿流水（`user_id` 已不存在）；CLI 支持 `--user` / `--json` / `--pending-hours` / `--verbose`，
+> 退出码 0 / 1 / 2。测试 `tests/test_reconcile.py`（37 项，含 CLI 真进程冒烟）。
+> ⚠️ 它同时是 Gate 2 「`$inc` 成功、写流水前崩溃」那个**残余窗口的唯一兜底**。
+
+**② 上线前检查清单**（部署时执行）
+- [ ] `tools/init_indexes.py --check` 对**生产库**跑一遍（唯一索引是幂等防线）
+- [ ] `MEMBER_MOCK_PAY=0` —— ⚠️ **范围 a 下暂时不要置 0**：本期不接真实通道，置 0 会让积分商城
+      直接不可用。**接真实支付时**再置（届时也要把代码默认值从 `"1"` 改成 `"0"`）
+- [ ] `PAY_NOTIFY_SECRET` 已配置（否则回调端点 503 —— 设计如此，不是 bug）
+- [ ] `MEMBER_ENFORCE` / `MEMBER_REQUIRE_LOGIN` 取值确认
+- [ ] Mongo 连接串**只放 `.env`，不入 git**
+- [ ] `mongodump` 定时备份（账本必须可恢复）
+- [ ] 后端连 Mongo 的**超时**已设（`DB_TIMEOUT_MS=3000` ✅ Gate 1 已做）
 
 ---
 
@@ -405,7 +417,7 @@ Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `sessio
 | `app/config.py` + `.env.example` | 加 `MONGO_URL` / `REDIS_URL` / `MEMBER_STORE` | ~20 行 | ✅ Gate 1 |
 | `requirements.txt` | `+ pymongo`（`+ redis`） | 2 行 | ✅ Gate 1 |
 | `tools/init_indexes.py` | **新增**：建索引（幂等，可重复跑） | ~50 行 | 150 行 ✅ Gate 2 |
-| `tools/reconcile.py` | **新增**：对账 | ~100 行 | ⏳ Gate 4 |
+| `tools/reconcile.py` | **新增**：对账（判据见 Gate 4） | ~100 行 | 400 行 ✅ Gate 4 |
 
 **不触碰**：`queue_worker.py`、`mono_runner.py`、`podcast_runner.py`、`seg_cache.py`、`routes/queue.py` 的合成路径、前端。
 （`routes/queue.py` 只有扣费**调用点**不变 —— `charge_for_task` 签名保持一致。）
