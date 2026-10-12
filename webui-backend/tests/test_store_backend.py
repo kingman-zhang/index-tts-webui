@@ -88,7 +88,8 @@ def _prepare_mongo() -> None:
     from tools.init_indexes import ensure_indexes
     db = get_mongo_db()
     db.command("ping")
-    for name in ("users", "sessions", "point_logs", "redeem_codes",
+    # ⚠️ 没有 sessions —— 会话自 Gate 3 起归 session_store 管，账本后端不碰它
+    for name in ("users", "point_logs", "redeem_codes",
                  "checkins", "orders", "email_codes"):
         db[name].drop()
     if ensure_indexes(db, verbose=False):
@@ -113,8 +114,14 @@ def main():
     store.save_users({"u_x": {"user_id": "u_x", "points": 7}})
     check("写 → 读 往返", store.load_users().get("u_x", {}).get("points") == 7)
 
-    store.save_sessions({"tok": {"user_id": "u_x"}})
-    check("会话写 → 读 往返", store.load_sessions()["tok"]["user_id"] == "u_x")
+    # 会话（Gate 3）已拆到 session_store —— 账本门面不该再有这两个接口。
+    # 正反两面都断言：既确认新家存在，也确认旧家不再外泄。
+    from app.membership import session_store  # noqa: PLC0415
+    check("会话已移出账本门面（load/save_sessions 不再暴露）",
+          not hasattr(store, "load_sessions") and not hasattr(store, "save_sessions"))
+    check("会话门面可用（BACKEND 与 SESSION_STORE 一致）",
+          session_store.BACKEND == (os.environ.get("SESSION_STORE") or "file"),
+          repr(session_store.BACKEND))
 
     # trim_point_logs：原先 service._trim_logs 直接操作文件私有 API，Gate 1 下沉到 store。
     # 带上**递增的 created_at**：mongo 后端按它倒序裁剪，缺字段顺序就不确定了。

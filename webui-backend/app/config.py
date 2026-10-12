@@ -243,6 +243,16 @@ REDIS_KEY_PREFIX = (os.environ.get("REDIS_KEY_PREFIX", "podcast") or "podcast").
 # 连库超时（毫秒）。Mongo 默认 serverSelectionTimeoutMS=30s 会把接口挂死，这里默认 3s 快速失败。
 DB_TIMEOUT_MS = max(200, int(os.environ.get("DB_TIMEOUT_MS", "3000")))
 
+# ─── 会话存储后端（2026-10-12：会话可从 JSON 文件切到 Redis）────────────
+# 与账本后端 MEMBER_STORE **解耦**：会话进 Redis 和账本进 Mongo 是两件独立的事，
+# 分开配置才能单独切换、单独回滚（一次只动一处，好定位）。见 membership/session_store.py。
+#   * SESSION_STORE=file（默认）—— 会话存 data/members/sessions.json，与历史逐字节一致；
+#   * SESSION_STORE=redis —— 会话进 Redis（key 带 REDIS_KEY_PREFIX），靠 TTL 自动过期，
+#     resolve_token 由「读整份会话表」降为一次 GET；
+#   * 同样**不做**「redis 连不上就退回 file」的兜底 —— 静默切换会让全体用户
+#     读到另一套（空的）会话状态，表现为「集体掉线」却查不出原因。
+SESSION_STORE = (os.environ.get("SESSION_STORE", "file") or "file").strip().lower()
+
 # ─── 双人播客默认静音与生成参数（管理员在 .env 调整即可，无需动代码）───
 # 静音三项（毫秒）：段内分句间 / 同行连续发言间隔 / 说话人切换间隔。
 # 前端不再提供配置 UI，提交时不带 silence/params，由这里的值兜底。

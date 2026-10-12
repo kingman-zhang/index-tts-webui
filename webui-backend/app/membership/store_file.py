@@ -5,13 +5,17 @@
 
 文件布局（DATA_DIR/members/）：
   users.json         用户表 {user_id: {...}}
-  sessions.json      会话表 {token: {...}}
   point_logs.json    积分流水（追加列表，新记录在前）
   redeem_codes.json  优惠码 {code: {...}}
   checkins.json      签到记录 {user_id: {"2026-09-19", ...}}
   orders.json        积分购买订单 {order_id: {...}}（充值链路，2026-10-05 新增）
 
-并发策略：模块级 threading.Lock 串行化读改写；写入采用 tmp+replace 原子替换。
+⚠️ **会话（sessions.json）不在这里** —— 2026-10-12（Gate 3）已拆到 `session_store_file.py`：
+   会话是天然的键值数据、与账本没有事务关系，且需要能单独切 Redis。文件路径与格式
+   都没变，只是换了个模块管（见 session_store.py）。
+
+并发策略：模块级 threading.Lock 串行化读改写；写入采用 tmp+replace 原子替换
+（原语在 `json_store.py`，与会话后端共用）。
 ⚠️ 该锁**只覆盖单进程**（`main.run()` 未传 workers）；多实例部署需换后端，
    见 STORAGE_MIGRATION_PLAN.md。
 
@@ -20,15 +24,14 @@
 
 from __future__ import annotations
 
-import json
-import os
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from ..config import DATA_DIR
+from .json_store import read_json as _read, write_json as _write
 from .store_contract import (
     IDEMPOTENT_KINDS,
     ORDER_PAID,
@@ -44,7 +47,6 @@ MEMBERS_DIR = DATA_DIR / "members"
 MEMBERS_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_FILE = MEMBERS_DIR / "users.json"
-SESSIONS_FILE = MEMBERS_DIR / "sessions.json"
 POINT_LOGS_FILE = MEMBERS_DIR / "point_logs.json"
 REDEEM_CODES_FILE = MEMBERS_DIR / "redeem_codes.json"
 CHECKINS_FILE = MEMBERS_DIR / "checkins.json"
@@ -52,25 +54,8 @@ CHECKINS_FILE = MEMBERS_DIR / "checkins.json"
 _lock = threading.RLock()
 
 
-def _read(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # 损坏时备份原文件并返回默认值，避免整站不可用
-        backup = path.with_suffix(path.suffix + ".corrupt")
-        try:
-            os.replace(path, backup)
-        except OSError:
-            pass
-        return default
-
-
-def _write(path: Path, data: Any) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+# `_read` / `_write` 两个原语已抽到 json_store.py（会话后端共用同一份实现）。
+# 这里保留同名别名，调用点不必改。
 
 
 # ─── 用户 ───────────────────────────────────────────────────
@@ -138,15 +123,9 @@ def update_user_fields(user_id: str, fields: dict) -> Optional[dict]:
 
 
 # ─── 会话 ───────────────────────────────────────────────────
-
-def load_sessions() -> dict:
-    with _lock:
-        return _read(SESSIONS_FILE, {})
-
-
-def save_sessions(sessions: dict) -> None:
-    with _lock:
-        _write(SESSIONS_FILE, sessions)
+#
+# 2026-10-12（Gate 3）：会话已拆到 session_store_file.py / session_store_redis.py，
+# 由 session_store.py 门面按 SESSION_STORE 分派。**本模块不再涉及会话。**
 
 
 # ─── 积分流水 ───────────────────────────────────────────────

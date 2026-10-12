@@ -29,7 +29,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +44,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.config import LOCAL_VOICES_DIR, PRESET_VOICES_DIR  # noqa: E402
 from app.engines import voice_fanout, voice_sync  # noqa: E402
+from app.membership import session_store  # noqa: E402
 from app.membership import store as mstore  # noqa: E402
 from app.routes import voices as voice_routes  # noqa: E402
 
@@ -71,10 +71,9 @@ USER = {"user_id": "u_api00000001", "username": "tester", "nickname": "T",
 OTHER = {"user_id": "u_api00000002", "username": "other", "nickname": "O",
          "points": 0, "disabled": False}
 mstore.save_users({USER["user_id"]: USER, OTHER["user_id"]: OTHER})
-mstore.save_sessions({
-    "tok_api": {"user_id": USER["user_id"], "created_at": "", "expires_ts": time.time() + 3600},
-    "tok_other": {"user_id": OTHER["user_id"], "created_at": "", "expires_ts": time.time() + 3600},
-})
+# 会话自 Gate 3 起归 session_store 管（本测试只借它造两个有效 token）
+for _tok, _u in (("tok_api", USER), ("tok_other", OTHER)):
+    session_store.put_session(_tok, {"user_id": _u["user_id"], "created_at": ""}, 3600)
 AUTH = {"Authorization": "Bearer tok_api"}
 AUTH_OTHER = {"Authorization": "Bearer tok_other"}
 

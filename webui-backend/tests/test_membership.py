@@ -4,12 +4,17 @@
 用法：
     # 文件后端（默认，与生产默认一致）
     python tests/test_membership.py
-    # MongoDB 后端 —— 用**独立测试库** podcast_test，不碰生产库
+    # MongoDB 账本 —— 用**独立测试库** podcast_test，不碰生产库
     TEST_MEMBER_STORE=mongo python tests/test_membership.py
+    # Redis 会话（账本仍可 file）—— 用独立 key 前缀，不碰生产/别人家的 key
+    TEST_SESSION_STORE=redis python tests/test_membership.py
+    # 两个一起（上线时的目标形态）
+    TEST_MEMBER_STORE=mongo TEST_SESSION_STORE=redis python tests/test_membership.py
 
-**同一套断言跑两个后端**，用来证明切换存储后行为等价（Gate 2 的核心验收：
-原先靠三把进程内锁保证的"并发只成功一次"，现在靠存储层的原子能力保证）。
-隔离：临时 DATA_DIR；mongo 模式额外用独立库名并在开跑前清空。
+**同一套断言跑所有后端组合**，用来证明切换存储后行为等价（核心验收：原先靠三把
+进程内锁保证的"并发只成功一次"，现在靠存储层的原子能力保证）。
+账本后端（Gate 2）与会话后端（Gate 3）**互相独立**，所以是 2×2 组合。
+隔离：临时 DATA_DIR；mongo 用独立库名、redis 用独立 key 前缀，开跑前清空。
 """
 
 from __future__ import annotations
@@ -22,33 +27,38 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-# 后端由环境变量切换；默认 file（与生产默认一致）
+# 两个后端各自独立切换；默认都是 file（与生产默认一致）
 TEST_BACKEND = (os.environ.get("TEST_MEMBER_STORE") or "file").strip().lower()
+TEST_SESSION = (os.environ.get("TEST_SESSION_STORE") or "file").strip().lower()
 
 TMP = tempfile.mkdtemp(prefix="wb-member-test-")
 os.environ["DATA_DIR"] = TMP
 os.environ["MEMBER_STORE"] = TEST_BACKEND
+os.environ["SESSION_STORE"] = TEST_SESSION
 os.environ["MEMBER_ADMIN_TOKEN"] = "test-admin-token"
 os.environ["MEMBER_REG_BONUS"] = "100"
 os.environ.pop("MEMBER_CHECKIN_BONUS", None)
 os.environ["MEMBER_ENFORCE"] = "0"
-if TEST_BACKEND == "mongo":
-    # ⚠️ 绝不能用生产库名（podcast）—— 本测试会清空集合
-    os.environ["MONGO_DB"] = os.environ.get("TEST_MONGO_DB", "podcast_test")
-    # 本测试默认屏蔽 .env（保证"默认值回归"不被真实配置干扰）；mongo 模式需要连接串，
-    # 所以只把**连接相关**的那几项在 import app.config **之前**补回来 ——
+if TEST_SESSION == "redis":
+    # 独立前缀：Redis 与别的项目共用实例，绝不能踩默认的 `podcast`
+    os.environ["REDIS_KEY_PREFIX"] = os.environ.get("TEST_REDIS_KEY_PREFIX", "podcast-test-session")
+if TEST_BACKEND == "mongo" or TEST_SESSION == "redis":
+    if TEST_BACKEND == "mongo":
+        # ⚠️ 绝不能用生产库名（podcast）—— 本测试会清空集合
+        os.environ["MONGO_DB"] = os.environ.get("TEST_MONGO_DB", "podcast_test")
+    # 本测试默认屏蔽 .env（保证"默认值回归"不被真实配置干扰）；需要连库时，
+    # 只把**连接相关**的那几项在 import app.config **之前**补回来 ——
     # config / db 都是 import 时读环境变量的，之后再赋值就晚了。
     # （只挑这几项：整份加载 .env 会把 MEMBER_ENFORCE=1 之类的真实配置带进来。）
-    if not os.environ.get("MONGO_URL"):
-        _env_file = Path(__file__).resolve().parents[1] / ".env"
-        if _env_file.exists():
-            for _line in _env_file.read_text(encoding="utf-8").splitlines():
-                _line = _line.strip()
-                if not _line or _line.startswith("#") or "=" not in _line:
-                    continue
-                _k, _, _v = _line.partition("=")
-                if _k.strip() in ("MONGO_URL", "REDIS_URL", "REDIS_KEY_PREFIX"):
-                    os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+    _env_file = Path(__file__).resolve().parents[1] / ".env"
+    if _env_file.exists():
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            if _k.strip() in ("MONGO_URL", "REDIS_URL", "REDIS_KEY_PREFIX"):
+                os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -99,17 +109,48 @@ def _prepare_mongo() -> None:
     from tools.init_indexes import ensure_indexes
     db = get_mongo_db()
     db.command("ping")
-    for name in ("users", "sessions", "point_logs", "redeem_codes",
+    # ⚠️ 没有 sessions —— 会话自 Gate 3 起归 session_store 管（见下 _prepare_redis）
+    for name in ("users", "point_logs", "redeem_codes",
                  "checkins", "orders", "email_codes"):
         db[name].drop()
     if ensure_indexes(db, verbose=False):
         raise SystemExit("测试库索引创建失败（见上方输出）")
-    print(f"（后端 = mongo，库 = {MONGO_DB}：已清空并建好索引）\n")
+    print(f"（账本 = mongo，库 = {MONGO_DB}：已清空并建好索引）")
+
+
+def _cleanup_redis() -> int:
+    """清掉测试前缀下的 key，返回条数（SCAN，不用 KEYS / 不用 FLUSHDB）。"""
+    from app.config import REDIS_KEY_PREFIX
+    from app.db import get_redis
+    r = get_redis()
+    n = 0
+    for k in list(r.scan_iter(match=f"{REDIS_KEY_PREFIX}:*", count=200)):
+        r.delete(k)
+        n += 1
+    return n
+
+
+def _prepare_redis() -> None:
+    """redis 会话模式开跑前：确认连通 + 清空测试前缀。"""
+    from app.config import REDIS_KEY_PREFIX, REDIS_URL
+    if not REDIS_URL:
+        raise SystemExit("REDIS_URL 未配置 —— TEST_SESSION_STORE=redis 需要连接串")
+    if REDIS_KEY_PREFIX in ("", "podcast"):
+        raise SystemExit(
+            f"拒绝用前缀 {REDIS_KEY_PREFIX!r} 跑测试（那是生产前缀）—— 请设置 TEST_REDIS_KEY_PREFIX")
+    from app.db import get_redis
+    get_redis().ping()
+    n = _cleanup_redis()
+    print(f"（会话 = redis，前缀 = {REDIS_KEY_PREFIX}：已清空 {n} 个测试 key）")
 
 
 def main():
     if TEST_BACKEND == "mongo":
         _prepare_mongo()
+    if TEST_SESSION == "redis":
+        _prepare_redis()
+    if TEST_BACKEND != "file" or TEST_SESSION != "file":
+        print(f"（组合：账本 = {TEST_BACKEND}，会话 = {TEST_SESSION}）\n")
     print("── 注册（service 层） ──")
     body, e = svc_register("张三", "pass123", "三哥")
     check("注册成功", body is not None, str(e))
@@ -310,3 +351,10 @@ if __name__ == "__main__":
         sys.exit(main())
     finally:
         shutil.rmtree(TMP, ignore_errors=True)
+        if TEST_SESSION == "redis":
+            # Redis 是与别的项目共用的实例，跑完把测试 key 清干净。
+            # 清理失败不改变退出码（测试结论已经出来了）。
+            try:
+                _cleanup_redis()
+            except Exception as e:  # noqa: BLE001
+                print(f"（收尾清理 redis 测试 key 失败，可忽略：{e}）")

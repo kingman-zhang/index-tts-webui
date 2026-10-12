@@ -17,6 +17,8 @@
 ⚠️ **本模块只做转发，不含业务逻辑**；后端差异全部由被选中的实现承担。
 ⚠️ 刻意**不做**「mongo 连不上就退回 file」这种兜底：两个后端的存储形态不同，
    静默切换会让系统读到另一本（空的）账 —— 宁可启动即失败。
+⚠️ **会话不在这里**（2026-10-12 Gate 3 拆出）：会话是天然的键值数据、与账本无事务
+   关系，且需要能单独切到 Redis（靠 TTL 过期、单键 O(1) 读）。见 `session_store.py`。
 """
 
 from __future__ import annotations
@@ -66,8 +68,6 @@ _REQUIRED_API = (
     # ── 用户 ──
     "load_users", "save_users",
     "create_user", "get_user", "find_user", "update_user_fields",
-    # ── 会话 ──
-    "load_sessions", "save_sessions",
     # ── 积分流水 ──
     "load_point_logs", "append_point_log", "trim_point_logs", "apply_point_delta",
     # ── 优惠码 ──
@@ -127,16 +127,6 @@ def update_user_fields(user_id: str, fields: dict) -> dict | None:
     `updated_at` 之类的业务字段由调用方放进 `fields`（存储层不掺业务语义）。
     """
     return _impl.update_user_fields(user_id, fields)
-
-
-# ─── 会话 ───────────────────────────────────────────────────
-
-def load_sessions() -> dict:
-    return _impl.load_sessions()
-
-
-def save_sessions(sessions: dict) -> None:
-    _impl.save_sessions(sessions)
 
 
 # ─── 积分流水 ───────────────────────────────────────────────

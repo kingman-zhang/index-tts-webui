@@ -25,7 +25,10 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from ..config import logger
+from ..db import DBUnavailable
 from . import store
+from . import session_store
 from .store_contract import ORDER_PAID, ORDER_PENDING
 from .security import hash_password, new_token, verify_password
 from . import mailer
@@ -94,47 +97,72 @@ def public_user(user: dict) -> dict:
 
 
 # ─── 会话 ───────────────────────────────────────────────────
-
-def _purge_expired_sessions(sessions: dict) -> None:
-    now = time.time()
-    expired = [t for t, s in sessions.items() if s.get("expires_ts", 0) < now]
-    for t in expired:
-        del sessions[t]
-
+#
+# 2026-10-12（Gate 3）：会话从账本存储里拆出来，单独走 session_store 门面
+# （`SESSION_STORE=file|redis`）。收益：
+#   * `resolve_token` 从「读整份会话表 + 反序列化」降为**一次单键读**（Redis 下 O(1)）；
+#   * 过期不再需要自己扫表清理（Redis 靠 TTL，file 后端自己惰性清）；
+#   * 「踢某用户全部下线」从「读全表 → 过滤 → 盖回去」变成一个明确的语义操作。
+#
+# 故障语义（两条**刻意不同**，理由见下）：
+#   * 读路径（resolve_token）：存储故障 ⇒ **按未登录处理**（返回 None）+ 一条 warning。
+#     不能抛错 —— 合成提交走的是可选鉴权，会话存储故障不该把公开链路一起打挂。
+#   * 建会话（create_session）：存储故障 ⇒ **MemberError(503)**。用户点了登录，必须
+#     拿到明确反馈，不能是 500，也不能含混成「密码错误」。
+#   * 删会话（登出 / 踢下线）：存储故障 ⇒ **记 warning 后忽略**。故障期间那个 token
+#     本来就通不过鉴权，报错只会让前端卡在「登出中」；会话最终由 TTL 自然过期。
 
 def resolve_token(token: Optional[str]) -> Optional[dict]:
     """token → 用户；无效/过期返回 None（不抛错，供可选鉴权使用）。"""
     if not token:
         return None
-    sessions = store.load_sessions()
-    session = sessions.get(token)
-    if not session or session.get("expires_ts", 0) < time.time():
+    try:
+        session = session_store.get_session(token)
+    except DBUnavailable as e:
+        # 降级为「未登录」，但在日志里与「token 真的无效」区分得开
+        logger.warning("会话存储不可用，本次按未登录处理：%s", e)
+        return None
+    if not session:
         return None
     # 只取这一个用户 —— 不再为了鉴权把整张用户表反序列化一遍（Gate 2）
-    user = store.get_user(session["user_id"])
+    user = store.get_user(session.get("user_id") or "")
     if not user or user.get("disabled"):
         return None
     return user
 
 
 def create_session(user_id: str) -> str:
-    sessions = store.load_sessions()
-    _purge_expired_sessions(sessions)
+    """建会话，返回 token。有效期 = `MEMBER_TOKEN_TTL_DAYS`（默认 30 天）。"""
     token = new_token()
-    sessions[token] = {
-        "user_id": user_id,
-        "created_at": datetime.now().isoformat(),
-        "expires_ts": time.time() + TOKEN_TTL_DAYS * 86400,
-    }
-    store.save_sessions(sessions)
+    try:
+        session_store.put_session(
+            token,
+            {"user_id": user_id, "created_at": datetime.now().isoformat()},
+            TOKEN_TTL_DAYS * 86400,
+        )
+    except DBUnavailable as e:
+        raise MemberError("会话服务暂时不可用，请稍后重试", 503) from e
     return token
 
 
 def revoke_session(token: str) -> None:
-    sessions = store.load_sessions()
-    if token in sessions:
-        del sessions[token]
-        store.save_sessions(sessions)
+    """登出。存储故障不报错（见上方故障语义）。"""
+    try:
+        session_store.delete_session(token)
+    except DBUnavailable as e:
+        logger.warning("登出时会话存储不可用（忽略，会话将由 TTL 过期）：%s", e)
+
+
+def revoke_user_sessions(user_id: str) -> int:
+    """吊销某用户的**全部**会话（改密 / 禁用账号踢下线用），返回条数。
+
+    存储故障不报错（见上方故障语义）—— 故障期间该用户本来也鉴权不过。
+    """
+    try:
+        return session_store.delete_user_sessions(user_id)
+    except DBUnavailable as e:
+        logger.warning("吊销用户会话失败（忽略）：user_id=%s %s", user_id, e)
+        return 0
 
 
 # ─── 注册 / 登录 ────────────────────────────────────────────
@@ -330,13 +358,7 @@ def change_password(user: dict, old_password: str, new_password: str) -> None:
         "updated_at": datetime.now().isoformat(),
     })
     # 改密后吊销该用户全部会话（除当前）——此处简单起见全部吊销，前端会跳登录页
-    sessions = store.load_sessions()
-    changed = False
-    for t in [t for t, s in sessions.items() if s.get("user_id") == user["user_id"]]:
-        del sessions[t]
-        changed = True
-    if changed:
-        store.save_sessions(sessions)
+    revoke_user_sessions(user["user_id"])
 
 
 # ─── 积分核心 ───────────────────────────────────────────────
@@ -780,14 +802,7 @@ def admin_set_disabled(username_or_id: str, disabled: bool) -> dict:
         raise MemberError("用户不存在", 404)
     user = store.update_user_fields(user["user_id"], {"disabled": disabled}) or user
     if disabled:
-        # 禁用即踢下线
-        sessions = store.load_sessions()
-        changed = False
-        for t in [t for t, s in sessions.items() if s.get("user_id") == user["user_id"]]:
-            del sessions[t]
-            changed = True
-        if changed:
-            store.save_sessions(sessions)
+        revoke_user_sessions(user["user_id"])  # 禁用即踢下线
     return public_user(user)
 
 

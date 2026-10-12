@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +24,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import stores  # noqa: E402
+from app.membership import session_store  # noqa: E402
 from app.membership import store as mstore  # noqa: E402
 from app.routes import glossary as glossary_routes  # noqa: E402
 
@@ -35,8 +35,8 @@ client = TestClient(app)
 USER = {"user_id": "u_api", "username": "tester", "nickname": "T",
         "points": 0, "disabled": False}
 mstore.save_users({USER["user_id"]: USER})
-mstore.save_sessions({"tok_api": {"user_id": USER["user_id"],
-                                 "created_at": "", "expires_ts": time.time() + 3600}})
+# 会话自 Gate 3 起归 session_store 管（本测试只借它造一个有效 token）
+session_store.put_session("tok_api", {"user_id": USER["user_id"], "created_at": ""}, 3600)
 
 AUTH = {"Authorization": "Bearer tok_api"}
 ADMIN = {"X-Admin-Token": "test-admin-token"}

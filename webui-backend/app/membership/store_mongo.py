@@ -12,7 +12,9 @@
 | `point_logs` | `id`（`pl_xxx`） | |
 | `redeem_codes` | `code` | |
 | `checkins` | `f"{user_id}:{date}"` | **幂等键就是主键** —— 重复签到撞主键 |
-| `sessions` | `token` | Gate 3 会搬去 Redis（带 TTL） |
+
+⚠️ **会话不在这里**：2026-10-12（Gate 3）已拆到 `session_store.py`（file / Redis 两选）。
+   本后端因此**不再**涉及 `sessions` 集合；若历史库上残留该集合，可直接 drop。
 
 索引（`tools/init_indexes.py` 创建，幂等可重复跑）
 ------------------------------------------------
@@ -89,10 +91,6 @@ def _redeem_codes():
 
 def _checkins():
     return get_mongo_db()["checkins"]
-
-
-def _sessions():
-    return get_mongo_db()["sessions"]
 
 
 def _email_codes():
@@ -173,23 +171,10 @@ def update_user_fields(user_id: str, fields: dict) -> Optional[dict]:
         {"_id": user_id}, {"$set": dict(fields)}, return_document=ReturnDocument.AFTER))
 
 
-# ─── 会话（Gate 3 会整体搬到 Redis）─────────────────────────
-
-def load_sessions() -> dict:
-    return {d["token"]: _clean(d) for d in _sessions().find({})}
-
-
-def save_sessions(sessions: dict) -> None:
-    coll = _sessions()
-    tokens = list(sessions)
-    if tokens:
-        coll.delete_many({"_id": {"$nin": tokens}})
-    else:
-        coll.delete_many({})
-    for token, s in sessions.items():
-        doc = dict(s)
-        doc["token"] = token
-        coll.replace_one({"_id": token}, doc, upsert=True)
+# ─── 会话 ───────────────────────────────────────────────────
+#
+# 2026-10-12（Gate 3）：会话已整体移至 session_store（file / Redis 两选）。
+# **本后端不再涉及会话** —— 会话不进 Mongo。
 
 
 # ─── 积分流水 ───────────────────────────────────────────────

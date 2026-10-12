@@ -240,12 +240,22 @@ def _membership() -> dict:
     购买链路必须报 `schema_version`（1=无购买流程，2=有）与 `packs` 清单
     （列表非空即说明套餐表已随代码上线）。`mock_pay_enabled` 是**安全项**：
     接了真实支付却忘了关它 ⇒ 任何登录用户都能白拿积分，必须能一眼看到。
+
+    `store_backend` / `session_store_backend`（2026-10-12 Gate 2/3 新增）报的是
+    **当前进程实际选中的存储后端**（`file`/`mongo`、`file`/`redis`）—— 同样是取值域：
+    「切没切过去」不该靠猜 .env，也不该靠猜进程有没有重启过。
     """
     try:
         from .membership import service as msvc
+        from .membership import session_store as msess
+        from .membership import store as mstore
 
         return {
             "schema_version": msvc.MEMBERSHIP_SCHEMA_VERSION,
+            # 账本后端（内存中的选择结果，import 期一次决定）
+            "store_backend": mstore.BACKEND,
+            # 会话后端（与账本**独立**，见 membership/session_store.py）
+            "session_store_backend": msess.BACKEND,
             "signup_bonus": msvc.REG_BONUS,
             "checkin_bonus": msvc.CHECKIN_BONUS,
             "points_per_1000_chars": msvc.POINTS_PER_1000_CHARS,
