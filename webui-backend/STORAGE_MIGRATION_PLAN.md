@@ -6,9 +6,11 @@
 > `app/main.py`、`app/config.py` 的实际代码，以及 `data/members/` 的真实数据形态（2026-10-12 实测）。
 
 > **实施进度**：Gate 0 ✅ 前置验证 ｜ Gate 1 ✅ 抽存储适配层 `650dd64` ｜
-> Gate 2 ✅ 账本切 Mongo `f8abb0d` ｜ Gate 3 ⏳ 会话入 Redis ｜
-> **Gate 4 ◐ 对账工具 `tools/reconcile.py` 已落地**，上线清单待部署时执行。
+> Gate 2 ✅ 账本切 Mongo `f8abb0d` ｜ **Gate 3 ✅ 会话入 Redis `4a07304`** ｜
+> **Gate 4 ◐ 对账工具 `tools/reconcile.py` `3e5ef31` 已落地**，上线清单待部署时执行。
 > 下文 §5 各 Gate 的清单保留**原始设计**；实际落地与它的差异，见各 Gate 标题下的「实际落地」注。
+> **代码已全部落地，尚欠的只有「部署时按清单执行」那一档**（Gate 4 的上线清单）。
+> 四个开关两两独立，可任意组合：`MEMBER_STORE=file|mongo` × `SESSION_STORE=file|redis`。
 
 ---
 
@@ -19,7 +21,7 @@
 | 数据 | 去向 | 理由 |
 |---|---|---|
 | **订单 / 积分流水 / 用户余额 / 优惠码 / 签到** | **MongoDB（权威账本）** | 真钱不可逆，必须原子、幂等、可对账、抗多实例 |
-| **会话 token** | **Redis（带 TTL）** | 每请求全量读 JSON 是明确的扩展性瓶颈；TTL 自动过期 |
+| **会话 token** | **Redis（带 TTL）** ✅ Gate 3 | 每请求全量读 JSON 是明确的扩展性瓶颈；TTL 自动过期 |
 | 项目 / 术语表 / 音色元数据 / 收藏 | **暂留文件**（二期再议） | 与钱无关，迁移收益低、风险不为零 |
 | 音频成品 / 分段缓存 / 模型权重 / 参考音频 | **永远留磁盘** | 大文件资产，塞进库是反模式（详见 §3.4） |
 
@@ -356,7 +358,30 @@ Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `sessio
 - 改造 `service.py`：删除 `_user_locks` / `_order_lock` / `_redeem_lock`（约 30 行），把 §3.2 表格里的六个"读改写"换成原子操作。
 - `MEMBER_STORE=mongo` 切换，跑并发回归（现有 `tests/test_membership.py` 里的 Barrier 并发段直接复用）。
 
-### Gate 3 — 会话切 Redis（可选，建议同批做）
+### Gate 3 — 会话切 Redis ✅ 已完成（2026-10-12）
+
+> **实际落地与原始设计的差异**（4 处）
+> 1. 会话**不是**在账本存储里换实现，而是**整体拆到独立门面** `session_store.py`
+>    （`SESSION_STORE=file|redis`，与 `MEMBER_STORE` **解耦**）。理由是「会话进 Redis」与
+>    「账本进 Mongo」没有依赖关系，分开配置才能**单独切换、单独回滚**。
+>    代价：账本门面摘掉了 `load_sessions`/`save_sessions`，`store_mongo` 的 `sessions`
+>    集合作废（历史库上若残留可直接 drop）。
+> 2. 接口做成**细粒度 KV**（`put_session` / `get_session` / `delete_session` /
+>    `delete_user_sessions` / `count_sessions`），不是"读整份 → 改 → 盖回" ——
+>    Redis 后端只有单键 O(1) 才谈得上收益，整表读写会把收益吃光。
+>    因此 `_purge_expired_sessions()` 直接删掉了（redis 靠 TTL、file 自己惰性清）。
+> 3. 「踢某用户全部下线」从「读全表 → 过滤 → 盖回」变成一次 `delete_user_sessions(user_id)`。
+>    Redis 没有二级索引，为此维护 `podcast:user_sessions:{user_id}` 反向索引 ——
+>    `KEYS podcast:session:*` 会阻塞整个实例，**绝不能用**。
+> 4. **降级策略按路径分三种**（原设计只说"让用户重新登录"，太粗）：
+>    | 路径 | Redis 挂掉时 | 为什么 |
+>    |---|---|---|
+>    | 读（`resolve_token`） | 按**未登录**处理（返回 None）+ warning | 合成提交走可选鉴权，会话存储故障不该把公开链路一起打挂 |
+>    | 建（注册 / 登录） | `MemberError(503)` | 用户点了登录，必须拿到明确反馈，不能是 500，也不能含混成「密码错误」 |
+>    | 删（登出 / 踢下线） | 记 warning 后**忽略** | 故障期间那个 token 本来就通不过鉴权；报错只会让前端卡在「登出中」，会话最终由 TTL 过期 |
+>
+> 验收：`test_session_store.py` file 24 / redis 25 全绿；`test_membership.py`
+> 账本×会话 **2×2 组合**（file|mongo × file|redis）各 56/56 全绿。
 
 - `sessions` 从 JSON 挪到 Redis：`podcast:session:{token}` → JSON，TTL = `MEMBER_TOKEN_TTL_DAYS`。
 - `resolve_token()` 从"全量读两个文件"变成"两次 O(1) 查询"（Redis 取会话 + Mongo 取用户）。
@@ -410,11 +435,15 @@ Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `sessio
 |---|---|---|---|
 | `app/db.py` | **新增**：Mongo/Redis 连接管理 | ~80 行 | 175 行 ✅ Gate 1 |
 | `app/membership/store_contract.py` | **新增**：跨后端共享常量与异常 | （原计划未列） | 87 行 ✅ Gate 2 |
-| `app/membership/store_mongo.py` | **新增**：七集合读写实现（原计划写"五个"） | ~180 行 | 456 行 ✅ Gate 2 |
-| `app/membership/store.py` | 抽出接口 / 转 dispatch 门面 | ~40 行 | 门面 30 接口 ✅ Gate 1/2 |
-| `app/membership/store_file.py` | 原 JSON 实现搬移 + 补原子接口 | （原计划未列） | +241 行 ✅ Gate 1/2 |
-| `app/membership/service.py` | **删锁**，六个"读改写"→ 原子操作 | ~120 行 | 434 行变更 ✅ Gate 2 |
-| `app/config.py` + `.env.example` | 加 `MONGO_URL` / `REDIS_URL` / `MEMBER_STORE` | ~20 行 | ✅ Gate 1 |
+| `app/membership/store_mongo.py` | **新增**：七集合读写实现（原计划写"五个"） | ~180 行 | 456 行 ✅ Gate 2；Gate 3 摘掉 `sessions`（→ 六集合） |
+| `app/membership/store.py` | 抽出接口 / 转 dispatch 门面 | ~40 行 | 30 接口 ✅ Gate 1/2；Gate 3 摘掉会话两接口（→ 28） |
+| `app/membership/store_file.py` | 原 JSON 实现搬移 + 补原子接口 | （原计划未列） | +241 行 ✅ Gate 1/2；Gate 3 摘掉会话并把文件原语抽到 `json_store.py` |
+| `app/membership/service.py` | **删锁**，六个"读改写"→ 原子操作 | ~120 行 | 434 行变更 ✅ Gate 2；Gate 3 会话四函数改走 `session_store` |
+| `app/config.py` + `.env.example` | 加 `MONGO_URL` / `REDIS_URL` / `MEMBER_STORE` | ~20 行 | ✅ Gate 1；Gate 3 加 `SESSION_STORE` |
+| `app/membership/json_store.py` | **新增**：JSON 文件原语（两个 json 后端共用） | （原计划未列） | 49 行 ✅ Gate 3 |
+| `app/membership/session_store.py` | **新增**：会话门面（`SESSION_STORE=file\|redis`） | （原计划未列） | 100 行 ✅ Gate 3 |
+| `app/membership/session_store_file.py` | **新增**：会话 JSON 实现（复用 `sessions.json`，格式不变） | （原计划未列） | 107 行 ✅ Gate 3 |
+| `app/membership/session_store_redis.py` | **新增**：会话 Redis 实现（TTL + 反向索引） | （原计划未列） | 118 行 ✅ Gate 3 |
 | `requirements.txt` | `+ pymongo`（`+ redis`） | 2 行 | ✅ Gate 1 |
 | `tools/init_indexes.py` | **新增**：建索引（幂等，可重复跑） | ~50 行 | 150 行 ✅ Gate 2 |
 | `tools/reconcile.py` | **新增**：对账（判据见 Gate 4） | ~100 行 | 400 行 ✅ Gate 4 |
