@@ -113,10 +113,15 @@ async def list_queue(
         _TERMINAL_LIMIT_DEFAULT, ge=0, le=_TERMINAL_LIMIT_MAX,
         description="每个 kind 最多返回的终态任务条数（活跃任务不受此限）",
     ),
+    kind: Optional[str] = Query(
+        None, description="只返回该类型的任务（podcast / mono）；缺省返回全部类型",
+    ),
     user: Optional[dict] = Depends(get_optional_user),
 ):
     """列出当前用户可见的队列任务。排序：运行中 → 排队中(按执行顺序) → 终态(按创建时间倒序)。
 
+    `kind` 可选：页面只展示一种类型（`/podcast` 页 = podcast、`/dubbing` 页 = mono），
+    带上它后端就只返回该类型 —— 另一种类型的任务不再跟着一起传（队列历史越长越省）。
     终态任务按 kind 各截断到 `terminal_limit` 条（活跃任务永远全量），
     响应里的 `has_more` / `terminal_total` 供前端「加载更多」使用。
     """
@@ -128,6 +133,8 @@ async def list_queue(
     for t in qs.queue_tasks.values():
         if _isolation_on() and t.get("member_id") != user["user_id"]:
             continue  # 只看自己的任务
+        if kind and (t.get("kind") or "podcast") != kind:
+            continue  # 只取本页类型
         st = t.get("status")
         # 给每个任务标注 queue_position
         tid = t.get("id", "")
@@ -149,13 +156,15 @@ async def list_queue(
     # 主循环里那条 continue 管不到这个列表（paused 在循环里是被 pass 掉的）。
     paused_tasks = [t for t in qs.queue_tasks.values()
                     if t.get("status") == qs.QueueTaskStatus.PAUSED
+                    and (not kind or (t.get("kind") or "podcast") == kind)
                     and (not _isolation_on() or t.get("member_id") == user["user_id"])]
     paused_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     # 终态任务按创建时间倒序
     terminal_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     terminal_total = len(terminal_tasks)
-    # 按 kind 分桶各留最近 terminal_limit 条：前端是以 kind 分 tab 展示的，
-    # 若在这里做全局截断，任务多的那个 tab 会把另一个 tab 的历史整片挤掉。
+    # 按 kind 分桶各留最近 terminal_limit 条：前端按页面类型分别展示，
+    # 若在这里做全局截断，任务多的那个类型会把另一个类型的历史整片挤掉。
+    # （带 kind 请求时分桶只剩一个桶，等价于直接截断；不带 kind 时保持原行为。）
     # ⚠️ 活跃任务（queued/running/syncing/paused）永不截断 —— 截掉它们等于用户
     # 看不见自己的队列，而且排队任务拖得动、删得掉都依赖它在列表里。
     if terminal_total > terminal_limit:
@@ -166,15 +175,18 @@ async def list_queue(
         terminal_tasks.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     tasks = running_tasks + queued_tasks + paused_tasks + terminal_tasks
     # queue_order / current 都是**全局**执行态（含其他用户的任务），响应里必须按成员过滤，
-    # 否则会把别人的 task_id 暴露给前端。
+    # 否则会把别人的 task_id 暴露给前端。带 kind 时同样只回该类型的槽位。
     my_queued_ids = [tid for tid in qs.queue_order
                      if (t := qs.queue_tasks.get(tid))
                      and t.get("status") == qs.QueueTaskStatus.QUEUED
+                     and (not kind or (t.get("kind") or "podcast") == kind)
                      and (not _isolation_on() or t.get("member_id") == user["user_id"])]
     cur = qs.current_task_id
-    if cur and _isolation_on():
+    if cur:
         ct = qs.queue_tasks.get(cur)
-        if not ct or ct.get("member_id") != user["user_id"]:
+        if kind and ct and (ct.get("kind") or "podcast") != kind:
+            cur = None  # 正在合成的是另一类型的任务，本页不显示
+        elif _isolation_on() and (not ct or ct.get("member_id") != user["user_id"]):
             cur = None  # 正在合成的是别人的任务，不暴露
     # ⚠️ 必须**浅拷贝后再剔除**：tasks 里的 dict 就是 qs.queue_tasks 中的实况对象，
     # 直接 pop 会破坏内存里的任务（合成与持久化都依赖 lines）。

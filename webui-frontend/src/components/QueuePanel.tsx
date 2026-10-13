@@ -34,7 +34,8 @@ interface QueuePanelProps {
   collapsed: boolean;
   onToggle: () => void;
   refreshKey: number;
-  /** 初始展示的任务类型 tab：播客页传 podcast、配音页传 mono（默认 podcast） */
+  /** 本页对应的任务类型：播客页传 podcast、配音页传 mono（默认 podcast）。
+   *  队列只展示该类型的任务，跟随页面模式，不提供类型切换。 */
   defaultKind?: "podcast" | "mono";
 }
 
@@ -56,7 +57,9 @@ const STATUS_CONFIG: Record<string, {
 
 export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "podcast" }: QueuePanelProps) {
   const [tasks, setTasks] = useState<QueueTask[]>([]);
-  const [activeKind, setActiveKind] = useState<"podcast" | "mono">(defaultKind);
+  // 任务类型跟随页面模式（/podcast 或 /dubbing）：队列只展示本类型的任务，
+  // 不再提供「双人播客 / 单人配音」切换 tab。
+  const activeKind = defaultKind;
   const [current, setCurrent] = useState<string | null>(null);
   const [queued, setQueued] = useState(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -92,21 +95,28 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   const [hasMore, setHasMore] = useState(false);
   const [terminalTotal, setTerminalTotal] = useState(0);
 
-  const load = async (force = false) => {
-    if (isDraggingRef.current) return; // 拖拽中不刷新
+  // 返回值：本次快照里是否还有「会自己变化」的任务（排队 / 合成中 / 等待同步）。
+  // 轮询间隔据此自适应 —— 没有活跃任务时不必 2s 空跑（见下方 tick）。
+  const load = async (force = false): Promise<boolean> => {
+    if (isDraggingRef.current) return true; // 拖拽中不刷新（保持活跃节奏）
     // 轮询叠加保护：上一次请求还没返回就跳过本次 tick。
     // 实测线上 /api/queue 单次要 4–24s、1.16MB，而间隔只有 2s ⇒ 稳态下 5–12 个请求
     // 同时在途、数 MB 数据同时在传，把带宽吃光（音色上传失败、任务提交变慢同源于此）。
     // 用户主动操作走 load(true) 不受此限，否则点完按钮界面要等十几秒才刷新。
-    if (!force && inFlightRef.current) return;
+    if (!force && inFlightRef.current) return true;
     inFlightRef.current = true;
+    let hasActive = true;
     try {
-      const r = await api.listQueue(terminalLimitRef.current);
+      // 带 kind：只取本页类型的任务（后端支持后不再传回另一种类型的全量历史）。
+      const r = await api.listQueue(terminalLimitRef.current, activeKind);
       setTasks(r.tasks);
       setCurrent(r.current);
       setQueued(r.queued);
       setHasMore(r.has_more);
       setTerminalTotal(r.terminal_total);
+      hasActive = r.tasks.some(
+        t => t.status === "queued" || t.status === "running" || t.status === "syncing"
+      );
       // 任务从进行中转为失败时自动弹出报错详情（首次加载不弹，避免历史失败打扰）
       const prev = prevStatusRef.current;
       if (prev.size > 0) {
@@ -135,24 +145,31 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
         }
       }
     } catch {
-      // 网络错误/401 等交给下一轮轮询重试
+      // 网络错误/401 等交给下一轮轮询重试（按「活跃」处理，免得退避到长间隔后迟迟不恢复）
     } finally {
       inFlightRef.current = false;
     }
+    return hasActive;
   };
 
   useEffect(() => {
-    // 自适应轮询：基线 2s；单次响应超过 3s 就按 2×耗时退避（上限 30s）。
-    // 用链式 setTimeout 而非 setInterval —— 只有这样才能按上一次的实际耗时调整间隔，
+    // 自适应轮询，三段式：
+    //   ① 有活跃任务：基线 2s；单次响应超过 3s 就按 2×耗时退避（上限 30s）
+    //   ② 无活跃任务（全是终态 / 空队列）：没有东西会自己变 ⇒ 退避到 20s，不空跑
+    //   ③ 用户操作（提交/删除/暂停…）走 load(true)，不受上述间隔约束，立即刷新
+    // 用链式 setTimeout 而非 setInterval —— 只有这样才能按上一次的实际情况调整间隔，
     // 让"后端慢"自动转化为"轮询变疏"，而不是请求叠罗汉。
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
       const t0 = Date.now();
-      await load();
+      const hasActive = await load();
       if (cancelled) return;
       const cost = Date.now() - t0;
-      timer = setTimeout(tick, cost > 3000 ? Math.min(cost * 2, 30000) : 2000);
+      timer = setTimeout(
+        tick,
+        cost > 3000 ? Math.min(cost * 2, 30000) : (hasActive ? 2000 : 20000)
+      );
     };
     void tick();
     return () => {
@@ -172,12 +189,8 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
 
   const kindOf = (t: QueueTask): "podcast" | "mono" => (t.kind === "mono" ? "mono" : "podcast");
 
-  // 当前 tab 的任务列表（双人播客 / 单人配音 各自独立）
+  // 当前页面对应类型的任务列表（队列只展示本类型的任务）
   const kindTasks = tasks.filter(t => kindOf(t) === activeKind);
-  const kindCounts = {
-    podcast: tasks.filter(t => kindOf(t) === "podcast").length,
-    mono: tasks.filter(t => kindOf(t) === "mono").length,
-  };
 
   const stats = {
     total: kindTasks.length,
@@ -213,7 +226,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
               <CardTitle>任务队列</CardTitle>
               {stats.queued > 0 && <Badge color="amber">{stats.queued} 排队</Badge>}
             </div>
-            <span className="text-xs text-gray-400">{tasks.length} 个任务</span>
+            <span className="text-xs text-gray-400">{kindTasks.length} 个任务</span>
           </div>
         </CardHeader>
       </Card>
@@ -250,7 +263,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
     if (clearing) return;
     setClearing(true);
     try {
-      // 只清空当前 tab 的类型：双人播客与单人配音各自独立，
+      // 只清空本页类型的任务：双人播客与单人配音各自独立，
       // 否则在播客页点一下会把配音页的已完成任务一起清掉。
       await api.clearFinishedTasks(activeKind);
       await load(true);
@@ -344,7 +357,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
       return;
     }
 
-    // 仅重排当前 tab 类型的排队任务（其他类型任务的相对顺序由后端保持）
+    // 仅重排本页类型的排队任务（其他类型任务的相对顺序由后端保持）
     const kindQueued = tasks.filter(t => t.status === "queued" && kindOf(t) === activeKind).map(t => t.id);
     const fromIdx = kindQueued.indexOf(draggingId);
     const toIdx = kindQueued.indexOf(targetId);
@@ -404,7 +417,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
           <div className="flex min-w-0 items-center gap-2">
             <ListVideo className="w-4 h-4 shrink-0 text-indigo-600" />
             <CardTitle>任务队列</CardTitle>
-            <span className="text-[0.75rem] text-gray-400">{kindCounts[activeKind] ? `共 ${kindCounts[activeKind]} 个` : ""}</span>
+            <span className="text-[0.75rem] text-gray-400">{stats.total ? `共 ${stats.total} 个` : ""}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {stats.queued > 0 && (
@@ -419,31 +432,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
             )}
           </div>
         </div>
-        <div className="mt-2 flex items-center gap-1 border-t border-gray-100 pt-2" onClick={e => e.stopPropagation()}>
-          <button
-            className={cn(
-              "rounded-md px-2.5 py-1 text-[0.75rem] font-medium transition-colors",
-              activeKind === "podcast"
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "text-gray-500 hover:bg-gray-100"
-            )}
-            onClick={() => setActiveKind("podcast")}
-          >
-            双人播客 <b>{kindCounts.podcast}</b>
-          </button>
-          <button
-            className={cn(
-              "rounded-md px-2.5 py-1 text-[0.75rem] font-medium transition-colors",
-              activeKind === "mono"
-                ? "bg-indigo-600 text-white shadow-sm"
-                : "text-gray-500 hover:bg-gray-100"
-            )}
-            onClick={() => setActiveKind("mono")}
-          >
-            单人配音 <b>{kindCounts.mono}</b>
-          </button>
-        </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-1" onClick={e => e.stopPropagation()}>
+        <div className="mt-2 flex flex-wrap items-center gap-1 border-t border-gray-100 pt-2" onClick={e => e.stopPropagation()}>
           <button className={filterButtonClass("success")} onClick={() => toggleFilter("success")}>成功 <b>{stats.success}</b></button>
           <button className={filterButtonClass("failed")} onClick={() => toggleFilter("failed")}>失败 <b>{stats.failed}</b></button>
           <button className={filterButtonClass("queued")} onClick={() => toggleFilter("queued")}>排队 <b>{stats.queued}</b></button>
@@ -717,7 +706,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
 
       {/* 清空确认：批量删除，影响面（条数）必须写清楚 ——
           这类按钮不在单个任务行上，看不到"删的是谁"，更容易误点。
-          类型不写进文案：弹窗只在当前 tab 上弹，tab 本身就写着类型。 */}
+          类型不写进文案：弹窗只在当前页面上弹，页面本身就写着类型。 */}
       <ConfirmDialog
         open={!!clearConfirm}
         busy={clearing}

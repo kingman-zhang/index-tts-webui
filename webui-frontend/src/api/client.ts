@@ -334,11 +334,16 @@ export const api = {
   // terminalLimit：每个 kind 最多取多少条**终态**任务（活跃任务不受限）。
   // 队列无条数上限也无自动清理，历史任务会反复挤占带宽 ⇒ 默认只取最近一批，
   // 用户点「加载更多」时放大这个值。响应里的 has_more/terminal_total 驱动该按钮。
-  async listQueue(terminalLimit?: number): Promise<{
+  // kind：只取当前页面类型的任务（播客页 podcast / 配音页 mono）。带上它后端就不再
+  // 把另一种类型的任务一起传回来 —— 队列历史越长，省下的带宽越多。
+  async listQueue(terminalLimit?: number, kind?: "podcast" | "mono"): Promise<{
     tasks: any[]; count: number; terminal_total: number; has_more: boolean;
     current: string | null; queued: number; queue_order: string[];
   }> {
-    const q = terminalLimit != null ? `?terminal_limit=${terminalLimit}` : "";
+    const params = new URLSearchParams();
+    if (terminalLimit != null) params.set("terminal_limit", String(terminalLimit));
+    if (kind) params.set("kind", kind);
+    const q = params.toString() ? `?${params.toString()}` : "";
     return fetchJSON(`${BASE}/queue${q}`);
   },
   async getQueueTask(taskId: string): Promise<any> {
