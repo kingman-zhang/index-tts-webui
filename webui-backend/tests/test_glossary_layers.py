@@ -22,6 +22,8 @@ sys.path.insert(0, str(BACKEND_ROOT))
 _TMP = tempfile.mkdtemp(prefix="glossary_test_")
 os.environ["DATA_DIR"] = _TMP
 os.environ.pop("MEMBER_ADMIN_TOKEN", None)
+# 本节会直接读任务文件（file 后端特有）⇒ 显式钉住 QUEUE_STORE=file
+os.environ["QUEUE_STORE"] = "file"
 
 from app import stores  # noqa: E402
 
@@ -145,6 +147,7 @@ def main() -> None:
 
     from app import mono_runner, queue_state as qs
     from app import queue_worker as qw
+    from app import queue_store_file  # B1：磁盘细节在 file 后端（不再是 queue_state.queue_file）
 
     tid = "q_glossary_smoke"
     lines = [{"speaker": "A", "text": "我们要游说对方", "emotion": None}]
@@ -176,7 +179,7 @@ def main() -> None:
     check("task['lines'] 保持用户原文",
           task["lines"][0]["text"] == "我们要游说对方", task["lines"][0]["text"])
     check("落盘的任务 JSON 也是原文",
-          json.loads(qs.queue_file(tid).read_text(encoding="utf-8"))["lines"][0]["text"]
+          json.loads(queue_store_file.task_path(tid).read_text(encoding="utf-8"))["lines"][0]["text"]
           == "我们要游说对方")
     qs.queue_tasks.pop(tid, None)
 

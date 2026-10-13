@@ -13,7 +13,7 @@ from . import queue_state as qs
 # number_norm 的开关是**模块级**读 os.environ 的（.env 未加载就会落到缺省值，
 # 表现为「.env 里明明写了 NAME_PUNCT_NORMALIZE=0 却不生效」）。
 # build_info 自己就把 config 放在首位，这里跟着同一顺序。
-from .config import GLOSSARY_PATH, TTS_URL, args, http_client, logger
+from .config import GLOSSARY_PATH, QUEUE_WORKER_ENABLED, TTS_URL, args, http_client, logger
 from . import build_info
 from . import seg_cache
 from .queue_worker import process_queue, resume_polling
@@ -95,7 +95,19 @@ async def on_startup():
             GLOSSARY_PATH,
         )
 
-    # 1. 从磁盘加载持久化的队列任务
+    # 1. 从存储后端加载持久化的队列任务
+    # ⚠️ QUEUE_WORKER_ENABLED=0 ⇒ 下面 1/1.5/2/3/4 全跳过（load_persisted_tasks 自己
+    # 也会早返回，但**必须在同一处控制**：步骤 1.5 的孤儿段缓存清理是按
+    # `queue_tasks.keys()` 判定的 —— 没加载就是把本机所有段缓存都当孤儿删掉）。
+    # 见 QUEUE_MIGRATION_PLAN.md §5。
+    if not QUEUE_WORKER_ENABLED:
+        logger.warning(
+            "[startup] 本实例不接管任务队列（QUEUE_WORKER_ENABLED=0）——"
+            "不加载、不恢复轮询、不清理段缓存、不调度；队列接口返回空、提交返回 503"
+        )
+        logger.info("[startup] queue disabled: 0 tasks total")
+        return
+
     load_persisted_tasks()
 
     # 1.5 清理「孤儿」分段缓存（G4）

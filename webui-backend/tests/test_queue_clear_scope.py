@@ -35,6 +35,8 @@ os.environ["MEMBER_POINTS_PER_1000_CHARS"] = "10"
 os.environ["MEMBER_REG_BONUS"] = "1000"
 os.environ["MEMBER_MIN_CHARGE"] = "1"
 os.environ["TTS_URL"] = "http://127.0.0.1:59999"  # 无服务，秒拒
+# 本测试会直接读任务文件（file 后端特有）⇒ 显式钉住 QUEUE_STORE=file
+os.environ["QUEUE_STORE"] = "file"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -42,6 +44,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 from app import queue_state as qs  # noqa: E402
+from app import queue_store_file  # noqa: E402  （B1：磁盘细节在 file 后端）
 from app.routes import queue as queue_routes  # noqa: E402
 from app.membership import service  # noqa: E402
 
@@ -134,7 +137,7 @@ def main():
     left = ids()
     for tid, label in ((p_success, "播客-成功"), (p_failed, "播客-失败"), (p_interrupted, "播客-中断")):
         check(f"已清掉 {label}", tid not in left)
-        check(f"磁盘文件已删 {label}", not qs.queue_file(tid).exists())
+        check(f"磁盘文件已删 {label}", not queue_store_file.task_path(tid).exists())
     for tid, label in ((m_success, "配音-成功"), (m_cancelled, "配音-已取消"), (m_interrupted, "配音-中断")):
         check(f"保留 {label}（kind 隔离）", tid in left)
     check("保留 播客-排队中（非终态）", p_queued in left)

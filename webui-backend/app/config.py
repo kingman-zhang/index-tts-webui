@@ -218,9 +218,12 @@ GLOSSARY_USERS_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_PRESETS_DIR = DATA_DIR / "voice-presets"
 VOICE_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
 
-# 队列持久化目录
+# 队列持久化目录（`QUEUE_STORE=file` 时是真源；mongo 后端下退化为文件残留）
 QUEUE_DIR = DATA_DIR / "queue"
 QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+# ⚠️ **已退役**（2026-10-13 B1）：排队顺序改为任务自带的 `seq` 字段。
+# 这个常量只剩一处读用途 —— `queue_store_file.load_legacy_order()` 读它给
+# 「缺 seq 的老任务」定序（只读不写）。见 QUEUE_MIGRATION_PLAN.md §3.2。
 QUEUE_ORDER_FILE = QUEUE_DIR / "_queue_order.json"
 
 # ─── 存储后端（2026-10-12：账本可从 JSON 文件切到 MongoDB）────────────
@@ -262,6 +265,24 @@ SESSION_STORE = (os.environ.get("SESSION_STORE", "file") or "file").strip().lowe
 #   * 同样**不做**「mongo 连不上就退回 file」的兜底 —— 两后端存储形态不同，
 #     静默切换会让系统读到另一份（空的）内容，用户表现为「项目/词条全不见了」。
 CONTENT_STORE = (os.environ.get("CONTENT_STORE", "file") or "file").strip().lower()
+
+# ─── 队列存储后端（2026-10-13 B1：队列任务可切 MongoDB）────────────
+# 与账本 / 会话 / 内容三个后端**互相独立**，可任意组合。完整方案见
+# webui-backend/QUEUE_MIGRATION_PLAN.md。
+#   * QUEUE_STORE=file（默认）—— 与历史行为**完全一致**（data/queue/*.json）；
+#   * QUEUE_STORE=mongo —— 任务进 `queue_tasks` 集合（动因是**多实例部署**）；
+#   * 同样**不做**「连不上就退回 file」的兜底 —— 静默切换会让用户看到「任务全没了」。
+QUEUE_STORE = (os.environ.get("QUEUE_STORE", "file") or "file").strip().lower()
+
+# 本实例是否接管任务队列（B2 之前的**防互踩保险**，见方案文档 §5）：
+#   1（默认）= 启动加载队列 / 恢复轮询 / 自动调度 / 清理孤儿段缓存；
+#   0        = 完全不碰队列（GET 返回空，POST /api/queue/submit 返回 503）。
+# ⚠️ 一旦用上共享存储（MEMBER/CONTENT/QUEUE 任一 = mongo），**多实例时只能在一台**
+#    上开 1：第二个实例会把对方 `running` 的任务读进内存、改判 interrupted，
+#    用户再点删除就会把对方正在写的任务从库里删掉。B2 上租约后才谈多台并发。
+QUEUE_WORKER_ENABLED = os.environ.get("QUEUE_WORKER_ENABLED", "1").strip().lower() not in (
+    "", "0", "false", "no", "off",
+)
 
 # ─── 双人播客默认静音与生成参数（管理员在 .env 调整即可，无需动代码）───
 # 静音三项（毫秒）：段内分句间 / 同行连续发言间隔 / 说话人切换间隔。

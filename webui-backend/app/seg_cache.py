@@ -63,7 +63,7 @@ def default_root() -> Path:
 
 
 def _safe(task_id: str) -> str:
-    """任务 id → 目录名（与 queue_state.queue_file 同口径，防路径穿越）。"""
+    """任务 id → 目录名（与 queue_store_file.task_path 同口径，防路径穿越）。"""
     return task_id.replace("/", "_").replace("\\", "_")
 
 

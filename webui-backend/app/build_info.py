@@ -73,6 +73,10 @@ WATCHED = (
     "app/number_norm.py",
     "app/stores.py",
     "app/queue_worker.py",
+    # 队列存储门面（2026-10-13 B1 新增）：**这个文件在 source_mtimes 里出现本身就
+    # 证明「队列上库」的新代码已加载** —— 旧版本没有它，字段会是 null。
+    # 同 voice_sync.py 的用法（见下）。
+    "app/queue_store.py",
     # 引擎层（2026-09-29 拆出）：协议/能力声明、注册表、选择策略
     "app/engines/base.py",
     "app/engines/factory.py",
@@ -280,6 +284,32 @@ def _membership() -> dict:
         return {"schema_version": 0, "error": str(e)}
 
 
+def _queue() -> dict:
+    """任务队列的存储后端与执行器开关（2026-10-13 B1 队列上库）。
+
+    报**取值域**而非只报开关（理由同 membership 的 `*_store_backend`）：
+    - `queue_store_backend`：任务当前落在 `file`（data/queue/*.json）还是 `mongo`
+      （`queue_tasks` 集合）—— 「切没切过去」不该靠猜 `.env`，也不该靠猜进程有没有重启；
+    - `queue_worker_enabled`：**本实例接不接管队列** —— 多实例部署时只能一台开，
+      这一项就是「谁在跑队列」的判据（B2 上租约前，开了两台会互相踩）；
+    - `tasks_in_memory` / `queued`：本进程内存里的任务与排队数，
+      为 0 而库里有数据 ⇒ 多半是 `QUEUE_WORKER_ENABLED=0` 或读库失败。
+    """
+    try:
+        from . import queue_state as qs
+        from . import queue_store
+
+        return {
+            "queue_store_backend": queue_store.BACKEND,
+            "queue_worker_enabled": bool(_config.QUEUE_WORKER_ENABLED),
+            "tasks_in_memory": len(qs.queue_tasks),
+            "queued": len(qs.queue_order),
+        }
+    except Exception as e:  # 自检不能把进程带崩
+        logger.warning("[build_info] queue 读取失败: %s", e)
+        return {"queue_store_backend": "?", "queue_worker_enabled": False, "error": str(e)}
+
+
 def _engines() -> dict:
     """注册了哪些引擎、各自能力、是否在熔断冷却中。
 
@@ -317,5 +347,6 @@ def snapshot() -> dict:
         "text_pipeline": _text_switches(),
         "voice_management": _voice_management(),
         "membership": _membership(),
+        "queue": _queue(),
         "engines": _engines(),
     }

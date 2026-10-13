@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from .. import queue_state as qs
-from ..config import logger
+from ..config import QUEUE_WORKER_ENABLED, logger
 from ..models import QueueTaskModel, QueueTaskNameModel
 from ..queue_worker import process_queue, refund_task_points, validate_queue_lines
 from ..membership import get_optional_user
@@ -49,6 +49,12 @@ async def submit_to_queue(
     会员扣费：MEMBER_ENFORCE=1 时登录用户按字数预扣积分，余额不足返回 402；
     未开启时行为与旧版完全一致（不含任何会员逻辑）。
     """
+    # 本实例不接管队列（B2 之前的防互踩保险，见 QUEUE_MIGRATION_PLAN.md §5）：
+    # 收了任务也永远没人执行（另一台要等自己重启才会看到），不如明确拒绝。
+    if not QUEUE_WORKER_ENABLED:
+        raise HTTPException(
+            503, "本实例未启用任务队列（QUEUE_WORKER_ENABLED=0），请提交到已启用的实例"
+        )
     validate_queue_lines(task.lines)
     task_id = f"q_{uuid.uuid4().hex[:10]}"
     entry = {
@@ -67,6 +73,8 @@ async def submit_to_queue(
         "message": "排队中",
         "created_at": datetime.now().isoformat(),
         "cancel_requested": False,
+        # 排队位次（B1：持久化在任务自带的 seq 字段里，不再用 _queue_order.json）
+        "seq": qs.next_seq(),
     }
     if member_svc.ENFORCE or member_svc.REQUIRE_LOGIN:
         if not user:
@@ -300,6 +308,8 @@ async def retry_queue_task(task_id: str, user: Optional[dict] = Depends(get_opti
         "started_at": None,
         "finished_at": None,
         "retried_at": datetime.now().isoformat(),
+        # 重新排队 = 回到队尾（B1：seq 取全局最大值+1）
+        "seq": qs.next_seq(),
     })
     if task_id not in qs.queue_order:
         qs.queue_order.append(task_id)
@@ -364,6 +374,7 @@ async def resume_paused_tasks(kind: Optional[str] = None, user: Optional[dict] =
         task["status"] = qs.QueueTaskStatus.QUEUED
         task["message"] = "已重新排队"
         task["resumed_at"] = datetime.now().isoformat()
+        task["seq"] = qs.next_seq()   # 恢复 = 回到队尾（B1：顺序持久化在 seq 字段）
         qs.queue_order.append(task_id)
         qs.persist_task(task_id)
         resumed.append(task_id)

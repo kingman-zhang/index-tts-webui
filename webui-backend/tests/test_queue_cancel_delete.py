@@ -30,6 +30,8 @@ os.environ["MEMBER_ENFORCE"] = "1"
 os.environ["MEMBER_POINTS_PER_1000_CHARS"] = "10"
 os.environ["MEMBER_REG_BONUS"] = "100"
 os.environ["TTS_URL"] = "http://127.0.0.1:59999"  # 无服务，秒拒
+# 本测试会直接读写任务文件（file 后端特有）⇒ 显式钉住 QUEUE_STORE=file
+os.environ["QUEUE_STORE"] = "file"
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
@@ -37,6 +39,7 @@ sys.path.insert(0, str(BACKEND_ROOT))
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 from app import queue_state as qs  # noqa: E402
+from app import queue_store_file  # noqa: E402  （B1：磁盘细节在 file 后端）
 from app.routes import queue as queue_routes  # noqa: E402
 from app.membership import service  # noqa: E402
 
@@ -91,7 +94,7 @@ def load_task(task_id: str, auth: dict) -> dict:
 
 
 def write_task_file(task: dict) -> None:
-    qs.queue_file(task["id"]).write_text(json.dumps(task, ensure_ascii=False), encoding="utf-8")
+    queue_store_file.save_task(task)
 
 
 def make_zombie(task_id: str) -> dict:
@@ -162,7 +165,7 @@ def main():
         check("响应标记 orphan", r.json().get("orphan") is True, r.text)
         check("响应是 deleted 不是 cancelling", "deleted" in r.json(), r.text)
         check("内存里已移除", zombie_id not in qs.queue_tasks)
-        check("磁盘文件已删除", not qs.queue_file(zombie_id).exists())
+        check("磁盘文件已删除", not queue_store_file.task_path(zombie_id).exists())
         check("僵尸删除退了积分 → 回 100", balance(token) == 100, str(balance(token)))
 
         r = client.get(f"/api/queue/{zombie_id}", headers=auth)

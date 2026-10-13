@@ -18,10 +18,14 @@
 | `point_logs` | `created_at` | — | 对账/列表按时间倒序 |
 | `orders` | `out_trade_no` | — | 真实回调只回传商户订单号，按它找单 |
 | `projects` | `owner_id,updated_at` | — | 项目列表（某用户 + 最近更新倒序）|
+| `queue_tasks` | `status,seq` | — | **B2 的调度索引**：原子取队首（按 seq）|
+| `queue_tasks` | `member_id,created_at` | — | 队列列表（某用户 + 时间倒序）|
 
 ⚠️ `projects` 索引只在 `CONTENT_STORE=mongo` 时才纳入检查/创建（见 `active_indexes()`）——
    file 模式下 projects 集合根本不存在，硬要求它会让 `--check` 误报。
    `glossary` / `favorites` 用 `_id`（`GLOBAL` | user_id）做主键，无需额外索引。
+⚠️ `queue_tasks` 的两个索引同理，只在 `QUEUE_STORE=mongo` 时纳入。
+   `queue_tasks` 用 `_id = task_id` 做主键（主键索引 Mongo 自带）。
 
 ⚠️ `point_logs` 的唯一索引**刻意只覆盖 `refund` / `purchase`**（`partialFilterExpression`）：
    - 只有这两类会被"重复触发"（退款重试、支付平台回调重推）；
@@ -47,7 +51,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.config import CONTENT_STORE, MONGO_DB  # noqa: E402
+from app.config import CONTENT_STORE, MONGO_DB, QUEUE_STORE  # noqa: E402
 from app.db import DBUnavailable, get_mongo_db  # noqa: E402
 from app.membership.store_contract import IDEMPOTENT_KINDS  # noqa: E402
 
@@ -84,16 +88,31 @@ CONTENT_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
      {"name": "by_owner_recent"}),
 )
 
+# 队列集合（`QUEUE_STORE=mongo` 才要求存在；见 queue_store_mongo.py）
+#   - by_status_seq：**B2 的调度索引** —— `find_one_and_update({status:"queued"},
+#     sort=[("seq",1)])` 一次原子取队首。B1 用不到（load_all_tasks 是全表扫，
+#     启动一次、量级小），但索引属于 schema，随数据模型一起声明比事后补好。
+#   - by_member_recent：列表查询形状（某用户 + 时间倒序）。
+QUEUE_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
+    ("queue_tasks", [("status", 1), ("seq", 1)],
+     {"name": "by_status_seq"}),
+    ("queue_tasks", [("member_id", 1), ("created_at", -1)],
+     {"name": "by_member_recent"}),
+)
+
 
 def active_indexes() -> tuple:
     """当前配置下**应当存在**的索引集合。
 
-    内容索引只在 `CONTENT_STORE=mongo` 时才要求 —— 否则 file 模式下
-    `--check` 会因为「projects 集合不存在」而误报缺失。
+    内容 / 队列索引只在各自开关为 `mongo` 时才要求 —— 否则 file 模式下
+    `--check` 会因为「集合不存在」而误报缺失。
     """
+    extra: tuple = ()
     if CONTENT_STORE == "mongo":
-        return MEMBER_INDEXES + CONTENT_INDEXES
-    return MEMBER_INDEXES
+        extra += CONTENT_INDEXES
+    if QUEUE_STORE == "mongo":
+        extra += QUEUE_INDEXES
+    return MEMBER_INDEXES + extra
 
 
 def _describe(keys: list, opts: dict) -> str:
@@ -156,6 +175,7 @@ def main() -> int:
 
     print(f"MongoDB 库 = {MONGO_DB}；模式 = {'只检查' if check_only else '创建/校验'}")
     print(f"内容后端 = CONTENT_STORE={CONTENT_STORE}（{'含' if CONTENT_STORE == 'mongo' else '不含'} projects 索引）")
+    print(f"队列后端 = QUEUE_STORE={QUEUE_STORE}（{'含' if QUEUE_STORE == 'mongo' else '不含'} queue_tasks 索引）")
     print(f"期望索引 = {len(active_indexes())} 个\n")
 
     bad = check_indexes(db) if check_only else ensure_indexes(db)
