@@ -142,7 +142,14 @@ def stale_sources() -> list[str]:
 
 
 def _data_dir() -> dict:
-    """数据目录与词表真源的位置。指错目录 = 词条全部静默失效，必须能一眼核对。"""
+    """数据目录与词表真源的位置。指错目录 = 词条全部静默失效，必须能一眼核对。
+
+    另报 `content_store_backend`（2026-10-13 二期 A/B）：项目 / 术语表 / 收藏
+    当前落在 `file` 还是 `mongo`。同 `store_backend`，报的是**取值域**而非开关 ——
+    「切没切过去」不该靠猜 `.env`，也不该靠猜进程重启没重启。
+    ⚠️ 注意：`glossary_path` 只有 file 后端才是真源；mongo 后端下它只是文件残留。
+    """
+    from . import stores
     from .config import GLOSSARY_PATH
 
     return {
@@ -150,6 +157,8 @@ def _data_dir() -> dict:
         "data_dir_exists": _config.DATA_DIR.exists(),
         "glossary_path": str(GLOSSARY_PATH),
         "glossary_exists": GLOSSARY_PATH.exists(),
+        # 内容后端（file | mongo）—— 见 app/stores.py
+        "content_store_backend": stores.BACKEND,
     }
 
 

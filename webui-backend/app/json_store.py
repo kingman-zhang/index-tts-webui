@@ -1,13 +1,18 @@
-"""JSON 文件存储原语：读 + 原子写（账本与会话两个 json 后端共用）。
+"""JSON 文件存储原语：读 + 原子写（账本 / 会话 / 内容三个 json 后端共用）。
 
 为什么单独一层
 --------------
 本模块只做「把 JSON 文件读出来 / 原子地写回去」，**不含任何业务语义、不带锁**。
-`store_file.py`（账本）与 `session_store_file.py`（会话）都用它 —— 否则
-「文件损坏时先备份再返回默认值」这类细节会被抄成两份、各自演化。
+`membership/store_file.py`（账本）、`membership/session_store_file.py`（会话）与
+`stores_file.py`（项目/术语表/收藏）都用它 —— 否则「文件损坏时先备份再返回默认值」
+这类细节会被抄成三份、各自演化。
 锁仍由各后端自己持有（它们的临界区范围不同，不能共用一把）。
 
-⚠️ 只给**同目录的 json 后端**用；业务层一律走 `store.py` / `session_store.py` 门面。
+位置：放 `app/` 顶层而不是 `app/membership/` 内 —— 它是**跨域通用原语**，
+被内容层（`stores_file.py`）复用时不该顺带把整个 membership 包初始化一遍。
+
+⚠️ 只给**各 `*_file.py` 后端**用；业务层一律走对应门面（`store.py` /
+`session_store.py` / `stores.py`）。
 """
 
 from __future__ import annotations

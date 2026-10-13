@@ -1,17 +1,18 @@
-"""项目管理端点（原 server.py「项目管理」分区，行为不变）。"""
+"""项目管理端点（原 server.py「项目管理」分区，行为不变）。
+
+存储走 `app/stores.py` 门面（`CONTENT_STORE=file|mongo`）—— 本文件不碰磁盘。
+"""
 
 from __future__ import annotations
 
-import json
 import re
 
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ..config import PROJECTS_DIR
 from ..models import ProjectModel
-from ..stores import load_project, project_path, save_project
+from ..stores import delete_project, list_projects, load_project, save_project
 from ..membership import get_optional_user
 from ..membership import service as member_svc
 
@@ -37,23 +38,12 @@ def _owned(data: dict, user: Optional[dict]) -> bool:
 
 
 @router.get("/api/projects")
-async def list_projects(user: Optional[dict] = Depends(get_optional_user)):
+async def list_projects_route(user: Optional[dict] = Depends(get_optional_user)):
     """列出当前用户保存的项目。"""
     _require_user(user)
-    projects = []
-    for f in sorted(PROJECTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if not _owned(data, user):
-                continue
-            projects.append({
-                "id": data.get("id"),
-                "name": data.get("name", "未命名"),
-                "updated_at": data.get("updated_at"),
-                "line_count": len(data.get("lines", [])),
-            })
-        except Exception:
-            continue
+    # 隔离未开启 ⇒ None（返回全部，与历史一致）；开启 ⇒ 只看自己的
+    owner_id = user["user_id"] if _isolation_on() else None
+    projects = list_projects(owner_id)
     return {"projects": projects, "count": len(projects)}
 
 
@@ -94,12 +84,12 @@ async def update_project(project_id: str, project: ProjectModel, user: Optional[
 
 
 @router.delete("/api/projects/{project_id}")
-async def delete_project(project_id: str, user: Optional[dict] = Depends(get_optional_user)):
+async def delete_project_route(project_id: str, user: Optional[dict] = Depends(get_optional_user)):
     """删除项目。"""
     existing = load_project(project_id)
     if existing is None or not _owned(existing.model_dump(), user):
         raise HTTPException(404, "项目不存在")
-    project_path(project_id).unlink()
+    delete_project(project_id)
     return {"deleted": project_id}
 
 

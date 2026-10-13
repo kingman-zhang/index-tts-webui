@@ -13,7 +13,6 @@ from fastapi.responses import FileResponse
 
 from ..config import (
     DATA_DIR,
-    FAVORITES_PATH,
     LOCAL_VOICES_DIR,
     PRESET_VOICES_DIR,
     TTS_URL,
@@ -21,6 +20,7 @@ from ..config import (
     logger,
 )
 from ..models import FavoriteVoicesModel, SynthesizeRequestModel
+from ..stores import load_favorites, save_favorites
 from ..membership import get_optional_user
 from ..membership import service as member_svc
 from ..engines import voice_fanout
@@ -71,29 +71,14 @@ def _voice_owner_ok(filename: str, user: Optional[dict]) -> bool:
     return bool(meta) and meta.get("owner_id") == user["user_id"]
 
 
-def _favorites_path_for(user: Optional[dict]) -> str:
-    """收藏音色按用户分文件；未登录/隔离未开启用共享文件（旧行为）。"""
+def _favorites_owner(user: Optional[dict]) -> Optional[str]:
+    """收藏音色的归属 user_id；未登录 / 隔离未开启时返回 None（用共享那份，旧行为）。
+
+    实际读写在 `app/stores.py` 门面（`CONTENT_STORE=file|mongo`）—— 本文件不碰磁盘。
+    """
     if user and _isolation_on():
-        return str(DATA_DIR / f"favorites_{user['user_id']}.json")
-    return str(FAVORITES_PATH)
-
-
-def _load_favorite_paths(path: Optional[str] = None) -> list[str]:
-    path = path or str(FAVORITES_PATH)
-    if not Path(path).exists():
-        return []
-    try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-        return list(dict.fromkeys(p for p in value if isinstance(p, str))) if isinstance(value, list) else []
-    except (OSError, json.JSONDecodeError):
-        logger.warning("无法读取收藏音色文件: %s", path)
-        return []
-
-
-def _save_favorite_paths(paths: list[str], path: Optional[str] = None) -> list[str]:
-    normalized = list(dict.fromkeys(p for p in paths if isinstance(p, str) and p.strip()))
-    Path(path or str(FAVORITES_PATH)).write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
-    return normalized
+        return user["user_id"]
+    return None
 
 
 def _user_voice_records(owner_id: str) -> list[dict]:
@@ -181,13 +166,13 @@ async def list_voices(user: Optional[dict] = Depends(get_optional_user)):
 @router.get("/api/voice-favorites")
 async def list_voice_favorites(user: Optional[dict] = Depends(get_optional_user)):
     """读取当前用户持久化的收藏音色路径。"""
-    return {"paths": _load_favorite_paths(_favorites_path_for(user))}
+    return {"paths": load_favorites(_favorites_owner(user))}
 
 
 @router.put("/api/voice-favorites")
 async def save_voice_favorites(payload: FavoriteVoicesModel, user: Optional[dict] = Depends(get_optional_user)):
     """覆盖保存当前用户的收藏音色路径。"""
-    return {"paths": _save_favorite_paths(payload.paths, _favorites_path_for(user))}
+    return {"paths": save_favorites(payload.paths, _favorites_owner(user))}
 
 
 @router.post("/api/voices/upload")

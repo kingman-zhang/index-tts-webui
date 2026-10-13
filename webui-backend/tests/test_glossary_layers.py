@@ -96,21 +96,25 @@ def main() -> None:
     m = stores.load_glossary(None)
     check("重复 original 只保留一条", len(m) == 1, str(pairs(m)))
 
-    print("\n── 8. 用户库文件路径安全 ──")
-    p = stores.glossary_user_path("../../etc/passwd")
-    check("路径穿越被过滤", ".." not in str(p) and p.parent == stores.GLOSSARY_USERS_DIR,
-          str(p))
-    p2 = stores.glossary_user_path("u_1")
+    print("\n── 8. 用户库文件路径安全（file 后端特性）──")
+    # 「路径穿越」只在 file 后端存在；mongo 后端用 _id 主键，没有路径面。
+    # 所以这里直接测文件后端实现（它总是可 import，与当前 CONTENT_STORE 无关）。
+    from app import stores_file
+    p = stores_file.glossary_user_path("../../etc/passwd")
+    check("路径穿越被过滤",
+          ".." not in str(p) and p.parent == stores_file.GLOSSARY_USERS_DIR, str(p))
+    p2 = stores_file.glossary_user_path("u_1")
     check("正常 user_id 路径正确", p2.name == "u_1.json", str(p2))
     try:
-        stores.glossary_user_path("")
+        stores_file.glossary_user_path("")
         check("空 user_id 抛错", False)
     except ValueError:
         check("空 user_id 抛错", True)
 
     print("\n── 9. 未登录用户写入无效（不创建文件）──")
     stores.save_user_glossary("u_1", [{"original": "x", "replacement": "y"}])
-    check("用户库文件已创建", stores.glossary_user_path("u_1").exists())
+    if stores.BACKEND == "file":
+        check("用户库文件已创建", stores_file.glossary_user_path("u_1").exists())
     check("其他用户互不干扰", stores.load_user_glossary("u_9") == [])
 
     print("\n── 10. 合成用副本：替换不回写原文 ──")

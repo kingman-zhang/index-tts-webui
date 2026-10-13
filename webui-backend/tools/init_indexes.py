@@ -17,6 +17,11 @@
 | `point_logs` | `user_id,created_at` | — | 某用户流水分页与裁剪 |
 | `point_logs` | `created_at` | — | 对账/列表按时间倒序 |
 | `orders` | `out_trade_no` | — | 真实回调只回传商户订单号，按它找单 |
+| `projects` | `owner_id,updated_at` | — | 项目列表（某用户 + 最近更新倒序）|
+
+⚠️ `projects` 索引只在 `CONTENT_STORE=mongo` 时才纳入检查/创建（见 `active_indexes()`）——
+   file 模式下 projects 集合根本不存在，硬要求它会让 `--check` 误报。
+   `glossary` / `favorites` 用 `_id`（`GLOBAL` | user_id）做主键，无需额外索引。
 
 ⚠️ `point_logs` 的唯一索引**刻意只覆盖 `refund` / `purchase`**（`partialFilterExpression`）：
    - 只有这两类会被"重复触发"（退款重试、支付平台回调重推）；
@@ -42,12 +47,12 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.config import CONTENT_STORE, MONGO_DB  # noqa: E402
 from app.db import DBUnavailable, get_mongo_db  # noqa: E402
 from app.membership.store_contract import IDEMPOTENT_KINDS  # noqa: E402
-from app.config import MONGO_DB  # noqa: E402
 
 # (集合, 键, 选项) —— 选项里显式给 name，好让 --check 按名字比对
-INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
+MEMBER_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
     ("users", [("username", 1)],
      {"unique": True, "name": "uniq_username"}),
     ("users", [("email", 1)],
@@ -71,6 +76,25 @@ INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
      {"name": "by_out_trade_no"}),
 )
 
+# 内容集合（`CONTENT_STORE=mongo` 才要求存在；见 stores_mongo.py）
+#   - projects：按「谁的项目 + 最近更新」列表查询（stores_mongo 的 $sort updated_at）
+#   - glossary / favorites：用 _id（GLOBAL | user_id）做主键，Mongo 自带主键索引
+CONTENT_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
+    ("projects", [("owner_id", 1), ("updated_at", -1)],
+     {"name": "by_owner_recent"}),
+)
+
+
+def active_indexes() -> tuple:
+    """当前配置下**应当存在**的索引集合。
+
+    内容索引只在 `CONTENT_STORE=mongo` 时才要求 —— 否则 file 模式下
+    `--check` 会因为「projects 集合不存在」而误报缺失。
+    """
+    if CONTENT_STORE == "mongo":
+        return MEMBER_INDEXES + CONTENT_INDEXES
+    return MEMBER_INDEXES
+
 
 def _describe(keys: list, opts: dict) -> str:
     s = ", ".join(f"{k}:{v}" for k, v in keys)
@@ -81,14 +105,15 @@ def _describe(keys: list, opts: dict) -> str:
     return s
 
 
-def ensure_indexes(db, verbose: bool = True) -> int:
+def ensure_indexes(db, verbose: bool = True, indexes: tuple | None = None) -> int:
     """创建清单里的全部索引（幂等）。返回**失败个数**（0 = 全就位）。
 
     抽成函数是为了让测试也能用**同一份索引定义** —— 否则测试里另写一套，
     两边迟早漂移（那样唯一索引就白建了）。
+    `indexes=None` 时按当前配置取 `active_indexes()`；测试要覆盖内容索引时显式传入。
     """
     failures = 0
-    for coll_name, keys, opts in INDEXES:
+    for coll_name, keys, opts in (indexes if indexes is not None else active_indexes()):
         coll = db[coll_name]
         name = opts["name"]
         if name in {i["name"] for i in coll.list_indexes()}:
@@ -106,10 +131,10 @@ def ensure_indexes(db, verbose: bool = True) -> int:
     return failures
 
 
-def check_indexes(db, verbose: bool = True) -> int:
+def check_indexes(db, verbose: bool = True, indexes: tuple | None = None) -> int:
     """只检查不创建。返回**缺失个数**（0 = 全就位）。"""
     missing = 0
-    for coll_name, keys, opts in INDEXES:
+    for coll_name, keys, opts in (indexes if indexes is not None else active_indexes()):
         name = opts["name"]
         if name in {i["name"] for i in db[coll_name].list_indexes()}:
             if verbose:
@@ -130,7 +155,8 @@ def main() -> int:
         return 2
 
     print(f"MongoDB 库 = {MONGO_DB}；模式 = {'只检查' if check_only else '创建/校验'}")
-    print(f"期望索引 = {len(INDEXES)} 个\n")
+    print(f"内容后端 = CONTENT_STORE={CONTENT_STORE}（{'含' if CONTENT_STORE == 'mongo' else '不含'} projects 索引）")
+    print(f"期望索引 = {len(active_indexes())} 个\n")
 
     bad = check_indexes(db) if check_only else ensure_indexes(db)
 

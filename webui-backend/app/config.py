@@ -253,6 +253,16 @@ DB_TIMEOUT_MS = max(200, int(os.environ.get("DB_TIMEOUT_MS", "3000")))
 #     读到另一套（空的）会话状态，表现为「集体掉线」却查不出原因。
 SESSION_STORE = (os.environ.get("SESSION_STORE", "file") or "file").strip().lower()
 
+# ─── 内容存储后端（2026-10-13 二期 A/B：项目 / 术语表 / 收藏音色可切 MongoDB）───
+# 与账本（MEMBER_STORE）、会话（SESSION_STORE）**三者互相独立**，可任意组合。
+# 上库动因是**多实例部署**：这些数据原先是「本地 JSON 文件 + 进程内锁」，
+# 多实例下用户在 A 实例存的东西 B 实例读不到。见 stores.py / STORAGE_MIGRATION_PLAN.md §9。
+#   * CONTENT_STORE=file（默认）—— 与历史行为**完全一致**，不引入任何新依赖；
+#   * CONTENT_STORE=mongo —— 项目/术语表/收藏进 MongoDB（集合见 stores_mongo.py）；
+#   * 同样**不做**「mongo 连不上就退回 file」的兜底 —— 两后端存储形态不同，
+#     静默切换会让系统读到另一份（空的）内容，用户表现为「项目/词条全不见了」。
+CONTENT_STORE = (os.environ.get("CONTENT_STORE", "file") or "file").strip().lower()
+
 # ─── 双人播客默认静音与生成参数（管理员在 .env 调整即可，无需动代码）───
 # 静音三项（毫秒）：段内分句间 / 同行连续发言间隔 / 说话人切换间隔。
 # 前端不再提供配置 UI，提交时不带 silence/params，由这里的值兜底。

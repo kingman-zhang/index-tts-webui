@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import DATA_DIR
-from .json_store import read_json as _read, write_json as _write
+from ..json_store import read_json as _read, write_json as _write
 from .store_contract import (
     IDEMPOTENT_KINDS,
     ORDER_PAID,

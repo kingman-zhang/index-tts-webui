@@ -1,16 +1,17 @@
-# 存储改造计划：把「账本」搬进 MongoDB，会话搬进 Redis
+# 存储改造计划：账本 → MongoDB，会话 → Redis，内容 → MongoDB
 
-> 起因：准备接入真实支付。现状是纯 JSON 文件 + 进程内 `threading.Lock`。
+> 起因：准备接入真实支付；后续又确认**要上多实例**。现状是纯 JSON 文件 + 进程内 `threading.Lock`。
 > 本文回答两个问题：**要不要上数据库**、**怎么上**。
-> 撰写依据：`app/membership/{store,service,routes,pay}.py`、`app/{stores,queue_state,voice_store}.py`、
-> `app/main.py`、`app/config.py` 的实际代码，以及 `data/members/` 的真实数据形态（2026-10-12 实测）。
+> 撰写依据：`app/membership/{store,service,routes,pay}.py`、`app/{stores,stores_file,stores_mongo,queue_state,voice_store}.py`、
+> `app/main.py`、`app/config.py` 的实际代码，以及 `data/` 的真实数据形态（2026-10-12 / 10-13 实测）。
 
 > **实施进度**：Gate 0 ✅ 前置验证 ｜ Gate 1 ✅ 抽存储适配层 `650dd64` ｜
 > Gate 2 ✅ 账本切 Mongo `f8abb0d` ｜ **Gate 3 ✅ 会话入 Redis `4a07304`** ｜
-> **Gate 4 ◐ 对账工具 `tools/reconcile.py` `3e5ef31` 已落地**，上线清单待部署时执行。
+> **Gate 4 ◐ 对账工具 `tools/reconcile.py` `3e5ef31` 已落地**，上线清单待部署时执行 ｜
+> **Gate 5 ✅ 内容（项目/术语表/收藏）可切 Mongo**（二期 A/B，见 §9）。
 > 下文 §5 各 Gate 的清单保留**原始设计**；实际落地与它的差异，见各 Gate 标题下的「实际落地」注。
 > **代码已全部落地，尚欠的只有「部署时按清单执行」那一档**（Gate 4 的上线清单）。
-> 四个开关两两独立，可任意组合：`MEMBER_STORE=file|mongo` × `SESSION_STORE=file|redis`。
+> **三个开关互相独立**，可任意组合：`MEMBER_STORE=file|mongo` × `SESSION_STORE=file|redis` × `CONTENT_STORE=file|mongo`。
 
 ---
 
@@ -22,7 +23,8 @@
 |---|---|---|
 | **订单 / 积分流水 / 用户余额 / 优惠码 / 签到** | **MongoDB（权威账本）** | 真钱不可逆，必须原子、幂等、可对账、抗多实例 |
 | **会话 token** | **Redis（带 TTL）** ✅ Gate 3 | 每请求全量读 JSON 是明确的扩展性瓶颈；TTL 自动过期 |
-| 项目 / 术语表 / 音色元数据 / 收藏 | **暂留文件**（二期再议） | 与钱无关，迁移收益低、风险不为零 |
+| **项目 / 术语表 / 收藏** | **MongoDB** ✅ Gate 5 | 二期 A/B：**多实例**下文件版「A 实例存的 B 实例读不到」；见 §9 |
+| 音色元数据 / 音色预设 | **暂留文件**（未纳批） | 与音频实体、tts-server 广播强绑定，单独一批做（见 §9.2） |
 | 音频成品 / 分段缓存 / 模型权重 / 参考音频 | **永远留磁盘** | 大文件资产，塞进库是反模式（详见 §3.4） |
 
 **关键澄清：触发上库的不是"数据太多"。**
@@ -35,6 +37,8 @@
 > ✅ **前置条件已全部验证通过**（2026-10-12 21:40 实测）：Mongo / Redis 均连通，权限、拓扑、
 > 命名空间全部确认 —— 详见 §5.1 实测结果。
 > ✅ **两项已拍板**（本期范围、方案路径，见 §8）：**B 分层迁移 + 范围 a**，Gate 1 / Gate 2 已落地。
+> ✅ **二期已拍板**（2026-10-13，见 §9）：**A（项目）+ B（术语表 / 收藏）先做；C（队列）单独做**。
+> ⚠️ 二期的**动因与一期不同** —— 不再是"接支付"，而是**多实例部署**（见 §9.1）。
 
 ---
 
@@ -462,6 +466,90 @@ Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `sessio
 
 **已确认、无需再议**（Gate 0 实测）：网络连通 ✅｜Mongo **6.0.28 单节点** ✅｜Redis **7.4.9 standalone / db2 空** ✅｜
 `root@admin` 具备建库建索引权限 ✅｜`podcast` 库全新、与 `companion` 等隔离 ✅。
+
+---
+
+## 9. 二期：内容上库（2026-10-13，Gate 5）
+
+### 9.1 为什么做（动因与一期**不同**）
+
+一期（账本 / 会话）的动因是**接真实支付**；二期的动因是**多实例部署** ——
+用户明确：「用上数据库就是考虑到后面需要多实例」。
+
+多实例下，仍落在**本地磁盘 + 进程内锁**的数据会出现这种故障：**用户在 A 实例存的
+项目，切到 B 实例就读不到**（每个实例各有一份自己的 `data/`）。一期把账本 / 会话
+搬走之后，这一点反而更显眼：**钱一致了，别的还不一致**。
+
+⚠️ 诚实说明：单实例部署下这些文件**完全够用**，现有代码也能正常工作 —— 上库是
+**为多实例买保险**，不是修 bug。
+
+### 9.2 范围（已拍板）
+
+| 批次 | 内容 | 状态 |
+|---|---|---|
+| **A** | 项目（`data/projects/*.json`） | ✅ 本批 |
+| **B** | 术语表（全局 + 每用户）、收藏音色 | ✅ 本批 |
+| **C** | 任务队列（`data/queue/*.json`） | ⏳ **单独做**（连带 worker 调度模型，改动面大） |
+| — | 音色元数据（`data/voices/<uid>/index.json`）、音色预设 | ⏳ 未纳批 —— 与音频实体、tts-server 广播强绑定，单独评估 |
+| — | 邮箱验证码（`data/members/email_codes.json`） | ⏳ 未纳批 —— 短 TTL 临时数据，**Redis 比 Mongo 更合适**；且它现在是「mongo 走集合 / file 走文件」的双口径 |
+| — | 音频成品 / 分段缓存 / 模型 / 参考音频 | ❌ **永不进库**（§3.4） |
+
+### 9.3 落地形态
+
+新增第四个开关 `CONTENT_STORE=file|mongo`（默认 `file`），与 `MEMBER_STORE` /
+`SESSION_STORE` **互相独立、可任意组合**。
+
+模块与一期同构：
+```
+app/stores.py        门面（dispatch + 术语表纯逻辑：合并 / 中点变体展开 / 按序替换）
+app/stores_file.py   文件后端（原 stores.py 的 IO 部分 + 收藏）
+app/stores_mongo.py  MongoDB 后端
+app/json_store.py    JSON 读 / 原子写原语（从 membership/ 提到顶层，三个 json 后端共用）
+```
+
+集合设计（`_id` 即业务主键 ⇒ 天然「一人一份」且 upsert 幂等，**无需唯一索引**）：
+
+| 集合 | `_id` | 文档 |
+|---|---|---|
+| `projects` | `project_id`（`proj_*`） | 项目全文（含 `owner_id`） |
+| `glossary` | `"GLOBAL"` 或 user_id | `{terms: [...]}` |
+| `favorites` | `"GLOBAL"` 或 user_id | `{paths: [...]}` |
+
+### 9.4 与原始设计的差异（避免口径漂移）
+
+1. `favorites` **从 `routes/voices.py` 收编进存储层** —— 原先散在路由里、直接读写文件，
+   上库时必须先收拢（否则路由会绕过门面）。`stores.py` 从此不只管项目 + 术语表。
+2. 项目列表的排序依据：文件版原本按**磁盘 mtime**，现统一为**业务字段 `updated_at`**
+   —— mongo 没有 mtime，两个后端必须用同一判据才谈得上「行为等价」。
+3. mongo 的项目列表用 aggregation 的 `$size` **服务端算行数**，不把 `lines` 正文拉回来。
+4. `app/json_store.py` 从 `app/membership/` **提到 `app/` 顶层** —— 它被内容层复用，
+   留在 membership 包里会顺带把整个会员栈初始化一遍。
+
+### 9.5 切换步骤（**必须**带迁移）
+
+⚠️ `data/glossary.json`（全局术语库，超管维护、**对所有用户生效**）当前就有内容，
+**切换前不迁移 = 用户看到「词条全没了」**。
+
+```bash
+cd webui-backend
+# 1) 先 dry-run 看读到了什么
+env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy NO_PROXY='*' \
+    python tools/migrate_content.py --dry-run
+# 2) 真灌（幂等，可重复跑；只加不减）
+env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy NO_PROXY='*' \
+    python tools/migrate_content.py
+# 3) 建索引（CONTENT_STORE=mongo 时才会把 projects 索引纳入）
+env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy NO_PROXY='*' \
+    python tools/init_indexes.py
+# 4) 改 .env：CONTENT_STORE=mongo，重启后端
+# 5) 用 /api/version 的 content_store_backend 核对是否已是 mongo
+```
+
+### 9.6 回滚
+
+改回 `CONTENT_STORE=file` 并重启即可 —— **文件没被删**，`stores_file.py` 就是原来的
+实现，逐字节一致。⚠️ 但要注意：切回后**看不到**切到 mongo 之后新写的内容
+（那是两份独立的数据）。真要双向，得反向迁一次。
 
 ---
 

@@ -1,51 +1,133 @@
-"""项目与术语表的 JSON 文件存储（自 server.py 拆出，行为不变）。"""
+"""项目 / 术语表 / 收藏音色的存储**门面** + 术语表纯逻辑。
+
+门面（按 `CONTENT_STORE` 分派）
+──────────────────────────────
+import 期一次性选定后端（`stores_file` / `stores_mongo`），之后**只做转发**，
+不含任何后端分支。取值域 `file`（默认）| `mongo`；非法值**启动即报错**、
+不静默回退 —— 两个后端的存储形态不同，静默切换会让用户看到「项目、词条全没了」。
+
+为什么与账本分开关
+──────────────────
+账本（`MEMBER_STORE`）、会话（`SESSION_STORE`）、内容（`CONTENT_STORE`）
+互相独立、可任意组合。三者的迁移节奏与风险不同：账本是钱、会话是登录态、
+内容是可重建的用户素材 —— 一次只动一处才好定位、好回滚。
+
+纯逻辑（后端无关，两个后端共用同一套语义）
+──────────────────────────────────────────
+术语表的「全局骨架 + 用户覆盖」合并、中点码位变体展开、按序 `str.replace` 替换。
+
+⚠️ 上库动因＝**多实例部署**（文件版在 A 实例存的东西 B 实例读不到）。
+   见 STORAGE_MIGRATION_PLAN.md §9。
+"""
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import uuid
 from datetime import datetime
 from itertools import product
-from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 # 注意 import 顺序：config 必须排在 name_punct 之前 —— name_punct 在模块级读取
 # .env（NAME_PUNCT_TARGET / NAME_PUNCT_NORMALIZE），而 .env 是由 config 载入的。
-from .config import GLOSSARY_PATH, GLOSSARY_USERS_DIR, PROJECTS_DIR, logger
+from .config import CONTENT_STORE, logger
 from . import name_punct
 from .models import ProjectModel
 
 
-# ─── 项目存储 ───────────────────────────────────────────────
+# ─── 后端分派（import 期一次决定）────────────────────────────
 
-def project_path(project_id: str) -> Path:
-    return PROJECTS_DIR / f"{project_id}.json"
+if CONTENT_STORE == "file":
+    from . import stores_file as _impl
+elif CONTENT_STORE == "mongo":
+    from . import stores_mongo as _impl
+else:
+    raise RuntimeError(
+        f"未知的 CONTENT_STORE={CONTENT_STORE!r}；取值域 file | mongo。"
+        "（两后端存储形态不同，不支持静默回退 —— 请检查 .env）"
+    )
 
+# 门面必须完整转发的接口；缺一个就在 import 期炸，而不是等到某个接口 500。
+_REQUIRED_API = (
+    # 项目
+    "save_project", "load_project", "list_projects", "delete_project",
+    # 术语表
+    "load_global_glossary", "save_global_glossary",
+    "load_user_glossary", "save_user_glossary",
+    # 收藏
+    "load_favorites", "save_favorites",
+)
+_missing = [n for n in _REQUIRED_API if not hasattr(_impl, n)]
+if _missing:
+    raise RuntimeError(
+        f"内容存储后端 {CONTENT_STORE!r} 缺少接口：{', '.join(_missing)}"
+    )
+
+BACKEND = CONTENT_STORE   # 自检用（/api/version 报它）
+
+
+# ─── 项目（门面）─────────────────────────────────────────────
 
 def save_project(project: ProjectModel) -> str:
+    """保存项目：补齐 id / created_at / updated_at 后交给后端整份覆盖。
+
+    id 与时间戳在这里生成（而非后端），保证 file / mongo 两后端行为一致。
+    """
     if project.id is None:
-        project.id = f"proj_{uuid.uuid4().hex[:10]}"
+        project.id = f"proj_{uuid4().hex[:10]}"
         project.created_at = datetime.now().isoformat()
     project.updated_at = datetime.now().isoformat()
-    project_path(project.id).write_text(
-        project.model_dump_json(indent=2), encoding="utf-8"
-    )
+    _impl.save_project(project.model_dump())
     return project.id
 
 
 def load_project(project_id: str) -> Optional[ProjectModel]:
-    path = project_path(project_id)
-    if not path.exists():
-        return None
-    return ProjectModel(**json.loads(path.read_text(encoding="utf-8")))
+    doc = _impl.load_project(project_id)
+    return ProjectModel(**doc) if doc else None
 
 
-# ─── 术语词汇表 ─────────────────────────────────────────────
+def list_projects(owner_id: Optional[str] = None) -> list[dict]:
+    """项目摘要列表；`owner_id=None` ⇒ 全部（隔离未开启时用）。"""
+    return _impl.list_projects(owner_id)
+
+
+def delete_project(project_id: str) -> bool:
+    return _impl.delete_project(project_id)
+
+
+# ─── 术语表（门面）──────────────────────────────────────────
+
+def load_global_glossary() -> list:
+    return _impl.load_global_glossary()
+
+
+def save_global_glossary(terms: list) -> None:
+    _impl.save_global_glossary(terms)
+
+
+def load_user_glossary(user_id: Optional[str]) -> list:
+    return _impl.load_user_glossary(user_id)
+
+
+def save_user_glossary(user_id: str, terms: list) -> None:
+    _impl.save_user_glossary(user_id, terms)
+
+
+# ─── 收藏音色（门面）────────────────────────────────────────
+# user_id=None ⇒ 共享那份（未登录 / 隔离未开启），与文件版语义一致。
+
+def load_favorites(user_id: Optional[str] = None) -> list[str]:
+    return _impl.load_favorites(user_id)
+
+
+def save_favorites(paths: list, user_id: Optional[str] = None) -> list[str]:
+    return _impl.save_favorites(paths, user_id)
+
+
+# ─── 术语表：合并（后端无关纯逻辑）────────────────────────────
 # 两层结构：
-#   data/glossary.json                  全局库（超管维护，对所有用户生效）
-#   data/glossary_users/<user_id>.json  用户库（用户自维护，同名时优先）
+#   <全局库>  超管维护，对所有用户生效
+#   <用户库>  用户自维护，同名时优先
 #
 # 合并规则：以全局库的顺序为骨架，用户库同 original 的条目覆盖其值；
 #           用户库独有的条目追加在末尾。
@@ -54,59 +136,6 @@ def load_project(project_id: str) -> Optional[ProjectModel]:
 #
 # 顺序敏感：合成时是按序 str.replace，合并保持「全局骨架顺序 + 用户新增」，
 # 因此用户覆盖不会改变全局条目的相对执行顺序。
-
-_USER_ID_SAFE = re.compile(r"[^A-Za-z0-9_-]")
-
-
-def glossary_user_path(user_id: str) -> Path:
-    """用户库路径。user_id 过滤非法字符，杜绝路径穿越。"""
-    safe = _USER_ID_SAFE.sub("", str(user_id or ""))
-    if not safe:
-        raise ValueError("user_id 不能为空")
-    return GLOSSARY_USERS_DIR / f"{safe}.json"
-
-
-def _read_terms(path: Path) -> list:
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return []
-    return data if isinstance(data, list) else []
-
-
-def _write_terms(path: Path, terms: list) -> None:
-    """原子写入（tmp + replace），与 membership/store.py 同策略。"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(terms, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def load_global_glossary() -> list:
-    """全局库原始列表（超管视角，不过滤/不合并）。"""
-    return _read_terms(GLOSSARY_PATH)
-
-
-def save_global_glossary(terms: list) -> None:
-    _write_terms(GLOSSARY_PATH, terms)
-
-
-def load_user_glossary(user_id: Optional[str]) -> list:
-    """用户库原始列表；未登录或 user_id 非法时返回空。"""
-    if not user_id:
-        return []
-    try:
-        path = glossary_user_path(user_id)
-    except ValueError:
-        return []
-    return _read_terms(path)
-
-
-def save_user_glossary(user_id: str, terms: list) -> None:
-    _write_terms(glossary_user_path(user_id), terms)
-
 
 def merge_glossary(global_terms: list, user_terms: list,
                    with_source: bool = False) -> list:
@@ -183,6 +212,7 @@ def load_glossary(user_id: Optional[str] = None, *, with_source: bool = False) -
 GLOSSARY_SEP_VARIANTS = os.environ.get("GLOSSARY_SEP_VARIANTS", "1").strip().lower() not in (
     "", "0", "false", "no", "off",
 )
+
 
 # 单条词条的变体数上限：n 个分隔号 → 10^n。超限则跳过该条并告警，
 # 避免 `A・B・C` 这种 key 直接炸成 100 条。
