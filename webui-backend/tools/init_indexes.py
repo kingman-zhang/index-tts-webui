@@ -18,14 +18,18 @@
 | `point_logs` | `created_at` | — | 对账/列表按时间倒序 |
 | `orders` | `out_trade_no` | — | 真实回调只回传商户订单号，按它找单 |
 | `projects` | `owner_id,updated_at` | — | 项目列表（某用户 + 最近更新倒序）|
-| `queue_tasks` | `status,seq` | — | **B2 的调度索引**：原子取队首（按 seq）|
+| `queue_tasks` | `status,seq` | — | 调度取队首（按 seq）|
+| `queue_tasks` | `status,deleted_at` | — | 统计「在跑多少」（排除软删除）|
 | `queue_tasks` | `member_id,created_at` | — | 队列列表（某用户 + 时间倒序）|
+| `queue_tasks` | `created_ts` | — | 「近一周任务量」等按时间范围 / 分天聚合的统计 |
 
 ⚠️ `projects` 索引只在 `CONTENT_STORE=mongo` 时才纳入检查/创建（见 `active_indexes()`）——
    file 模式下 projects 集合根本不存在，硬要求它会让 `--check` 误报。
    `glossary` / `favorites` 用 `_id`（`GLOBAL` | user_id）做主键，无需额外索引。
-⚠️ `queue_tasks` 的两个索引同理，只在 `QUEUE_STORE=mongo` 时纳入。
+⚠️ `queue_tasks` 的四个索引同理，只在 `QUEUE_STORE=mongo` 时纳入。
    `queue_tasks` 用 `_id = task_id` 做主键（主键索引 Mongo 自带）。
+   `created_ts` 是**后端自治字段**（BSON Date，`$setOnInsert` 写入）——
+   `created_at` 是无时区字符串，只能做范围查、不能做时间聚合，所以另存一个。
 
 ⚠️ `point_logs` 的唯一索引**刻意只覆盖 `refund` / `purchase`**（`partialFilterExpression`）：
    - 只有这两类会被"重复触发"（退款重试、支付平台回调重推）；
@@ -89,15 +93,21 @@ CONTENT_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
 )
 
 # 队列集合（`QUEUE_STORE=mongo` 才要求存在；见 queue_store_mongo.py）
-#   - by_status_seq：**B2 的调度索引** —— `find_one_and_update({status:"queued"},
-#     sort=[("seq",1)])` 一次原子取队首。B1 用不到（load_all_tasks 是全表扫，
-#     启动一次、量级小），但索引属于 schema，随数据模型一起声明比事后补好。
-#   - by_member_recent：列表查询形状（某用户 + 时间倒序）。
+#   - by_status_seq：调度取队首用（`find_one_and_update({status:"queued"},
+#     sort=[("seq",1)])`，B2 的形态；B1 用不到，但索引属于 schema，随数据模型一起声明）。
+#   - by_status_deleted：统计「在跑多少」＝ `count({status:"running",
+#     deleted_at:{$exists:False}})`。
+#   - by_member_recent / by_created_ts：列表查询（某用户 + 时间倒序）与
+#     「近一周任务量」这类**按 created_ts 的时间范围 / 分天聚合**统计。
 QUEUE_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
     ("queue_tasks", [("status", 1), ("seq", 1)],
      {"name": "by_status_seq"}),
+    ("queue_tasks", [("status", 1), ("deleted_at", 1)],
+     {"name": "by_status_deleted"}),
     ("queue_tasks", [("member_id", 1), ("created_at", -1)],
      {"name": "by_member_recent"}),
+    ("queue_tasks", [("created_ts", -1)],
+     {"name": "by_created_ts"}),
 )
 
 

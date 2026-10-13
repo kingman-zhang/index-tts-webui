@@ -15,8 +15,10 @@
    2. `bak_001~006/` 之类**子目录**不再被 `glob("*.json")` 扫到（它们本来也不是任务
       文件，只是历史快照），因为只扫本层且跳过目录。
 
-⚠️ 本模块**不带跨实例一致性**（本地磁盘）。多实例部署请用 `QUEUE_STORE=mongo`，
-   见 QUEUE_MIGRATION_PLAN.md。
+⚠️ 本模块**不带跨实例一致性**（本地磁盘），且**删除是真删**（`unlink`）——
+   这里刻意没有做软删除：本地文件没有「标记删除」这个载体，而软删除要解决的
+   是「统计历史不能丢」，那是 `mongo` 后端的诉求（统计靠查库）。
+   两后端的**对外语义一致**：删掉的任务不再出现在 `load_task` / `load_all_tasks` 里。
 """
 
 from __future__ import annotations
@@ -63,6 +65,10 @@ def load_all_tasks() -> list[dict]:
 
 
 def delete_task(task_id: str) -> bool:
+    """真删文件（见模块 docstring：file 后端不做软删除）。
+
+    返回「是否真的删掉了」—— 文件不存在即 False（与 mongo 后端「本次是否生效」同形）。
+    """
     try:
         task_path(task_id).unlink()
         return True

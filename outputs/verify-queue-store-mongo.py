@@ -154,9 +154,31 @@ def main() -> int:
                   qs.queue_tasks[a]["project_name"] == "任务A改名"
                   and qs.queue_tasks[a]["status"] == "queued")
 
-            print("── 删除终态任务 → 库里也没了 ──")
+            print("── 删除「排队中」的任务 = 取消（记录保留，不算删除）──")
+            r = client.delete(f"/api/queue/{b}")
+            check("cancel 200", r.status_code == 200, r.text)
+            raw_b = db["queue_tasks"].find_one({"_id": b}) or {}
+            check("取消不是删除：库里仍在、且没打 deleted_at",
+                  (queue_store.load_task(b) or {}).get("status") == "cancelled"
+                  and "deleted_at" not in raw_b,
+                  f"status={(queue_store.load_task(b) or {}).get('status')} keys={sorted(raw_b)}")
+
+            print("── 删除「终态」任务 → 列表里没了，但库里留档（软删除）──")
             r = client.delete(f"/api/queue/{b}")
             check("delete 200", r.status_code == 200, r.text)
+            raw = db["queue_tasks"].find_one({"_id": b}) or {}
+            check("库里文档仍在（软删除，供统计/审计）", bool(raw), str(raw)[:120])
+            check("……且打了 deleted_at", "deleted_at" in raw)
+            check("……且带 created_ts（BSON Date，可做时间聚合）",
+                  hasattr(raw.get("created_ts"), "year"), repr(raw.get("created_ts")))
+            check("列表里已看不到它",
+                  b not in [t["id"] for t in client.get("/api/queue").json()["tasks"]],
+                  str([t["id"] for t in client.get("/api/queue").json()["tasks"]]))
+            qs.queue_tasks.clear()
+            qs.queue_order.clear()
+            qs.load_persisted_tasks()
+            check("清空内存再恢复，已删任务不会复活", b not in qs.queue_tasks,
+                  str(sorted(qs.queue_tasks)))
     finally:
         queue_routes.process_queue = _ORIG_PROCESS_QUEUE
         db["queue_tasks"].drop()

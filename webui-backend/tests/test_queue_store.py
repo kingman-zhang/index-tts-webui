@@ -6,8 +6,9 @@
   2. 任务 CRUD 往返：整份覆盖、`lines` 等重字段不丢、单主键 upsert；
   3. `load_all_tasks` 全量读出（mongo 不带 `_id`）；
   4. `load_legacy_order`（file 读 `_queue_order.json`；mongo 恒空）；
-  5. `queue_state` 的持久化函数确实**转发**到了门面（集成点）；
-  6. 非法后端**启动即报错**，不静默回退。
+  5. 删除语义与字段级更新（mongo：软删除 + `created_ts` + 负载指纹；file：真删）；
+  6. `queue_state` 的持久化函数确实**转发**到了门面（集成点）；
+  7. 非法后端**启动即报错**，不静默回退。
 
 用法：
     python tests/test_queue_store.py                            # file 后端
@@ -167,6 +168,61 @@ def main():
     check("删除后读不到", queue_store.load_task("q_beta") is None)
     check("delete 不存在的 → False", queue_store.delete_task("q_beta") is False)
     check("load_all_tasks 只剩 1 个", [d["id"] for d in queue_store.load_all_tasks()] == ["q_alpha"])
+
+    # ── 删除语义 / 字段级更新（两后端的**实现**差异；对外语义一致）──
+    print("── 删除语义 / 字段级更新 ──")
+    if TEST_BACKEND == "mongo":
+        from app import queue_store_mongo as _m
+        from app.db import get_mongo_db
+        coll = get_mongo_db()["queue_tasks"]
+
+        # 软删除：库里留着（供统计），读接口看不到
+        queue_store.save_task(task_doc("q_soft"))
+        check("软删除：删除返回 True", queue_store.delete_task("q_soft") is True)
+        raw = coll.find_one({"_id": "q_soft"}) or {}
+        check("软删除：库里的文档仍在，且打了 deleted_at",
+              "deleted_at" in raw, str(sorted(raw.keys())))
+        check("软删除：load_task 看不到", queue_store.load_task("q_soft") is None)
+        check("软删除：load_all_tasks 看不到",
+              "q_soft" not in {d["id"] for d in queue_store.load_all_tasks()})
+        check("重复删除 → False（不重复打标记）", queue_store.delete_task("q_soft") is False)
+
+        # 🔴 关键回归：对已删除的任务再 save（含负载变化）不能让它复活
+        queue_store.save_task(task_doc("q_soft", lines=[{"text": "改过了"}]))
+        check("对已删除任务再 save 不会抹掉 deleted_at",
+              "deleted_at" in (coll.find_one({"_id": "q_soft"}) or {}))
+        check("……所以它仍然不可见", queue_store.load_task("q_soft") is None)
+
+        # created_ts：BSON Date、只写一次、不出现在上层对象里
+        queue_store.save_task(task_doc("q_ts"))
+        ts1 = (coll.find_one({"_id": "q_ts"}) or {}).get("created_ts")
+        queue_store.save_task(task_doc("q_ts", status="running", progress=0.5))
+        ts2 = (coll.find_one({"_id": "q_ts"}) or {}).get("created_ts")
+        check("created_ts 是 BSON Date（可参与时间聚合）", hasattr(ts1, "year"), repr(ts1))
+        check("created_ts 不随每次 save 变动（$setOnInsert）", ts1 == ts2, f"{ts1} vs {ts2}")
+        check("created_ts 不出现在上层对象里（后端自治字段）",
+              "created_ts" not in (queue_store.load_task("q_ts") or {}))
+
+        # 字段级更新：负载变了要写进去；没变则跳过重写（只写小字段）
+        _m._payload_sig.clear()
+        queue_store.save_task(task_doc("q_pay", lines=[{"text": "原文"}]))
+        sig0 = _m._payload_sig.get("q_pay")
+        queue_store.save_task(task_doc("q_pay", lines=[{"text": "原文"}], progress=0.9))
+        check("负载未变 ⇒ 指纹不变（跳过重写）", _m._payload_sig.get("q_pay") == sig0)
+        check("……且小字段照常更新",
+              (queue_store.load_task("q_pay") or {}).get("progress") == 0.9)
+        queue_store.save_task(task_doc("q_pay", lines=[{"text": "改后"}], progress=1.0))
+        check("负载变了 ⇒ 指纹变", _m._payload_sig.get("q_pay") != sig0)
+        check("……且库里确实写进去了",
+              ((queue_store.load_task("q_pay") or {}).get("lines") or [{}])[0].get("text") == "改后")
+    else:
+        from app import queue_store_file as _f
+        queue_store.save_task(task_doc("q_hard"))
+        p = _f.task_path("q_hard")
+        check("file 后端：删除前文件在", p.exists())
+        check("file 后端：删除返回 True", queue_store.delete_task("q_hard") is True)
+        check("file 后端：删除后文件真的没了（真删，不是软删）", not p.exists())
+        check("file 后端：再删 → False", queue_store.delete_task("q_hard") is False)
 
     # ── queue_state 的转发（集成点）──
     print("── queue_state 转发（集成点）──")
