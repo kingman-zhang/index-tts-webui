@@ -31,8 +31,10 @@ export function useAppInit() {
     return () => clearInterval(timer);
   }, []);
 
-  // TTS 状态 + 积分定价：10s 轮询（探测与否由后端开关决定；null = 开关关闭/未检测）
+  // TTS 状态 + 积分定价：先拉一次；仅当后端开着 TTS 探测（TTS_STATUS_POLL=1）时才继续
+  // 10s 轮询 —— 关掉探测时这些字段（tts_online 恒为 null + 静态定价）不会自己变，轮询纯空跑。
   useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
     const probe = async () => {
       try {
         const cfg = await api.getConfig();
@@ -41,11 +43,17 @@ export function useAppInit() {
         setMemberEnforce(!!cfg.member_enforce);
         setMemberPer1000(cfg.member_points_per_1000_chars ?? 0);
         setMemberMinCharge(cfg.member_min_charge ?? 0);
+        // 探测关闭 ⇒ 停掉轮询。首次 probe 未返回前 setInterval 已建，但它第一拍在 10s 后，
+        // 这里必然先跑到（除非请求本身就卡了 10s）。
+        if (!cfg.tts_status_poll && timer) {
+          clearInterval(timer);
+          timer = undefined;
+        }
       } catch { setTtsOnline(null); }
     };
-    probe();
-    const timer = setInterval(probe, 10000);
-    return () => clearInterval(timer);
+    void probe();
+    timer = setInterval(probe, 10000);
+    return () => { if (timer) clearInterval(timer); };
   }, []);
 
   const reloadVoices = useCallback(async () => {
