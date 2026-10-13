@@ -11,7 +11,8 @@
 > **Gate 5 ✅ 内容（项目/术语表/收藏）可切 Mongo**（二期 A/B，见 §9）。
 > 下文 §5 各 Gate 的清单保留**原始设计**；实际落地与它的差异，见各 Gate 标题下的「实际落地」注。
 > **代码已全部落地，尚欠的只有「部署时按清单执行」那一档**（Gate 4 的上线清单）。
-> **三个开关互相独立**，可任意组合：`MEMBER_STORE=file|mongo` × `SESSION_STORE=file|redis` × `CONTENT_STORE=file|mongo`。
+> **四个开关互相独立**，可任意组合：`MEMBER_STORE=file|mongo` × `SESSION_STORE=file|redis` × `CONTENT_STORE=file|mongo` × `QUEUE_STORE=file|mongo`。
+> （第四个 = 队列，2026-10-13 B1；方案另见 `QUEUE_MIGRATION_PLAN.md`，多实例抢占是 B2、未做。）
 
 ---
 
@@ -489,7 +490,7 @@ Redis 用 **db02 + 强制 `podcast:` 前缀**（前缀必须加，否则 `sessio
 |---|---|---|
 | **A** | 项目（`data/projects/*.json`） | ✅ 本批 |
 | **B** | 术语表（全局 + 每用户）、收藏音色 | ✅ 本批 |
-| **C** | 任务队列（`data/queue/*.json`） | ⏳ **单独做**（连带 worker 调度模型，改动面大） |
+| **C** | 任务队列（`data/queue/*.json`） | ◐ **B1 已落地**（2026-10-13，`QUEUE_STORE=file\|mongo`，仅持久化）→ 见本文档 §9.7 与 **`QUEUE_MIGRATION_PLAN.md`**；跨实例抢占 = B2，未做 |
 | — | 音色元数据（`data/voices/<uid>/index.json`）、音色预设 | ⏳ 未纳批 —— 与音频实体、tts-server 广播强绑定，单独评估 |
 | — | 邮箱验证码（`data/members/email_codes.json`） | ⏳ 未纳批 —— 短 TTL 临时数据，**Redis 比 Mongo 更合适**；且它现在是「mongo 走集合 / file 走文件」的双口径 |
 | — | 音频成品 / 分段缓存 / 模型 / 参考音频 | ❌ **永不进库**（§3.4） |
@@ -550,6 +551,23 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy NO_PROXY='*' \
 改回 `CONTENT_STORE=file` 并重启即可 —— **文件没被删**，`stores_file.py` 就是原来的
 实现，逐字节一致。⚠️ 但要注意：切回后**看不到**切到 mongo 之后新写的内容
 （那是两份独立的数据）。真要双向，得反向迁一次。
+
+### 9.7 C（队列）→ **B1 已落地**（2026-10-13）
+
+队列不再留在这里展开 —— **完整方案另起文档**：`QUEUE_MIGRATION_PLAN.md`（与本文档平级）。
+
+三条只在这里说清的口径：
+
+1. **B1 只上库、不解决多实例**：新增第五个开关 `QUEUE_STORE=file|mongo`，
+   `queue_state` 的持久化函数**名字与调用点全不变**、内部转发到 `queue_store` 门面；
+   **调度逻辑一行未改**，`GET /api/queue` 仍读本实例内存 ⇒ **上线后仍是单实例部署**。
+2. **多实例防互踩靠 `QUEUE_WORKER_ENABLED`**（默认 `1`；`0` = 本实例不加载/不调度、
+   提交返回 503）。B2 上租约之前，**多实例只能一台开** —— 否则第二台启动时会把
+   对方 `running` 的任务改判 `interrupted`，用户再删除就会把对方正在写的任务删掉。
+3. **顺带修掉一个既有缺陷**：`persist_task` / `persist_queue_order` 原来是
+   `path.write_text` **非原子**直写（写一半崩 ⇒ JSON 截断 ⇒ 任务从内存消失、文件永久留盘、
+   用户看不到也删不掉）。新的 file 后端复用 `app/json_store.write_json`（tmp + `os.replace`），
+   **内容一字不差、写盘变原子**。
 
 ---
 
