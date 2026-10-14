@@ -365,6 +365,23 @@ def mark_order_credited(order_id: str, log_id: str) -> None:
         _write(ORDERS_FILE, orders)
 
 
+def update_order_fields(order_id: str, fields: dict) -> Optional[dict]:
+    """只更新指定订单的指定字段，返回更新后的订单；订单不存在返回 None。
+
+    ⚠️ 只做**字段**更新，**不要用它改 `status`** —— 状态流转一律走 `claim_order`
+    的 CAS，否则「同一订单只入账一次」的闸门会被绕过。
+    """
+    with _lock:
+        orders = _read(ORDERS_FILE, {})
+        order = orders.get(order_id)
+        if not order:
+            return None
+        order.update(fields)
+        orders[order_id] = order
+        _write(ORDERS_FILE, orders)
+        return dict(order)
+
+
 # ─── 邮箱验证码 ─────────────────────────────────────────────
 
 EMAIL_CODES_FILE = MEMBERS_DIR / "email_codes.json"

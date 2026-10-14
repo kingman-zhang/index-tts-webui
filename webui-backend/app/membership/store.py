@@ -77,7 +77,8 @@ _REQUIRED_API = (
     "load_checkins", "save_checkins", "insert_checkin_unique",
     # ── 积分购买订单 ──
     "load_orders", "save_orders",
-    "insert_order", "get_order", "find_order", "claim_order", "mark_order_credited",
+    "insert_order", "get_order", "find_order", "claim_order",
+    "mark_order_credited", "update_order_fields",
     # ── 邮箱验证码 ──
     "load_email_codes", "save_email_codes",
 )
@@ -235,6 +236,15 @@ def claim_order(order_id: str, provider: str, out_trade_no: str) -> dict | None:
 def mark_order_credited(order_id: str, log_id: str) -> None:
     """回填入账流水 id（`credit_log_id`）。"""
     _impl.mark_order_credited(order_id, log_id)
+
+
+def update_order_fields(order_id: str, fields: dict) -> dict | None:
+    """只更新指定订单的指定字段，返回更新后的订单；订单不存在返回 None。
+
+    用于落**支付呈现信息**（`pay_type` / `pay_info` / `pay_created_at`）之类的
+    非状态字段。⚠️ **不要用它改 `status`** —— 状态流转走 `claim_order` 的 CAS。
+    """
+    return _impl.update_order_fields(order_id, fields)
 
 
 # ─── 邮箱验证码 ─────────────────────────────────────────────

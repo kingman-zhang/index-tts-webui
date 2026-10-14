@@ -12,8 +12,10 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
+from ..config import logger
 from . import service
 from . import pay as pay_mod
 from .service import MemberError
@@ -58,6 +60,47 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
 
 def _err(e: MemberError):
     raise HTTPException(e.code, e.message)
+
+
+def _client_ip(request: Request) -> str:
+    """取真实客户端 IP（反代下优先 X-Forwarded-For 的第一段）。"""
+    fwd = request.headers.get("x-forwarded-for") or ""
+    if fwd:
+        return fwd.split(",")[0].strip()
+    real = request.headers.get("x-real-ip") or ""
+    if real:
+        return real.strip()
+    return request.client.host if request.client else ""
+
+
+async def _collect_payload(request: Request) -> dict:
+    """从 query / JSON / 表单**三种载体**里收集回调参数。
+
+    ⚠️ 必须按 content-type 分支：Starlette 的 `request.json()` 与 `request.form()`
+    都会消费 body，两个都调会抛 "Stream consumed"。
+    之所以支持三种载体：不同通道的回调形态不同 —— ePay V1 是 **GET + query**，
+    通用/聚合形态多是 POST + JSON（接受哪些方法由通道的 `NOTIFY_METHODS` 声明）。
+    """
+    payload: dict = {k: v for k, v in request.query_params.items()}
+    ctype = (request.headers.get("content-type") or "").lower()
+    if "application/json" in ctype:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(400, "回调报文不是合法 JSON")
+        if not isinstance(body, dict):
+            raise HTTPException(400, "回调报文格式不正确（应为 JSON 对象）")
+        # 保留标量值（签名算法会把它们 str() 化）；嵌套结构无法参与签名，丢弃。
+        payload.update({k: v for k, v in body.items() if not isinstance(v, (dict, list))})
+    elif "form-urlencoded" in ctype or "multipart/form-data" in ctype:
+        try:
+            form = await request.form()
+        except Exception as e:
+            raise HTTPException(400, f"回调表单解析失败：{e}")
+        for k, v in form.items():
+            if isinstance(v, str):
+                payload[k] = v
+    return payload
 
 
 # ─── 请求体 ─────────────────────────────────────────────────
@@ -229,6 +272,23 @@ def list_orders(offset: int = 0, limit: int = 20, user: dict = Depends(get_curre
     return service.list_orders(user, max(0, offset), limit)
 
 
+@router.get("/api/points/orders/{order_id}")
+def get_order(order_id: str, user: dict = Depends(get_current_user)):
+    """单条订单查询 —— 供前端**支付后轮询**判断这一单是否已入账。
+
+    为什么不复用 `GET /api/points/orders`：轮询要的是「**这一单**好了没」，列表
+    接口要先扫全量、排序、分页（单文件存储下是 O(全部订单)），且并发下单时
+    还得靠 `limit=1` 猜哪条是刚才那单。单条查询语义明确、代价恒定。
+
+    只读，无副作用：真正的入账只发生在回调（`settle_order`）里 —— 轮询**不**
+    会也不能把订单改成已支付，所以前端再怎么轮询都造不出假账。
+    """
+    try:
+        return {"order": service.get_order(user, order_id)}
+    except MemberError as e:
+        _err(e)
+
+
 @router.post("/api/points/orders/{order_id}/mock-pay")
 def mock_pay(order_id: str, user: dict = Depends(get_current_user)):
     """模拟支付成功（商城演示用）。
@@ -242,40 +302,82 @@ def mock_pay(order_id: str, user: dict = Depends(get_current_user)):
         _err(e)
 
 
-# ─── 支付回调（无 Bearer；靠签名）──────────────────────────
-#
-# 契约：POST /api/pay/notify/{provider}，JSON 体
-#   { out_trade_no, amount_fen（或 amount，单位元）, trade_status, sign }
-# 归一化与验签都在 pay.py；接具体通道时只改那里。
-# PAY_NOTIFY_SECRET 未配置 → 503（**不能**"没配密钥就当验签通过"）。
+@router.post("/api/points/orders/{order_id}/pay")
+async def order_pay(order_id: str, request: Request,
+                    user: dict = Depends(get_current_user)):
+    """为 pending 订单向**当前支付通道**下单（出码）。
 
-@router.post("/api/pay/notify/{provider}")
-async def pay_notify(provider: str, request: Request):
-    secret = service.PAY_NOTIFY_SECRET
-    if not secret:
-        raise HTTPException(503, "支付回调未启用（服务端未配置 PAY_NOTIFY_SECRET）")
+    返回 `{order, pay:{pay_type, pay_info, trade_no, reused}}`，前端按 `pay_type` 渲染：
+        `qrcode` → 把 pay_info 渲染成二维码；`jump` → 跳转 pay_info；
+        `urlscheme` → 唤起小程序（移动端）。
+    ⚠️ 复用窗口内的重复调用会**复用**已有出码结果（不重复向下游下单）—— 见 service 注释。
+    """
     try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(400, "回调报文不是合法 JSON")
-    if not isinstance(payload, dict):
-        raise HTTPException(400, "回调报文格式不正确")
-    if not pay_mod.verify_notify(payload, secret):
-        raise HTTPException(401, "签名校验失败")
-    fact = pay_mod.normalize_notify(provider, payload)
-    if not fact:
-        raise HTTPException(400, "回调报文缺少必需字段")
-    if fact["trade_status"] not in pay_mod.PAID_STATUSES:
-        # 非成功状态（如「已关闭」「退款」）一律确认收到但不入账。
-        return {"code": 0, "message": "ignored", "trade_status": fact["trade_status"]}
-    try:
-        result = service.settle_by_out_trade_no(
-            fact["out_trade_no"], provider, amount_fen=fact["amount_fen"]
-        )
+        return await service.create_charge_for_order(
+            user, order_id, clientip=_client_ip(request))
     except MemberError as e:
         _err(e)
-    return {"code": 0, "message": "ok",
-            "already_paid": result["already_paid"], "balance": result["balance"]}
+
+
+# ─── 支付回调（无 Bearer；靠通道验签）───────────────────────
+#
+# 端点对**所有通道**通用：验签算法、接受的 HTTP 方法、报文载体、应答形态、
+# 金额校验策略，全部由 `app/membership/pay_*.py` 的通道模块声明 —— 这里只做通用适配。
+# 接新通道 = 新增一个通道模块 + 改 .env 的 PAY_PROVIDER，本文件不用动。
+#
+# 安全边界：回调**不带 Bearer**（支付平台不会带我们的 token），安全性完全依赖验签；
+# 通道未配置密钥时一律 503（**不提供"没配密钥就当验签通过"的降级**）。
+
+@router.api_route("/api/pay/notify/{provider}", methods=["GET", "POST"])
+async def pay_notify(provider: str, request: Request):
+    mod = pay_mod.get_provider(provider)
+    if mod is None:
+        raise HTTPException(404, f"未注册的支付通道：{provider}")
+    if request.method not in mod.NOTIFY_METHODS:
+        raise HTTPException(405, f"{mod.TITLE} 的回调不接受 {request.method}")
+
+    spec = pay_mod.reply_spec(mod)
+
+    def _out(ok: bool, status_code: int, body: dict):
+        """按通道声明的应答形态回包（纯文本 `success` or JSON）。"""
+        if spec["kind"] == "json":
+            return JSONResponse(body, status_code=status_code)
+        return PlainTextResponse(spec["ok"] if ok else spec["fail"], status_code=status_code)
+
+    if not mod.configured():
+        # ⚠️ 通道没配好时**不能放行** —— 那等于把「凭 order_id 白拿积分」的公网入口敞开。
+        return _out(False, 503, {"ok": False, "error": mod.config_problem() or "通道未配置"})
+
+    payload = await _collect_payload(request)
+    if not mod.verify(payload):
+        return _out(False, 401, {"ok": False, "error": "签名校验失败"})
+    fact = mod.normalize(payload)
+    if not fact:
+        return _out(False, 400, {"ok": False, "error": "回调报文缺少必需字段"})
+
+    if fact["trade_status"] not in pay_mod.PAID_STATUSES:
+        # 非成功状态（已关闭 / 退款）：确认收到但**不**入账，回成功体避免无意义重推。
+        return _out(True, 200, {"code": 0, "message": "ignored",
+                                "trade_status": fact["trade_status"]})
+
+    try:
+        result = service.settle_by_out_trade_no(
+            fact["out_trade_no"], provider,
+            amount_fen=fact["amount_fen"],
+            amount_policy=pay_mod.resolve_amount_policy(mod),
+        )
+    except MemberError as e:
+        # 订单不存在 / 金额不符：回**失败体**（让通道重推 + 通道后台可见异常），并留痕。
+        # 这类异常意味着「钱可能到了但没入账」，必须能在日志里查到。
+        logger.error("支付回调入账失败：provider=%s out_trade_no=%s code=%s msg=%s",
+                     provider, fact["out_trade_no"], e.code, e.message)
+        return _out(False, e.code, {"ok": False, "error": e.message})
+
+    logger.info("支付入账：provider=%s out_trade_no=%s amount_fen=%s already_paid=%s",
+                provider, fact["out_trade_no"], fact["amount_fen"], result["already_paid"])
+    return _out(True, 200, {"code": 0, "message": "ok",
+                            "already_paid": result["already_paid"],
+                            "balance": result["balance"]})
 
 
 # ─── 管理端（X-Admin-Token）────────────────────────────────

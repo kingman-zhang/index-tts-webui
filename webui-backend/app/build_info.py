@@ -262,6 +262,7 @@ def _membership() -> dict:
         from .membership import service as msvc
         from .membership import session_store as msess
         from .membership import store as mstore
+        from .membership import pay as mpay
 
         return {
             "schema_version": msvc.MEMBERSHIP_SCHEMA_VERSION,
@@ -277,6 +278,12 @@ def _membership() -> dict:
             "require_login": msvc.REQUIRE_LOGIN,
             "mock_pay_enabled": msvc.MOCK_PAY,
             "pay_notify_enabled": bool(msvc.PAY_NOTIFY_SECRET),
+            # 真实支付通道（2026-10-14，见 PAY_MPAY_PLAN.md）：enabled=当前通道 id
+            # （"" = 未接真实支付）；ready=该通道配置齐全**且可出码**（含 pid 形态与
+            # PAY_PUBLIC_BASE_URL 形态）；problem=没配好时的**具体原因**
+            # （直接点名缺哪个环境变量 / 哪一项填错了，避免"配了却不生效"要到日志里翻）；
+            # notify_url=实际拼出的回调地址（取值域：直接看它，比对着 .env 猜快）。
+            "pay": mpay.describe(),
             "packs": [p["id"] for p in msvc._packs.sorted_packs()],
         }
     except Exception as e:  # 自检本身不能把进程带崩

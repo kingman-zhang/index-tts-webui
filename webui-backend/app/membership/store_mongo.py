@@ -422,6 +422,15 @@ def mark_order_credited(order_id: str, log_id: str) -> None:
     _orders().update_one({"_id": order_id}, {"$set": {"credit_log_id": log_id}})
 
 
+def update_order_fields(order_id: str, fields: dict) -> Optional[dict]:
+    """只更新指定订单的指定字段（⚠️ **不要用它改 `status`**：状态流转走 `claim_order`
+    的 CAS，否则「同一订单只入账一次」的闸门会被绕过）。"""
+    doc = _orders().find_one_and_update(
+        {"_id": order_id}, {"$set": fields}, return_document=ReturnDocument.AFTER,
+    )
+    return _clean(doc)
+
+
 # ─── 邮箱验证码 ─────────────────────────────────────────────
 
 def load_email_codes() -> dict:

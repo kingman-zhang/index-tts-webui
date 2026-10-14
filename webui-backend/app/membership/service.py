@@ -10,9 +10,20 @@
   MEMBER_REQUIRE_LOGIN          1 = 合成提交必须登录（不扣费）；与 MEMBER_ENFORCE 相互独立
   MEMBER_ADMIN_TOKEN            管理接口令牌；未设置则管理接口整体禁用
   MEMBER_MOCK_PAY               1 = 开放「模拟支付成功」端点（积分商城演示用）；
-                                默认 1。**接入真实支付后必须置 0** ——
-                                开着等于任何登录用户都能给自己的订单免费入账。
-  PAY_NOTIFY_SECRET             真实支付回调验签密钥；未配置则 /api/pay/notify/* 一律 503。
+                                **默认 0**（2026-10-14 由 1 改为 0）——
+                                开着等于任何登录用户都能给自己的订单免费入账，
+                                只在纯演示环境才置 1。接入真实支付后必须是 0。
+  PAY_NOTIFY_SECRET             「通用通道」的回调验签密钥（HMAC-SHA256）；
+                                未配置则通用通道的回调一律 503。
+  PAY_PROVIDER                  当前生效的**支付通道 id**（注册表见 app/membership/pay.py）；
+                                留空 = 未接真实支付（商城只能模拟支付）。当前可选：mpay
+  PAY_PUBLIC_BASE_URL           我们的**公网根地址**；回调地址 = {它}/api/pay/notify/{通道id}
+                                ⚠️ 支付平台必须能访问到它，否则回调收不到
+  PAY_RETURN_URL                付款完成后跳回前端的地址（下发给通道的 return_url）
+  PAY_AMOUNT_CHECK              回调金额校验策略的**全局覆盖**：strict/ge/off；
+                                留空 = 按通道默认（mpay 为 ge，因为金额会被微调）
+  MPAY_*                        mpay 通道配置（PAY_PROVIDER=mpay 时必填）；
+                                通道差异只允许出现在 app/membership/pay_mpay.py
 """
 
 from __future__ import annotations
@@ -50,11 +61,40 @@ TOKEN_TTL_DAYS = int(os.environ.get("MEMBER_TOKEN_TTL_DAYS", "30"))
 ENFORCE = os.environ.get("MEMBER_ENFORCE", "0") == "1"
 REQUIRE_LOGIN = os.environ.get("MEMBER_REQUIRE_LOGIN", "0") == "1"
 ADMIN_TOKEN = os.environ.get("MEMBER_ADMIN_TOKEN", "") or None
-# 模拟支付：默认开（当前没有真实支付通道，商城要能演示）。
-# 接真实支付后置 0 —— 否则任何登录用户都能给自己的订单白拿积分。
-MOCK_PAY = os.environ.get("MEMBER_MOCK_PAY", "1") == "1"
+# 模拟支付：**默认关**（2026-10-14 由 "1" 改为 "0"）。
+# 默认开是个坑：接了真实支付却忘写这一项 ⇒ 任何登录用户都能调 mock-pay 端点
+# 给自己的订单免费入账（实测可复现）。默认值应当**安全的那一侧**。
+# 纯演示环境（没有真实通道、要给人看购买流程）才显式写 1。
+MOCK_PAY = os.environ.get("MEMBER_MOCK_PAY", "0") == "1"
 # 真实支付回调验签密钥；空 = 回调端点整体拒收（见 pay.py 的安全边界说明）。
+# ⚠️ 这是「通用通道」（pay_generic）的密钥；具体业务通道各有自己的密钥（如 MPAY_KEY）。
 PAY_NOTIFY_SECRET = os.environ.get("PAY_NOTIFY_SECRET", "") or None
+
+# ── 真实支付通道（2026-10-14；方案见 PAY_MPAY_PLAN.md，实现见 app/membership/pay*.py）──
+#
+# **当前生效的支付通道 id** —— 通道注册表在 pay.py。留空 = 未接真实支付：
+# 回调端点一律 503、商城只能走模拟支付。加/换通道 = 加一个通道模块 + 改这一行，
+# service / routes 不用动（这正是「mpay 不与标准支付耦合」的落点）。
+PAY_PROVIDER = (os.environ.get("PAY_PROVIDER", "") or "").strip()
+# 我们的**公网根地址**：回调地址 = f"{它}/api/pay/notify/{通道id}"。
+# ⚠️ 支付平台必须能访问到它（要填进通道后台），否则回调收不到、只能靠主动查单兜底。
+PAY_PUBLIC_BASE_URL = (os.environ.get("PAY_PUBLIC_BASE_URL", "") or "").rstrip("/")
+# 付款完成后跳回前端的地址（下发给通道的 return_url）。
+PAY_RETURN_URL = os.environ.get("PAY_RETURN_URL", "") or ""
+# 回调金额校验策略的**全局覆盖**（留空 = 按通道默认）。
+# 可选 strict/ge/off —— 见 pay_contract.AMOUNT_POLICIES 与 pay.resolve_amount_policy。
+PAY_AMOUNT_CHECK = (os.environ.get("PAY_AMOUNT_CHECK", "") or "").strip()
+# 出码信息复用窗口（秒）：同一订单在此窗口内重复请求出码，直接复用已有 pay_info，
+# 不重复向下游下单 —— 各通道对「同一商户订单号重复下单」的行为不一致，复用最安全。
+PAY_CHARGE_REUSE_SECONDS = int(os.environ.get("PAY_CHARGE_REUSE_SECONDS", "1800"))
+
+# ── 通道：mpay_v2（码支付，ePay V1 / MD5）—— 仅 PAY_PROVIDER=mpay 时生效 ──
+# 通道专属配置刻意留在 service（与其它 MEMBER_* 同一处），通道模块 delayed-import
+# 读它 —— 这样"配置改了不生效"只需查一个地方，测试也能直接改常量即时生效。
+MPAY_BASE_URL = (os.environ.get("MPAY_BASE_URL", "") or "").rstrip("/")
+MPAY_PID = (os.environ.get("MPAY_PID", "") or "").strip()
+MPAY_KEY = os.environ.get("MPAY_KEY", "") or ""
+MPAY_TYPE = (os.environ.get("MPAY_TYPE", "wxpay") or "wxpay").strip()
 
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-\u4e00-\u9fa5]{2,24}$")
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
@@ -513,6 +553,49 @@ ORDER_ID_PREFIX = "ord_"
 # （CAS 抢单）与业务层共用同一份，避免两处字面量各写一份而漂移。
 
 
+def pay_channel_ready() -> bool:
+    """真实支付通道是否就绪（当前通道已注册、配置齐全**且可出码**）。
+
+    前端与 `/api/points/packs` 据此决定显示「购买」还是「支付通道接入中」。
+    未接真实通道时为 False（商城只能走模拟支付）。
+
+    ⚠️ 含 `mod.charge_problem()` 而不只是 `configured()` —— 后者刻意不含形态检查
+    （回调不该因 pid 写错被拦），但**出码就绪**必须含，否则前端会给出一个
+    点下去必然 503 的按钮。
+    """
+    mod = _pay.default_provider()
+    return bool(mod and mod.configured() and not mod.charge_problem())
+
+
+def pay_public_base_problem() -> str:
+    """`PAY_PUBLIC_BASE_URL` 的形态检查（空串 = 没问题）。
+
+    这个变量只有一个语义：**我们的公网根地址**（回调地址 = 它 + `/api/pay/notify/<通道>`）。
+    把完整回调地址抄进来是本项目最难查的配置错 —— 因为 mpay **不校验 notify_url**，
+    照样返回下单成功：表现成「二维码正常出、用户付了钱、积分永远不动」的**静默失败**。
+    故宁可**响亮失败**（503 + 说清重复在哪一段），也不做"自动去掉重复后缀"的宽容化
+    —— 宽容化会把这个坑变成"有时对有时错"，更难查。
+    """
+    base = PAY_PUBLIC_BASE_URL
+    if not base:
+        return ("服务端未配置 PAY_PUBLIC_BASE_URL（回调地址根），支付平台将无法回调；"
+                "见 .env.example 的「真实支付通道」段")
+    marker = "/api/pay/notify"
+    if marker in base:
+        return (f"PAY_PUBLIC_BASE_URL 应只填**根地址**，但当前值含 {marker!r}（{base!r}）"
+                f"—— 拼出来会是 {base}/api/pay/notify/<通道>，重复了一段。"
+                "⚠️ mpay 不校验 notify_url 照样回成功 ⇒ 会静默失败"
+                "（二维码能出、付了钱、积分不动）")
+    return ""
+
+
+def notify_url_for(provider_id: str) -> str:
+    """某通道的异步回调地址 —— **拼接只此一处**（出码与自检共用，避免两处拼法漂移）。"""
+    if not PAY_PUBLIC_BASE_URL or not provider_id:
+        return ""
+    return f"{PAY_PUBLIC_BASE_URL}/api/pay/notify/{provider_id}"
+
+
 def _est_chars(points: int) -> Optional[int]:
     """这些积分按**当前**计费单价约可合成多少字（不写死在套餐表里的原因见 packs.py）。"""
     if POINTS_PER_1000_CHARS <= 0:
@@ -538,7 +621,10 @@ def list_packs() -> dict:
         "points_per_yuan": 100,
         "points_per_1000_chars": POINTS_PER_1000_CHARS,
         "mock_pay_enabled": MOCK_PAY,
-        "pay_channel_ready": bool(PAY_NOTIFY_SECRET),
+        # 真实支付通道是否就绪（当前通道配好了没有）。前端据此决定按钮形态。
+        "pay_channel_ready": pay_channel_ready(),
+        # 当前生效的通道 id（"" = 未接真实支付）；供前端/自检展示，不参与业务判断。
+        "pay_provider": _pay.describe()["enabled"],
     }
 
 
@@ -583,8 +669,34 @@ def list_orders(user: dict, offset: int = 0, limit: int = 20) -> dict:
     return {"total": total, "offset": offset, "orders": page}
 
 
+def _check_amount(order: dict, amount_fen: Optional[int], policy: str) -> None:
+    """回调金额一致性校验（**策略化**）。
+
+    入账金额一律以**订单快照**为准，这里只回答一个问题：「收到的钱够不够？」
+    —— 不信回调传来的数字（否则被篡改的回调能改价）。
+
+      - `strict`：必须**完全相等**。标准支付接口的常态（多付少付都说明对不上账）。
+      - `ge`    ：**不低于**订单金额。个人收款监听会对金额做微调（同一张收款码
+                  靠「金额唯一」区分多笔待付订单，通常向上加几分钱），严格相等会全拒。
+      - `off`   ：不校验（只认 out_trade_no + 验签；最松，不建议）。
+
+    策略由**通道自己声明**（`mod.AMOUNT_POLICY`），`PAY_AMOUNT_CHECK` 可全局覆盖。
+    """
+    if amount_fen is None or policy == "off":
+        return
+    got, want = int(amount_fen), int(order["amount_fen"])
+    if policy == "ge":
+        if got < want:
+            raise MemberError(f"回调金额 {got} 分低于订单金额 {want} 分，拒绝入账", 400)
+        return
+    if got != want:
+        raise MemberError(
+            f"支付金额与订单不一致（订单 {want} 分，收到 {got} 分）", 400
+        )
+
+
 def settle_order(order_id: str, provider: str, amount_fen: Optional[int] = None,
-                 out_trade_no: str = "") -> dict:
+                 out_trade_no: str = "", amount_policy: str = "strict") -> dict:
     """支付成功入账（**幂等**）。真实回调与模拟支付共用这一条路径。
 
     2026-10-12（Gate 2）改造后的时序 —— 这是"同一订单只入账一次"的关键：
@@ -606,10 +718,7 @@ def settle_order(order_id: str, provider: str, amount_fen: Optional[int] = None,
     order = store.get_order(order_id)
     if not order:
         raise MemberError("订单不存在", 404)
-    if amount_fen is not None and int(amount_fen) != int(order["amount_fen"]):
-        raise MemberError(
-            f"支付金额与订单不一致（订单 {order['amount_fen']} 分，收到 {amount_fen} 分）", 400
-        )
+    _check_amount(order, amount_fen, amount_policy)
     user_id = order["user_id"]
     if not store.get_user(user_id):
         raise MemberError("订单对应用户不存在", 404)
@@ -640,7 +749,8 @@ def settle_order(order_id: str, provider: str, amount_fen: Optional[int] = None,
 
 
 def settle_by_out_trade_no(out_trade_no: str, provider: str,
-                           amount_fen: Optional[int] = None) -> dict:
+                           amount_fen: Optional[int] = None,
+                           amount_policy: str = "strict") -> dict:
     """按商户订单号找单并入账（真实支付回调入口）。
 
     真实通道只回传 out_trade_no、不回传我们的内部 order_id，而 out_trade_no
@@ -653,7 +763,8 @@ def settle_by_out_trade_no(out_trade_no: str, provider: str,
     order = store.find_order(target)
     if not order:
         raise MemberError("订单不存在", 404)
-    return settle_order(order["order_id"], provider, amount_fen=amount_fen, out_trade_no=target)
+    return settle_order(order["order_id"], provider, amount_fen=amount_fen,
+                        out_trade_no=target, amount_policy=amount_policy)
 
 
 def mock_pay(user: dict, order_id: str) -> dict:
@@ -665,6 +776,78 @@ def mock_pay(user: dict, order_id: str) -> dict:
         raise MemberError("模拟支付已关闭", 403)
     order = get_order(user, order_id)   # 归属校验
     return settle_order(order["order_id"], provider="mock", amount_fen=order["amount_fen"])
+
+
+# ─── 真实支付：出码（下单）─────────────────────────────────
+#
+# 职责边界：service 只负责「组装通道上下文 + 落库 + 翻译错误」，
+# **不知道**任何通道字段（通道差异全在 app/membership/pay_*.py）。
+
+def _charge_recent(order: dict) -> bool:
+    """订单里已存的出码信息是否还在复用窗口内。"""
+    created = order.get("pay_created_at") or ""
+    if not created:
+        return False
+    try:
+        age = (datetime.now() - datetime.fromisoformat(created)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age < PAY_CHARGE_REUSE_SECONDS
+
+
+async def create_charge_for_order(user: dict, order_id: str,
+                                  clientip: str = "", device: str = "pc") -> dict:
+    """为 pending 订单向**当前通道**下单（出码）；窗口内重复调用复用已有结果。
+
+    返回 `{"order": <订单>, "pay": {pay_type, pay_info, trade_no, reused}}`，
+    前端按 `pay_type` 渲染：
+        `qrcode`    → 把 pay_info 渲染成二维码
+        `jump`      → 跳转到 pay_info
+        `urlscheme` → 唤起小程序（移动端）
+
+    为什么把出码信息**存进订单**并做复用窗口：各通道对「同一商户订单号重复下单」
+    的行为不一致（可能复用同一支付单，也可能报错）；而用户关掉二维码后又需要能重开
+    —— 复用窗口同时满足这两点。
+    """
+    order = get_order(user, order_id)          # 归属校验（不存在/不是你的 → 404）
+    if order.get("status") != ORDER_PENDING:
+        raise MemberError("该订单已支付或已关闭，无需再次支付", 409)
+
+    if order.get("pay_info") and _charge_recent(order):
+        return {"order": order, "pay": {"pay_type": order.get("pay_type", ""),
+                                        "pay_info": order.get("pay_info", ""),
+                                        "trade_no": order.get("trade_no", ""),
+                                        "reused": True}}
+
+    mod = _pay.default_provider()
+    if mod is None:
+        raise MemberError(_pay.provider_problem() or "支付通道未接入", 503)
+    # 形态检查（缺项 + pid 之类）—— **在发请求之前**拦住，省一次白跑的往返。
+    # 注意用 charge_problem() 而不是 configured()：后者只管"配没配"，
+    # 「pid 填成商户编号」这种"配了但形态错"要靠它才拦得住。
+    if (problem := mod.charge_problem()):
+        raise MemberError(problem, 503)
+    if (base_problem := pay_public_base_problem()):
+        raise MemberError(base_problem, 503)
+
+    ctx = {
+        "notify_url": notify_url_for(mod.PROVIDER_ID),
+        "return_url": PAY_RETURN_URL or None,
+        "clientip": clientip,
+        "device": device,
+    }
+    try:
+        charge = await mod.create_charge(order, ctx)
+    except _pay.PayChannelError as e:
+        raise MemberError(f"下单失败：{e.message}", e.code)
+
+    updated = store.update_order_fields(order_id, {
+        "pay_type": charge.get("pay_type", ""),
+        "pay_info": charge.get("pay_info", ""),
+        "trade_no": charge.get("trade_no", ""),
+        "pay_created_at": datetime.now().isoformat(),
+    }) or order
+    return {"order": updated, "pay": {**charge, "reused": False}}
 
 
 # ─── 合成任务扣费钩子（MEMBER_ENFORCE / 记账模式） ──────────
