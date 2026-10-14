@@ -1,14 +1,15 @@
 /** 个人中心页（/account）：登录/注册、资料编辑、积分（签到/兑换/流水）。 */
 import { useCallback, useEffect, useState } from "react";
 import {
-  Coins, Gift, KeyRound, Loader2, LogIn, Save, ShoppingCart, Sparkles,
+  AlertTriangle, Coins, Gift, KeyRound, Loader2, LogIn, QrCode, Save, ShieldCheck, ShoppingCart, Sparkles,
   Ticket, UserRound, Zap, History, CheckCircle2,
 } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Textarea, Badge } from "@/components/ui";
 import { Header } from "@/components/Header";
 import { ToastNode, useToast } from "@/hooks/useAppInit";
 import { clearSession, initAuth, navigate, refreshUser, setSession, updateUser, useAuth } from "@/lib/auth";
-import { memberApi, type PointLog, type PointsOrder, type PointsPack, type PointsPackList } from "@/api/members";
+import { memberApi, type PayCharge, type PointLog, type PointsOrder, type PointsPack, type PointsPackList } from "@/api/members";
+import { PayDialog } from "@/components/PayDialog";
 import type { MemberUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
@@ -435,11 +436,14 @@ function fmtYuan(fen: number): string {
   return `¥${(fen / 100).toFixed(2).replace(/\.00$/, "")}`;
 }
 
-function ShopCard({ showToast }: { showToast: (m: string) => void }) {
+/** 积分商城（导出以便交互探针 `src/__probe_pay.tsx` 单独挂载取证）。 */
+export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
   const [data, setData] = useState<PointsPackList | null>(null);
   const [orders, setOrders] = useState<PointsOrder[]>([]);
   const [busyId, setBusyId] = useState("");      // 正在处理的套餐 id
   const [loadErr, setLoadErr] = useState("");
+  // 非空 = 出码弹窗打开（存订单 + 出码结果）。以 order_id 作 key，换单即重置弹窗内部状态。
+  const [pay, setPay] = useState<{ order: PointsOrder; charge: PayCharge } | null>(null);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -455,27 +459,56 @@ function ShopCard({ showToast }: { showToast: (m: string) => void }) {
     void loadOrders();
   }, [loadOrders]);
 
+  /** 真实通道就绪 → 出码；否则回落到演示用的模拟支付；都没有则只落单。 */
   const buy = async (pack: PointsPack) => {
     setBusyId(pack.id);
     try {
       const { order } = await memberApi.createOrder(pack.id);
-      if (!data?.mock_pay_enabled) {
-        // 真实支付通道未接入：订单先落库，等支付完成后由回调入账
+      if (data?.pay_channel_ready) {
+        const res = await memberApi.payOrder(order.order_id);
+        setPay({ order: res.order, charge: res.pay });
         await loadOrders();
-        showToast("订单已创建，支付通道接入中，请联系管理员完成付款");
         return;
       }
-      // 演示路径：直接模拟「支付成功回调」
-      const r = await memberApi.mockPay(order.order_id);
-      await refreshUser();
+      if (data?.mock_pay_enabled) {
+        // 演示路径：直接模拟「支付成功回调」
+        const r = await memberApi.mockPay(order.order_id);
+        await refreshUser();
+        await loadOrders();
+        showToast(`支付成功，+${r.added} 积分`);
+        return;
+      }
       await loadOrders();
-      showToast(`支付成功，+${r.added} 积分`);
+      showToast("订单已创建，但支付通道尚未就绪，请联系管理员");
     } catch (e) {
+      await loadOrders();
       showToast(e instanceof Error ? e.message : "购买失败");
     } finally {
       setBusyId("");
     }
   };
+
+  /** 待支付订单「去支付」：重新出码或复用上次支付码（后端 30 分钟内复用）。 */
+  const openPay = async (order: PointsOrder) => {
+    setBusyId(order.order_id);
+    try {
+      const res = await memberApi.payOrder(order.order_id);
+      setPay({ order: res.order, charge: res.pay });
+    } catch (e) {
+      // 订单已支付/已关闭等 → 刷新列表让状态回正
+      await loadOrders();
+      showToast(e instanceof Error ? e.message : "发起支付失败");
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  /** 轮询确认入账后由弹窗回调：刷新余额、订单列表并提示。 */
+  const onPaid = useCallback(async (points: number) => {
+    await refreshUser();
+    await loadOrders();
+    showToast(`支付成功，+${points} 积分`);
+  }, [loadOrders, showToast]);
 
   const payPending = async (order: PointsOrder) => {
     setBusyId(order.order_id);
@@ -502,11 +535,12 @@ function ShopCard({ showToast }: { showToast: (m: string) => void }) {
   }
 
   return (
-    <Card>
-      <CardHeader className="flex items-center justify-between">
-        <CardTitle className="flex items-center gap-1.5">
-          <ShoppingCart className="w-4 h-4 text-indigo-500" />积分商城
-        </CardTitle>
+    <>
+      <Card>
+        <CardHeader className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-1.5">
+            <ShoppingCart className="w-4 h-4 text-indigo-500" />积分商城
+          </CardTitle>
         {data && data.points_per_1000_chars > 0 && (
           <span className="text-[0.6875rem] text-gray-400">
             1 元 = {data.points_per_yuan} 积分 · 1000 积分 ≈ {fmtChars(1000 * 1000 / data.points_per_1000_chars)}
@@ -551,14 +585,26 @@ function ShopCard({ showToast }: { showToast: (m: string) => void }) {
           </div>
         )}
 
-        {data && !data.mock_pay_enabled && !data.pay_channel_ready && (
+        {data?.pay_channel_ready && (
+          <p className="text-[0.6875rem] text-gray-400 flex items-center gap-1">
+            <ShieldCheck className="w-3 h-3" />
+            已接入真实支付通道（{data.pay_provider || "自定义"}）：扫码付款后，到账由支付回调自动完成。
+          </p>
+        )}
+        {data && !data.pay_channel_ready && !data.mock_pay_enabled && (
           <p className="text-[0.6875rem] text-gray-400">
             购买后订单会保留，支付通道接入完成后由支付回调自动入账。
           </p>
         )}
-        {data?.mock_pay_enabled && (
+        {data?.mock_pay_enabled && !data.pay_channel_ready && (
           <p className="text-[0.6875rem] text-amber-600 flex items-center gap-1">
             <Sparkles className="w-3 h-3" />当前为演示模式：点「购买」直接模拟支付成功并入账，未接真实支付通道。
+          </p>
+        )}
+        {data?.mock_pay_enabled && data.pay_channel_ready && (
+          <p className="text-[0.6875rem] text-red-500 flex items-center gap-1">
+            <AlertTriangle className="w-3 h-3 shrink-0" />
+            真实通道已就绪，但「模拟支付」仍开启（MEMBER_MOCK_PAY=1）—— 任何登录用户都能给自己的订单免费入账，请置 0。
           </p>
         )}
 
@@ -577,11 +623,18 @@ function ShopCard({ showToast }: { showToast: (m: string) => void }) {
                     </p>
                     <p className="text-[0.625rem] text-gray-400">{fmtTime(o.paid_at || o.created_at)}</p>
                   </div>
-                  {o.status === "pending" && data?.mock_pay_enabled && (
+                  {o.status === "pending" && data?.mock_pay_enabled && !data?.pay_channel_ready && (
                     <Button size="sm" variant="outline"
                       icon={busyId === o.order_id ? Loader2 : CheckCircle2}
                       disabled={!!busyId} onClick={() => void payPending(o)}>
                       模拟支付
+                    </Button>
+                  )}
+                  {o.status === "pending" && data?.pay_channel_ready && (
+                    <Button size="sm" variant="outline"
+                      icon={busyId === o.order_id ? Loader2 : QrCode}
+                      disabled={!!busyId} onClick={() => void openPay(o)}>
+                      去支付
                     </Button>
                   )}
                 </div>
@@ -589,8 +642,21 @@ function ShopCard({ showToast }: { showToast: (m: string) => void }) {
             </div>
           </div>
         )}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      {/* 出码弹窗：key 用订单号 —— 换单必须重置内部状态（否则会沿用上一单的支付码） */}
+      {pay && (
+        <PayDialog
+          key={pay.order.order_id}
+          order={pay.order}
+          charge={pay.charge}
+          showToast={showToast}
+          onPaid={() => void onPaid(pay.order.points)}
+          onClose={() => setPay(null)}
+        />
+      )}
+    </>
   );
 }
 

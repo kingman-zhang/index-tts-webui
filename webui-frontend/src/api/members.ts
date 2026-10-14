@@ -34,7 +34,10 @@ export interface PointsPackList {
   points_per_1000_chars: number;
   /** true 时前端才显示「立即购买（模拟支付）」；接入真实支付后后端会置 false */
   mock_pay_enabled: boolean;
+  /** 真实支付通道是否**已就绪**（当前通道已注册且配置齐全） */
   pay_channel_ready: boolean;
+  /** 当前生效的通道 id（"" = 未接真实支付）；仅供展示，不参与业务判断 */
+  pay_provider: string;
 }
 
 export interface PointsOrder {
@@ -48,6 +51,23 @@ export interface PointsOrder {
   out_trade_no: string;
   created_at: string;
   paid_at: string | null;
+  /** 通道出码结果（未出过码时后端不返回这些字段） */
+  pay_type?: PayType;
+  pay_info?: string;
+  trade_no?: string;
+  pay_created_at?: string;
+}
+
+/** 出码形态：三选一，决定前端怎么把 `pay_info` 呈现给用户。 */
+export type PayType = "" | "qrcode" | "jump" | "urlscheme";
+
+export interface PayCharge {
+  pay_type: PayType;
+  /** 渲染所需内容：qrcode=二维码内容 / jump=跳转链接 / urlscheme=小程序链接 */
+  pay_info: string;
+  trade_no: string;
+  /** true = 落在复用窗口内，沿用了上一次的出码结果（未重复向下游下单） */
+  reused: boolean;
 }
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
@@ -136,10 +156,28 @@ export const memberApi = {
       `/api/points/orders?offset=${offset}&limit=${limit}`);
   },
 
+  /**
+   * 单条订单（**支付后轮询**用）。
+   * 只读：后端不会因为被轮询而把订单改成已支付 —— 入账只发生在支付回调里。
+   */
+  async order(orderId: string) {
+    return fetchJSON<{ order: PointsOrder }>(`/api/points/orders/${orderId}`);
+  },
+
   /** 下单只落一条 pending 订单，**不发积分**（积分在支付成功回调里发）。 */
   async createOrder(packId: string) {
     return fetchJSON<{ order: PointsOrder }>("/api/points/orders",
       jsonInit("POST", { pack_id: packId }));
+  },
+
+  /**
+   * 向当前支付通道下单（出码）。前端按返回的 `pay_type` 渲染：
+   * qrcode → 二维码；jump → 跳转链接；urlscheme → 唤起小程序。
+   * 同一订单在复用窗口内重复调用返回 `reused: true`（沿用上次结果）。
+   */
+  async payOrder(orderId: string) {
+    return fetchJSON<{ order: PointsOrder; pay: PayCharge }>(
+      `/api/points/orders/${orderId}/pay`, { method: "POST" });
   },
 
   /** 模拟支付成功（演示用）。与真实回调同一条入账路径，同样幂等。 */

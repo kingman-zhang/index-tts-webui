@@ -1,0 +1,25 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 980
+  },
+  "qr": {
+    "ok": true,
+    "w": 168,
+    "h": 168,
+    "viewBox": "0 0 29 29",
+    "len": 2829
+  },
+  "stats": {
+    "orderPaid": true,
+    "payCalls": 2,
+    "orderCalls": 2,
+    "listCalls": 7,
+    "packsCalls": 4,
+    "mockPayCalls": 1
+  },
+  "log": [
+    "支付成功，+1000 积分",
+    "支付成功，+1000 积分"
+  ]
+}
