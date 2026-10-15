@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -59,6 +60,15 @@ from app.membership import pay, pay_generic, pay_mpay, service, store  # noqa: E
 from app.membership.pay_contract import PayChannelError  # noqa: E402
 
 client = TestClient(app)
+
+# ── 同面额预检：默认打桩成「永远没人占位」─────────────────────────
+# 本文件绝大多数用例关心的是出码 / 回调 / 金额策略，而 `new_order` 造的夹具清一色是
+# ¥10 —— 在「全平台同一面额只允许一笔待付单」（2026-10-15 新增）这条规则下，夹具
+# 之间会互相占位，把一批与本规则无关的用例拖红。所以默认关掉预检，
+# 只让专门测它的 [21]/[22] 显式恢复真实实现。
+# ⚠️ 恢复时要用下面这个引用，不能写 `service._same_amount_holder`（那时它已经是桩了）。
+_real_holder = service._same_amount_holder
+service._same_amount_holder = lambda *a, **k: None
 
 PASS = 0
 FAIL = 0
@@ -100,8 +110,56 @@ def md5_ref(params: dict, key: str) -> str:
 
 
 def new_order(token: str) -> dict:
-    return client.post("/api/points/orders", json={"pack_id": "p1000"},
-                       headers=auth(token)).json()["order"]
+    """造一条 ¥10 的 pending 订单**夹具**（直接落库，**不经下单接口**）。
+
+    为什么不走 `POST /api/points/orders`（2026-10-15 起）：该接口加了**同面额预检**
+    —— 全平台同一面额只允许存在一笔待付单。本文件十几处夹具清一色是 ¥10，走接口的话
+    后一个会被前一个拦住（`["order"]` 直接 KeyError）；更要命的是 [21] 恰恰要构造
+    "两个用户各挂一笔同面额单"的状态来验证跨用户占用，走接口根本造不出来。
+
+    这里要的是"一个订单夹具"，不是"测下单接口" —— 真正测下单接口的用例（[21]/[22]）
+    都显式写 `client.post`。
+    """
+    user = service.resolve_token(token)
+    pack = next(p for p in service.list_packs()["packs"] if p["id"] == "p1000")
+    order_id = f"ord_{uuid.uuid4().hex[:12]}"
+    order = {
+        "order_id": order_id,
+        "user_id": user["user_id"],
+        "pack_id": pack["id"],
+        "pack_name": pack["name"],
+        "points": pack["points"],
+        "amount_fen": pack["price_fen"],
+        "status": "pending",
+        "provider": "",
+        "out_trade_no": order_id,
+        "credit_log_id": "",
+        "created_at": datetime.now().isoformat(),
+        "paid_at": None,
+    }
+    store.insert_order(order)
+    return order
+
+
+def expire_all_pending() -> int:
+    """把所有待付单推过期并落库，返回处理条数。
+
+    给 [21]/[22] 这种要**打开真实预检**的用例清场用：本文件前面几十处夹具是在
+    "预检打桩"下建的，库里积了一堆 ¥10 待付单；不清理的话一恢复真实现就会被它们拦住，
+    测出来的就不是我们想测的东西了。
+
+    改 `created_at`（不是 `pay_created_at`）：这些单大多从没出过码，别伪造"出过码"的痕迹。
+    `order_expired` 的基准是 `pay_created_at or created_at`，推前者即可让它们失效。
+    """
+    n = 0
+    for o in list(store.load_orders().values()):
+        if o.get("status") == "pending":
+            store.update_order_fields(o["order_id"], {
+                "created_at": (datetime.now() - timedelta(
+                    seconds=service.PAY_CHARGE_VALID_SECONDS + 1)).isoformat()})
+            store.expire_order(o["order_id"])
+            n += 1
+    return n
 
 
 def notify_params(order: dict, money: str = "10.00", status: str = "TRADE_SUCCESS",
@@ -664,59 +722,107 @@ check("★★过期订单收到真实支付回调**仍然入账**（expired 必�
       f"{_r20n.status_code} {_r20n.text!r} {_b20}->{balance(t1)}")
 check("过期单入账后转 paid", store.get_order(_o20["order_id"])["status"] == "paid")
 
-# ─── [21] 同一面额被占用（需求 2）───────────────────────────
-# 个人收款监听按**金额**匹配 ⇒ 同一面额同时刻只能挂一张待付单。我们自己先拦，
-# 比让 mpay 回一句「可用金额偏移已用尽」体验好得多，也省一次白跑的往返。
-# 判据必须与平台一致：**已出码 + 仍在有效期**（只建单没出码在平台侧什么都不占）。
+# ─── [21] 同一面额被占用 ─────────────────────────────────────
+# 规则（2026-10-15 用户拍板，**全平台口径、跨用户**）：订单表里只要存在一笔同面额的
+# 「未支付」订单，就不可创建新订单；过期单要**真落库**流转成 expired，流转掉就不再占位。
+# 本节显式恢复真实的预检实现（本文件其余部分把它打桩成「没人占位」，见文件头）。
+#
+# ★ 错误码必须区分「占位的是别人」还是「占位的是自己」（2026-10-15 用户反馈）：
+#   弹窗里除正文外还有一句"那你现在能做什么"，而它**只对"是自己的单"成立** ——
+#   自己占着→手里确实有一笔能付的单，可以引导他去「最近订单」付掉；别人占着→
+#   用户根本没下过单，再指引他去找"他那笔待付单"只会让人懵。所以两个码都要有人测。
 print("[21] 同一面额被占用（我们侧预检）")
-_o21a = new_order(t1)
-store.update_order_fields(_o21a["order_id"], {
-    "pay_type": "qrcode", "pay_info": "weixin://busy",
-    "pay_created_at": datetime.now().isoformat(),
-})
-_o21b = new_order(t2)                      # 别的用户下的**同面额**单
-_calls21 = {"n": 0}
+expire_all_pending()                    # 清掉前面夹具留下的 ¥10 待付单，避免干扰
+with patch.object(service, "_same_amount_holder", _real_holder):
+    # 占用方：t1 的一笔 ¥10 单（已出码、仍在有效期）
+    _o21a = new_order(t1)
+    store.update_order_fields(_o21a["order_id"], {
+        "pay_type": "qrcode", "pay_info": "weixin://busy",
+        "pay_created_at": datetime.now().isoformat(),
+    })
 
+    # ① 下单前就拦：别的用户下**同面额**单 → 409，且**不落单**
+    _n21before = len(client.get("/api/points/orders", headers=auth(t2)).json()["orders"])
+    _r21b = client.post("/api/points/orders", json={"pack_id": "p1000"}, headers=auth(t2))
+    _n21after = len(client.get("/api/points/orders", headers=auth(t2)).json()["orders"])
+    check("★同面额已被占用 ⇒ 下单 409（跨用户也算占用）",
+          _r21b.status_code == 409, f"{_r21b.status_code} {_r21b.text[:120]}")
+    check("★文案就是给用户看的那一句",
+          _r21b.json().get("detail") == service.SAME_AMOUNT_BUSY_MSG, str(_r21b.json()))
+    check("★响应带机器可读的 code（前端按它弹窗，不去匹配中文）",
+          _r21b.json().get("code") == service.SAME_AMOUNT_BUSY_OTHER_CODE, str(_r21b.json()))
+    check("★★占位的是**别人** ⇒ code 必须是 other（前端据此**不给**「去最近订单」那句指引）",
+          _r21b.json().get("code") != service.SAME_AMOUNT_BUSY_SELF_CODE, str(_r21b.json()))
+    check("★★被拦时**不产生订单**（用户要的就是「不需要生成订单」）",
+          _n21after == _n21before, f"{_n21before} -> {_n21after}")
 
-async def _fake21(order, ctx, client=None):
-    _calls21["n"] += 1
-    return {"trade_no": "T", "pay_type": "qrcode", "pay_info": "weixin://x"}
+    # ② 出码这道闸门同样在：兜住「下单之后、出码之前被别人抢了同面额」的窗口
+    _o21b = new_order(t2)
+    _calls21 = {"n": 0}
 
+    async def _fake21(order, ctx, client=None):
+        _calls21["n"] += 1
+        return {"trade_no": "T", "pay_type": "qrcode", "pay_info": "weixin://x"}
 
-with patch.object(pay_mpay, "create_charge", _fake21):
-    _r21 = client.post(f"/api/points/orders/{_o21b['order_id']}/pay", headers=auth(t2))
-check("★同一面额已被占用 ⇒ 409 + 用户可照做的文案（跨用户也算占用）",
-      _r21.status_code == 409 and _r21.json().get("detail") == service.SAME_AMOUNT_BUSY_MSG,
-      f"{_r21.status_code} {_r21.json()}")
-check("★被占用时未向通道发请求", _calls21["n"] == 0, str(_calls21))
+    with patch.object(pay_mpay, "create_charge", _fake21):
+        _r21 = client.post(f"/api/points/orders/{_o21b['order_id']}/pay", headers=auth(t2))
+    check("★出码时同样被拦 ⇒ 409 + 同一句文案",
+          _r21.status_code == 409 and _r21.json().get("detail") == service.SAME_AMOUNT_BUSY_MSG,
+          f"{_r21.status_code} {_r21.json()}")
+    check("★被占用时不向通道发请求（不白跑一次往返）", _calls21["n"] == 0, str(_calls21))
+    check("★出码被拦同样带 code，且占位的是别人 ⇒ other",
+          _r21.json().get("code") == service.SAME_AMOUNT_BUSY_OTHER_CODE, str(_r21.json()))
 
-_o21c = client.post("/api/points/orders", json={"pack_id": "p3200"},
-                    headers=auth(t2)).json()["order"]
-with patch.object(pay_mpay, "create_charge", _fake21):
-    _r21c = client.post(f"/api/points/orders/{_o21c['order_id']}/pay", headers=auth(t2))
-check("★不同面额可继续下单支付（¥30 档不受 ¥10 档占用影响）",
-      _r21c.status_code == 200 and _calls21["n"] == 1,
-      f"{_r21c.status_code} {_r21c.text[:120]} calls={_calls21['n']}")
+    # ③ 不同面额互不影响
+    _o21c = client.post("/api/points/orders", json={"pack_id": "p3200"},
+                        headers=auth(t2)).json()["order"]
+    with patch.object(pay_mpay, "create_charge", _fake21):
+        _r21c = client.post(f"/api/points/orders/{_o21c['order_id']}/pay", headers=auth(t2))
+    check("★不同面额可继续下单支付（换一档就不受占用影响）",
+          _r21c.status_code == 200 and _calls21["n"] == 1,
+          f"{_r21c.status_code} {_r21c.text[:120]} calls={_calls21['n']}")
 
-# 只建单、没出码的旧单在平台侧**什么都不占** —— 不能把它误判成冲突（否则正常下单被堵死）
-_o21d = client.post("/api/points/orders", json={"pack_id": "p5750"},
-                    headers=auth(t2)).json()["order"]
-_o21e = client.post("/api/points/orders", json={"pack_id": "p5750"},
-                    headers=auth(t2)).json()["order"]
-with patch.object(pay_mpay, "create_charge", _fake21):
-    _r21e = client.post(f"/api/points/orders/{_o21e['order_id']}/pay", headers=auth(t2))
-check("★未出码的同面额旧单不算占用（判据是「已出码」而不是「建过单」）",
-      _r21e.status_code == 200, f"{_r21e.status_code} {_r21e.text[:120]}")
-check("sanity：同面额的两张未出码单都在", _o21d["order_id"] != _o21e["order_id"])
+    # ④ ★口径反转：判据由「已出码」改成「pending 且未过期」。
+    #    拦的时机前移到下单前之后，就不该再有"建了单却没出码"的幽灵单占着位子。
+    _o21d = client.post("/api/points/orders", json={"pack_id": "p5750"},
+                        headers=auth(t2)).json()["order"]
+    _r21e = client.post("/api/points/orders", json={"pack_id": "p5750"}, headers=auth(t2))
+    check("★未出码的同面额待付单**也算占位**（下单即拦，不必等出码）",
+          _r21e.status_code == 409 and _r21e.json().get("code") == service.SAME_AMOUNT_BUSY_SELF_CODE,
+          f"{_r21e.status_code} {_r21e.text[:120]}")
+    check("★★占位的是**自己**刚下的那笔 ⇒ code 必须是 self（前端据此才补「去最近订单」指引）",
+          _r21e.json().get("code") == service.SAME_AMOUNT_BUSY_SELF_CODE, str(_r21e.json()))
+    _cnt21 = len([o for o in client.get("/api/points/orders", headers=auth(t2)).json()["orders"]
+                  if o["pack_id"] == "p5750"])
+    check("★第二笔同样没落单（该面额只有一笔）", _cnt21 == 1, f"count={_cnt21}")
+    check("sanity：第一笔确实在", bool(_o21d.get("order_id")))
 
-# ─── [22] 过期订单可正常重新下单（流程闭环）──────────────────
-print("[22] 过期后重新下单")
-_o22 = new_order(t1)
-store.update_order_fields(_o22["order_id"], {"pay_created_at": (datetime.now() - timedelta(
-    seconds=service.PAY_CHARGE_VALID_SECONDS + 1)).isoformat()})
-_r22 = client.post("/api/points/orders", json={"pack_id": "p1000"}, headers=auth(t1))
-check("★过期不影响重新下单（拿到新单）", _r22.status_code == 200, str(_r22.status_code))
-check("新单状态为 pending", _r22.json()["order"]["status"] == "pending", str(_r22.json()["order"]))
+# ─── [22] 待付单过期后可以重新下单（流程闭环）────────────────
+# 用户原话："如果订单过期了，则该订单需要标记为已过期，这时订单表没未支付订单
+# 就可以创建了" —— 本节测这个闭环：被占 → 过期 → 放行，且过期必须**真落库**。
+print("[22] 待付单过期后可以重新下单")
+expire_all_pending()
+with patch.object(service, "_same_amount_holder", _real_holder):
+    _o22hold = new_order(t1)
+    store.update_order_fields(_o22hold["order_id"],
+                              {"pay_created_at": datetime.now().isoformat()})
+    _r22busy = client.post("/api/points/orders", json={"pack_id": "p1000"}, headers=auth(t1))
+    check("sanity：被占住时确实下不了单", _r22busy.status_code == 409, str(_r22busy.status_code))
+    check("★★自己那笔待付单占着 ⇒ code = self（这正是需要引导他去「最近订单」付款的场景）",
+          _r22busy.json().get("code") == service.SAME_AMOUNT_BUSY_SELF_CODE, str(_r22busy.json()))
+
+    # 推到有效期之外 —— 模拟"等 5 分钟后再来"
+    store.update_order_fields(_o22hold["order_id"], {
+        "pay_created_at": (datetime.now() - timedelta(
+            seconds=service.PAY_CHARGE_VALID_SECONDS + 1)).isoformat()})
+
+    _r22 = client.post("/api/points/orders", json={"pack_id": "p1000"}, headers=auth(t1))
+    check("★过期后可以重新下单（拿到新单）", _r22.status_code == 200, str(_r22.status_code))
+    check("新单状态为 pending",
+          _r22.json()["order"]["status"] == "pending", str(_r22.json()["order"]))
+    check("★★过期单被**真落库**成 expired（预检路过时顺手流转，不是只改了返回值）",
+          store.get_order(_o22hold["order_id"])["status"] == "expired",
+          str(store.get_order(_o22hold["order_id"])["status"]))
 
 print(f"\n=== mpay 支付通道：{PASS} 通过 / {FAIL} 失败 ===")
 sys.exit(1 if FAIL else 0)

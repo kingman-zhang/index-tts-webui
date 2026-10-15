@@ -42,6 +42,12 @@ from app.membership.service import MemberError  # noqa: E402
 
 client = TestClient(app)
 
+# ── 同面额预检：打桩成「永远没人占位」─────────────────────────────
+# 本文件测的是下单 / 入账 / 流水 / 回调契约，不是「同一面额全平台串行」那条规则；
+# 而它连续用同一档（p1000）下单三次，真实现下第二笔就会被第一笔拦住。
+# 规则本身在 `test_pay_mpay.py` 的 [21]/[22] 里专门测（那里会恢复真实实现）。
+service._same_amount_holder = lambda *a, **k: None
+
 PASS = 0
 FAIL = 0
 
