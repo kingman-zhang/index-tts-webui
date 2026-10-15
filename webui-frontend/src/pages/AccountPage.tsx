@@ -2,10 +2,11 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle, ChevronRight, Coins, Gift, KeyRound, Loader2, LogIn, QrCode, Save, ShoppingCart, Sparkles,
-  Ticket, UserRound, Zap, History, CheckCircle2,
+  Ticket, UserRound, Zap, History, CheckCircle2, BookOpen,
 } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Textarea, Badge } from "@/components/ui";
 import { Header } from "@/components/Header";
+import { openDocs } from "@/lib/docs";
 import { AlertDialog } from "@/components/AlertDialog";
 import { ToastNode, useToast } from "@/hooks/useAppInit";
 import { clearSession, initAuth, navigate, refreshUser, setSession, updateUser, useAuth } from "@/lib/auth";
@@ -415,6 +416,15 @@ function PointsCard({ showToast }: { showToast: (m: string) => void }) {
           </div>
         </div>
         <p className="text-[0.6875rem] text-gray-400">积分可在语音合成时抵扣用量，余额 <span className="text-amber-600 font-medium">{user!.points}</span></p>
+        {/* 第一次用的人常在这里卡住（"积分怎么用""怎么生成"），所以把说明书摆在积分旁边 */}
+        <button
+          type="button"
+          onClick={openDocs}
+          className="flex w-full items-center gap-1 text-left text-[0.6875rem] font-medium text-indigo-600 transition-colors hover:text-indigo-700"
+        >
+          <BookOpen className="w-3 h-3" /> 不知道怎么用？查看《产品使用文档》
+          <ChevronRight className="w-3 h-3" />
+        </button>
       </CardContent>
     </Card>
   );

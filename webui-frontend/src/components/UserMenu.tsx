@@ -1,10 +1,11 @@
 /** 顶栏用户菜单：未登录显示「登录」，登录后显示昵称+积分下拉（两个工作页共用）。 */
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Coins, LogOut, UserRound } from "lucide-react";
+import { BookOpen, ChevronDown, Coins, LogOut, UserRound } from "lucide-react";
 import { Button } from "./ui";
 import { clearSession, initAuth, navigate, refreshUser, useAuth } from "@/lib/auth";
 import { memberApi } from "@/api/members";
 import { cn } from "@/lib/utils";
+import { openDocs } from "@/lib/docs";
 
 let inited = false;
 
@@ -91,6 +92,15 @@ export function UserMenu() {
             className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-gray-600 hover:bg-indigo-50/60 hover:text-indigo-700 transition-colors"
           >
             <UserRound className="w-3.5 h-3.5" /> 个人中心 / 积分
+          </button>
+          {/* 使用文档：**新标签页**打开 —— 说明书是"边看边做"的东西，
+              在当前标签页里跳走会把用户正在写的稿子顶掉（虽然草稿不丢，但位置没了）。 */}
+          <button
+            type="button"
+            onClick={openDocs}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-gray-600 hover:bg-indigo-50/60 hover:text-indigo-700 transition-colors"
+          >
+            <BookOpen className="w-3.5 h-3.5" /> 使用文档
           </button>
           <button
             type="button"
