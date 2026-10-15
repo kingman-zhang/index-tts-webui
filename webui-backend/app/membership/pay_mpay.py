@@ -330,9 +330,14 @@ async def create_charge(order: dict, ctx: dict, client=None) -> dict:
     if int(js.get("code", 0)) != 1:
         # 「同一面额已被占用」是**预期内的业务结果**，不是通道故障：换成用户看得懂、
         # 且能照做的文案（与 service 侧预检用同一句，前端无需区分来源）。
+        #
+        # 错误码固定用 **_OTHER**：平台只说"金额偏移用尽"，**不会告诉我们占位的是谁**。
+        # 而我们侧预检已经把"自己的单占位"先拦掉了，能走到这里的本来就只有外部占用；
+        # 万一漏判，也宁可少说（不补"去最近订单付款"那句指引）也不能误导一个什么都没下过的用户。
         if _looks_like_same_amount_busy(js):
             from . import service
-            raise PayChannelError(service.SAME_AMOUNT_BUSY_MSG, 409)
+            raise PayChannelError(service.SAME_AMOUNT_BUSY_MSG, 409,
+                                  service.SAME_AMOUNT_BUSY_OTHER_CODE)
         raise PayChannelError(f"mpay 下单失败：{js.get('msg') or js}（code={js.get('code')}）")
 
     trade_no = str(js.get("trade_no") or "")

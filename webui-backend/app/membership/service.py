@@ -127,12 +127,20 @@ EMAIL_CODE_MAX_ATTEMPTS = 5       # 验证错误次数上限，超过作废
 
 
 class MemberError(Exception):
-    """业务错误：message 面向用户，code 为 HTTP 状态码。"""
+    """业务错误：message 面向用户，code 为 HTTP 状态码。
 
-    def __init__(self, message: str, code: int = 400):
+    `err_code` 是**机器可读的业务错误标识**（如 `same_amount_busy_self`），供前端做分支。
+    为什么不复用 `code`：`code` 是 HTTP 状态码，同一个 409 底下可能有好几种业务原因
+    （订单已过期 / 已支付 / 同面额被占），前端按状态码判断必然误判；更不该让前端去
+    匹配中文文案 —— 文案会改，而匹配文案的代码不会跟着改（2026-10-15）。
+    留空 = "这个错误不需要前端分支"，此时响应体形态与加这个字段之前**完全一致**。
+    """
+
+    def __init__(self, message: str, code: int = 400, err_code: str = ""):
         super().__init__(message)
         self.message = message
         self.code = code
+        self.err_code = err_code
 
 
 class SessionStoreUnavailable(Exception):
@@ -667,10 +675,21 @@ def list_packs() -> dict:
 
 
 def create_order(user: dict, pack_id: str) -> dict:
-    """按套餐下单，返回 pending 订单。**此处不发积分。**"""
+    """按套餐下单，返回 pending 订单。**此处不发积分。**
+
+    ⚠️ **同面额预检在下单之前**（2026-10-15）：同一面额全平台只允许存在一笔待付单，
+    被占住时**直接拒绝、不落单**。此前预检只在出码时做 —— 用户点一次「购买」就多
+    一条 pending 订单（出码被拒了，可单已经建出来了），列表越积越长。用户要求
+    「不需要生成订单，等可支付时再生成」，所以拦在这里。
+    """
     pack = _packs.get_pack(pack_id)
     if not pack:
         raise MemberError("套餐不存在", 404)
+    # 占位判断是**全局**的（跨用户）：平台按金额匹配，别人占着同一面额我们也下不进去。
+    # 拦下来时要把"占位的是谁"一并交给前端 —— 只有占位的是他自己的单，才谈得上引导他去付。
+    holder = _same_amount_holder(pack["price_fen"])
+    if holder:
+        raise _same_amount_error(holder, user)
     order_id = f"{ORDER_ID_PREFIX}{uuid.uuid4().hex[:12]}"
     order = {
         "order_id": order_id,
@@ -873,6 +892,17 @@ def mock_pay(user: dict, order_id: str) -> dict:
 # 对用户都是同一句话。`pay_mpay` 把平台的同类错误也翻译成这一句。
 SAME_AMOUNT_BUSY_MSG = "该面额当前有一笔待支付的订单，请约 5 分钟后重试"
 
+# 机器可读标识：前端据此弹「只有确认按钮」的告知弹窗，而不是去匹配上面那句中文。
+#
+# **为什么分两个码**（2026-10-15 用户反馈）：弹窗正文下面还有一句"那你现在能做什么"，
+# 而这句话**只对"占位的是自己"成立** —— 自己占着时手里确实有一笔能付的单，引导他
+# 去「最近订单」里把它付掉是对的；**别人**占着时用户根本没下过单，还指引他去找
+# "他那笔待付单"，只会让人一头雾水（"我明明没下过单"）。
+# 所以"占位的是谁"必须能穿过接口到达前端。
+# ⚠️ 正文文案两个码**共用同一句**（用户指定的原文），差别只在**前端补的那句指引**。
+SAME_AMOUNT_BUSY_SELF_CODE = "same_amount_busy_self"
+SAME_AMOUNT_BUSY_OTHER_CODE = "same_amount_busy_other"
+
 
 def _charge_recent(order: dict) -> bool:
     """订单里已存的出码信息是否还在复用窗口内。"""
@@ -886,31 +916,59 @@ def _charge_recent(order: dict) -> bool:
     return 0 <= age < PAY_CHARGE_REUSE_SECONDS
 
 
-def _same_amount_blocker(order: dict) -> Optional[dict]:
-    """**全局**找一单会占住同一面额的订单；没有就返回 None。
+def _same_amount_holder(amount_fen: Optional[int],
+                        exclude_order_id: Optional[str] = None) -> Optional[dict]:
+    """**全局**（跨用户）找一笔占住该面额的待付单；没有就返回 None。
 
     为什么要**全局**而不是只看当前用户：个人收款监听是平台**按金额**匹配的，
     别人占着同一面额时我们同样下不进去 —— 只看自己会漏报，用户还是会撞到
     「可用金额偏移已用尽」。所以口径必须与平台一致：**按金额，跨用户**。
 
-    「会占住」的判据照抄平台的事实：**已经出过码**（`pay_created_at` 存在）
-    且仍在有效期内。只建单、没出码的订单在平台侧**什么都不占** —— 用
-    `created_at` 当判据会把"用户自己一堆没付的旧单"误判成冲突，反而把正常下单堵死。
-    已支付/已过期的单自然不占位。
+    判据（2026-10-15 用户拍板的口径）：`status == pending` **且未过期** 即算占位
+    —— 不再要求"已经出过码"。理由：这条规则的使用场景从「出码前」前移到了
+    「下单前」；既然下单前就拦，就不该再有"建了单却没出码"的幽灵单占着位子。
+    而真正超时的单会在下面被**当场真落库**流转成 expired，所以不会永久堵死。
+
+    ⚠️ 遇到过期单必须**真落库**（`store.expire_order`），不能只在返回值里改状态 ——
+    用户明确要求「过期了就标记为已过期，这时订单表没未支付订单就可以创建了」；
+    只改返回值的话库里那条还是 pending，下一次预检又会把它捞出来。
+
+    `exclude_order_id`：出码路径要排除**自己这一笔**（否则用户点自己那张待付单的
+    「去支付」会被自己拦住）；下单路径没有"自己那一笔"，传 None。
+
+    ⚠️ 这是**尽力而为**的预检，不是原子闸门：查与建之间存在窗口，两人同时下单
+    可能都过。真正的闸门在平台侧（按金额匹配，偏移用尽会报错），由 `pay_mpay`
+    把那条错误翻译成同一句文案兜底。
     """
-    amount = order.get("amount_fen")
-    if amount is None:
+    if amount_fen is None:
         return None
     for other in store.load_orders().values():
-        if other.get("order_id") == order.get("order_id"):
+        if exclude_order_id and other.get("order_id") == exclude_order_id:
             continue
         if other.get("status") != ORDER_PENDING:
             continue
-        if other.get("amount_fen") != amount:
+        if other.get("amount_fen") != amount_fen:
             continue
-        if other.get("pay_created_at") and not order_expired(other):
-            return other
+        if order_expired(other):
+            store.expire_order(other["order_id"])   # 真落库：过期就不再占位
+            continue
+        return other
     return None
+
+
+def _same_amount_error(holder: dict, user: dict) -> MemberError:
+    """把"面额被占"翻成面向用户的错误 —— **占位的是自己还是别人，错误码不同**。
+
+    只有"占着的那张单是自己的"时才敢引导用户去「最近订单」里付款；是别人的单时前端
+    不该补那句指引（用户手里根本没有单，让他去找只会更困惑）。
+    判据是 `user_id` 相等，**不是**"看起来像"—— 猜错就会把别人占位的提示塞给一个
+    什么都没下过的用户。
+
+    ⚠️ 两个码共用同一句正文（用户指定的原文），差别只在前端补的指引，见常量处注释。
+    """
+    own = holder.get("user_id") == user.get("user_id")
+    return MemberError(SAME_AMOUNT_BUSY_MSG, 409,
+                       SAME_AMOUNT_BUSY_SELF_CODE if own else SAME_AMOUNT_BUSY_OTHER_CODE)
 
 
 async def create_charge_for_order(user: dict, order_id: str,
@@ -931,10 +989,13 @@ async def create_charge_for_order(user: dict, order_id: str,
     的行为不一致（可能复用同一支付单，也可能报错）；而用户关掉二维码后又需要能重开
     —— 复用窗口同时满足这两点。
 
-    ⚠️ 两道**同一面额**的闸门（2026-10-15）：
-      ① 出码前**我们侧预检**：同一 `amount_fen` 已有"已出码且未过期"的待付单 ⇒ 直接
-         回友好文案，不白跑一次平台往返。这是**主路径**（自己人能拦就自己拦）。
-      ② 平台侧兜底：mpay 按金额匹配，别人（或历史）占着同一面额时会回
+    ⚠️ 同一面额有**三道**闸门（2026-10-15，从外到内）：
+      ① **下单前**（`create_order`）：全平台同面额已有未过期待付单 ⇒ 直接拒绝，
+         **不落单**。这是最主要的一道 —— 用户看到的"点一次购买就多一条订单"
+         就是它缺位造成的。
+      ② 出码前**我们侧预检**（本函数）：与 ① 同口径，但**排除自己这一笔**，
+         用来兜住"下单与出码之间被人插队"的窗口，省一次白跑的平台往返。
+      ③ 平台侧兜底：mpay 按金额匹配，别人（或历史）占着同一面额时会回
          「可用金额偏移已用尽（code=0）」—— 由 `pay_mpay` 翻译成同一句文案。
     不同面额互不影响（"非同一面额的可继续下单支付"）。
     """
@@ -955,8 +1016,10 @@ async def create_charge_for_order(user: dict, order_id: str,
                                         "valid_seconds": PAY_CHARGE_VALID_SECONDS,
                                         "reused": True}}
 
-    if _same_amount_blocker(order):
-        raise MemberError(SAME_AMOUNT_BUSY_MSG, 409)
+    # 排除自己这一笔：用户点自己那张待付单的「去支付」不该被自己拦住。
+    holder = _same_amount_holder(order.get("amount_fen"), order_id)
+    if holder:
+        raise _same_amount_error(holder, user)
 
     mod = _pay.default_provider()
     if mod is None:
@@ -978,6 +1041,11 @@ async def create_charge_for_order(user: dict, order_id: str,
     try:
         charge = await mod.create_charge(order, ctx)
     except _pay.PayChannelError as e:
+        if getattr(e, "err_code", ""):
+            # 带业务码的属于"我们认识的结果"（如平台侧同一面额被占）：原样透出去。
+            # 套上「下单失败：」前缀反而会让前端那个只有确认按钮的告知弹窗
+            # 显示一句别扭的复合文案（原句本身已经是给用户看的完整句子）。
+            raise MemberError(e.message, e.code, e.err_code)
         raise MemberError(f"下单失败：{e.message}", e.code)
 
     updated = store.update_order_fields(order_id, {

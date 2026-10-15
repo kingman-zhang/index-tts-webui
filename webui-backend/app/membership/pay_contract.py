@@ -25,9 +25,14 @@ class PayChannelError(Exception):
 
     由通道模块抛出，service 层 catch 后翻译成面向用户的 `MemberError`。
     `code` 沿用 HTTP 语义（默认 502 = 上游异常），让 service 可以直接透传。
+
+    `err_code` 是**业务错误标识**，只在"这个通道错误其实是一个我们认识的业务结果"
+    时才填（例如平台回「可用金额偏移已用尽」= 同一面额被占）。填了它的错误会被
+    service **原样透传**（不套「下单失败：」前缀），并一路带到前端做分支。
     """
 
-    def __init__(self, message: str, code: int = 502):
+    def __init__(self, message: str, code: int = 502, err_code: str = ""):
         super().__init__(message)
         self.message = message
         self.code = code
+        self.err_code = err_code

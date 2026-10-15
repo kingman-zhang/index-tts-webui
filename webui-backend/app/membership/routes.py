@@ -78,7 +78,21 @@ def require_admin(x_admin_token: Optional[str] = Header(None)) -> None:
 
 
 def _err(e: MemberError):
-    raise HTTPException(e.code, e.message)
+    """业务错误 → HTTP 应答。
+
+    统一**返回** JSONResponse 而不是 raise HTTPException，为的是能多带一个机器可读的
+    `code`（见 `MemberError.err_code`）—— 前端要按它决定「弹只有确认按钮的告知弹窗」
+    还是「toast」，**不该去匹配中文文案**。输出形态与 HTTPException 等价
+    （`{"detail": ...}`、状态码相同），只是多一个可选字段；老调用方读 detail
+    完全不受影响。
+
+    ⚠️ 调用点必须写成 `return _err(e)`。写成裸 `_err(e)` 会返回 None，FastAPI 会把
+    None 序列化成 `200 null` —— 一个静默的假成功，排查起来很难看。
+    """
+    body: dict = {"detail": e.message}
+    if e.err_code:
+        body["code"] = e.err_code
+    return JSONResponse(status_code=e.code, content=body)
 
 
 def _client_ip(request: Request) -> str:
@@ -184,7 +198,7 @@ def auth_login(body: LoginBody):
     try:
         return service.login(body.username, body.password)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 @router.post("/api/auth/email-code")
 def auth_email_code(body: EmailCodeBody):
@@ -192,7 +206,7 @@ def auth_email_code(body: EmailCodeBody):
     try:
         return service.request_email_code(body.email)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.post("/api/auth/register-email")
@@ -201,7 +215,7 @@ def auth_register_email(body: RegisterEmailBody):
     try:
         return service.register_email(body.email, body.code, body.password, body.nickname)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.post("/api/auth/logout")
@@ -224,7 +238,7 @@ def update_me(body: ProfileBody, user: dict = Depends(get_current_user)):
     try:
         return {"user": service.update_profile(user, body.nickname, body.bio)}
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.post("/api/users/me/password")
@@ -233,7 +247,7 @@ def change_password(body: PasswordBody, user: dict = Depends(get_current_user)):
         service.change_password(user, body.old_password, body.new_password)
         return {"ok": True, "message": "密码已修改，请重新登录"}
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 # ─── 积分 ───────────────────────────────────────────────────
@@ -253,7 +267,7 @@ def points_redeem(body: RedeemBody, user: dict = Depends(get_current_user)):
     try:
         return service.redeem(user, body.code)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.get("/api/points/checkin")
@@ -266,7 +280,7 @@ def checkin(user: dict = Depends(get_current_user)):
     try:
         return service.checkin(user)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 # ─── 积分购买（套餐 / 订单 / 模拟支付）──────────────────────
@@ -283,7 +297,7 @@ def create_order(body: OrderBody, user: dict = Depends(get_current_user)):
     try:
         return {"order": service.create_order(user, body.pack_id)}
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.get("/api/points/orders")
@@ -305,7 +319,7 @@ def get_order(order_id: str, user: dict = Depends(get_current_user)):
     try:
         return {"order": service.get_order(user, order_id)}
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.post("/api/points/orders/{order_id}/mock-pay")
@@ -318,7 +332,7 @@ def mock_pay(order_id: str, user: dict = Depends(get_current_user)):
     try:
         return service.mock_pay(user, order_id)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.post("/api/points/orders/{order_id}/pay")
@@ -335,7 +349,7 @@ async def order_pay(order_id: str, request: Request,
         return await service.create_charge_for_order(
             user, order_id, clientip=_client_ip(request))
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 # ─── 支付回调（无 Bearer；靠通道验签）───────────────────────
@@ -407,7 +421,7 @@ def admin_create_codes(body: CodesBody, _: None = Depends(require_admin)):
         codes = service.create_redeem_codes(body.count, body.points, body.max_uses, body.expires_days, body.note)
         return {"codes": codes, "points": body.points, "max_uses": body.max_uses}
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.get("/api/admin/members/codes")
@@ -420,7 +434,7 @@ def admin_grant(body: GrantBody, _: None = Depends(require_admin)):
     try:
         return service.admin_grant_points(body.user, body.delta, body.reason)
     except MemberError as e:
-        _err(e)
+        return _err(e)
 
 
 @router.get("/api/admin/members/users")
@@ -433,4 +447,4 @@ def admin_disable(body: DisableBody, _: None = Depends(require_admin)):
     try:
         return {"user": service.admin_set_disabled(body.user, body.disabled)}
     except MemberError as e:
-        _err(e)
+        return _err(e)
