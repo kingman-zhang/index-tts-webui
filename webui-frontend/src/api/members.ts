@@ -46,7 +46,12 @@ export interface PointsOrder {
   pack_name: string;
   points: number;
   amount_fen: number;
-  status: "pending" | "paid";
+  /**
+   * `pending` 待支付（可去支付）/ `paid` 已入账 /
+   * `expired` 支付码有效期已过 —— **不能再点「去支付」**，要重新下单。
+   * ⚠️ 后端判过期用的阈值与支付码有效期同值（`PAY_CHARGE_VALID_SECONDS`）。
+   */
+  status: "pending" | "paid" | "expired";
   provider: string;
   out_trade_no: string;
   created_at: string;
@@ -58,12 +63,17 @@ export interface PointsOrder {
   pay_created_at?: string;
 }
 
-/** 出码形态：三选一，决定前端怎么把 `pay_info` 呈现给用户。 */
-export type PayType = "" | "qrcode" | "jump" | "urlscheme";
+/**
+ * 出码形态：四选一，决定前端怎么把 `pay_info` 呈现给用户。
+ * `image` 是微信个人收款通道特有的：平台只配了**收款码图片**（没配内容）时，
+ * `pay_info` 是图片地址，必须按 `<img>` 显示 —— 拿它去生成二维码会变成一个
+ * 「指向图片」的二维码，扫了没有用。
+ */
+export type PayType = "" | "qrcode" | "jump" | "urlscheme" | "image";
 
 export interface PayCharge {
   pay_type: PayType;
-  /** 渲染所需内容：qrcode=二维码内容 / jump=跳转链接 / urlscheme=小程序链接 */
+  /** 渲染所需内容：qrcode=二维码内容 / jump=跳转链接 / urlscheme=小程序链接 / image=图片地址 */
   pay_info: string;
   trade_no: string;
   /** true = 落在复用窗口内，沿用了上一次的出码结果（未重复向下游下单） */

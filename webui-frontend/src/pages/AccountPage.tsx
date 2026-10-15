@@ -616,14 +616,19 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
             <div className="divide-y divide-gray-50">
               {orders.map(o => (
                 <div key={o.order_id} className="flex items-center gap-3 py-2">
-                  <Badge color={o.status === "paid" ? "green" : "gray"}>
-                    {o.status === "paid" ? "已支付" : "待支付"}
+                  {/* 过期单单独一色，别和「待支付」都做成灰的 —— 用户一眼要能看出
+                      「这张还能付」和「这张已经没用了，得重新下单」。 */}
+                  <Badge color={o.status === "paid" ? "green" : o.status === "expired" ? "gray" : "indigo"}>
+                    {o.status === "paid" ? "已支付" : o.status === "expired" ? "已过期" : "待支付"}
                   </Badge>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-gray-700 truncate">
                       {o.pack_name} · {o.points} 积分 · {fmtYuan(o.amount_fen)}
                     </p>
-                    <p className="text-[0.625rem] text-gray-400">{fmtTime(o.paid_at || o.created_at)}</p>
+                    <p className="text-[0.625rem] text-gray-400">
+                      {fmtTime(o.paid_at || o.created_at)}
+                      {o.status === "expired" && " · 需重新下单"}
+                    </p>
                   </div>
                   {o.status === "pending" && data?.mock_pay_enabled && !data?.pay_channel_ready && (
                     <Button size="sm" variant="outline"
@@ -632,6 +637,8 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
                       模拟支付
                     </Button>
                   )}
+                  {/* ⚠️ 只有 pending 才给「去支付」：expired 的出码请求后端会 409 拒绝
+                      （支付码有效期已过，平台侧也不再认这张码），给了按钮就是骗点击。 */}
                   {o.status === "pending" && data?.pay_channel_ready && (
                     <Button size="sm" variant="outline"
                       icon={busyId === o.order_id ? Loader2 : QrCode}

@@ -7,11 +7,13 @@
  *  也收不到。若不轮询，用户付完钱得手动刷新页面才看到积分。轮询只读订单状态，
  *  **不具备入账能力**，所以它造不出假账（假账只可能来自回调验签被绕过）。
  *
- *  三种 `pay_type`：
+ *  四种 `pay_type`：
  *    - `qrcode`    → 把 pay_info 渲染成二维码（桌面主路径，微信扫一扫）
- *    - `jump`      → 跳转链接（H5/收银台）
+ *    - `image`     → pay_info 是收款码**图片**地址，按 <img> 显示（同一条扫码路径，
+ *                    只是通道只传了图片没传内容；**不能**当二维码内容编码）
+ *    - `jump`      → 跳转链接（收银台，仅当上面两种都拿不到时的降级）
  *    - `urlscheme` → 唤起小程序（移动端）
- *  三者只会返回其一；`""` 属异常态（后端在无可支付内容时直接报错，正常不会出现），
+ *  四者只会返回其一；`""` 属异常态（后端在无可支付内容时直接报错，正常不会出现），
  *  这里仍兜底显示原文，避免用户面对一个空白弹窗。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -246,6 +248,21 @@ function PayBody({
             <Copy className="w-3 h-3" />复制支付链接
           </button>
         )}
+        {hint}
+      </div>
+    );
+  }
+
+  if (charge.pay_type === "image") {
+    return (
+      <div className="flex flex-col items-center">
+        <div className="p-2.5 bg-white rounded-xl border border-gray-200">
+          <img src={charge.pay_info} alt="收款码"
+            className="w-[168px] h-[168px] object-contain" />
+        </div>
+        <p className="mt-2.5 text-xs text-gray-600 flex items-center gap-1">
+          <Smartphone className="w-3.5 h-3.5" />请用微信「扫一扫」完成支付
+        </p>
         {hint}
       </div>
     );
