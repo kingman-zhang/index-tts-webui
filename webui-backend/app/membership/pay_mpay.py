@@ -63,6 +63,16 @@ AMOUNT_POLICY = "ge"            # 金额会被微调 ⇒ 只校验「不低于�
 # 下单请求超时（秒）。下单是用户点击后同步等待的，不能拖太久。
 _CHARGE_TIMEOUT = 15.0
 _CONNECT_TIMEOUT = 8.0
+# 回查收银台取真实收款码的超时（秒）：比下单短 —— 它只是"锦上添花"，
+# 拿不到就降级回跳转链接，不该让用户多等。
+_CASHIER_TIMEOUT = 8.0
+_CASHIER_CONNECT_TIMEOUT = 5.0
+
+# mpay_v2 内置收银台（Vue 前端）取数接口：`GET {base}/api/cashier/pay-order?pay_no=…`
+# 响应 `{code:200, msg, data:{order, presentation:{pay_params:{…}}}}`，
+# 其中 `pay_params.qrcode` 就是通道里配的那张收款码的**原样内容**
+# （源码：app/service/payment/cashier/CashierService.php::resolvePresentation）。
+_CASHIER_ORDER_PATH = "/api/cashier/pay-order"
 
 
 def _conf() -> dict:
@@ -200,6 +210,70 @@ async def _post_charge(url: str, params: dict, client=None):
         raise PayChannelError(f"mpay 下单请求失败：{e!r}") from e
 
 
+async def _fetch_receipt_qrcode(pay_no: str, client=None) -> dict:
+    """向 mpay 收银台接口回查这张支付单，取回**可直接渲染的收款码**。
+
+    为什么需要这一步（2026-10-15）：微信个人收款通道的 `pay_page` 是 `'page'`，
+    而 ePay V1 的 `buildMapiResponse()` **只认 `qrcode`/`jump`/`urlscheme` 三种**，
+    `'page'` 一律落到兜底 `payurl = {站点}/payment/{pay_no}`（收银台页）。
+    ⇒ 我们只从下单接口拿，永远得到「跳转」形态；用户必须多开一个页签再扫码。
+    而收银台页本身是从这个接口取数的，同源取回来即可在本页直接渲染二维码。
+
+    返回 `{}`（而不是抛错）表示"没取到" —— 调用方**降级回跳转链接**：
+    这条回查纯属体验优化，绝不能因为它失败就把用户的付款路径堵死。
+
+    返回形态：`{"pay_type": "qrcode"|"image", "pay_info": <内容或图片地址>}`
+      - `qrcode`：`pay_params.qrcode`（收款码**内容**，可编码成二维码）；
+      - `image` ：`pay_params.qrcode_image`（通道只传了收款码**图片**时的地址，
+                  必须当图片显示，**不能**拿去编码 —— 那会变成一个指向图片的二维码）。
+    """
+    import httpx
+    c = _conf()
+    if not (c["base_url"] and pay_no):
+        return {}
+    url = c["base_url"] + _CASHIER_ORDER_PATH
+    params = {"pay_no": pay_no}
+    try:
+        if client is not None:
+            resp = await client.get(url, params=params)
+        else:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(_CASHIER_TIMEOUT, connect=_CASHIER_CONNECT_TIMEOUT),
+                trust_env=False,
+            ) as cli:
+                resp = await cli.get(url, params=params)
+    except httpx.HTTPError:
+        return {}
+    if resp.status_code != 200:
+        return {}
+    try:
+        js = resp.json()
+    except ValueError:
+        return {}
+    data = js.get("data") if isinstance(js, dict) else None
+    pay_params = (((data or {}).get("presentation") or {}).get("pay_params") or {})
+    if not isinstance(pay_params, dict):
+        return {}
+    qrcode = str(pay_params.get("qrcode") or "").strip()
+    if qrcode:
+        return {"pay_type": "qrcode", "pay_info": qrcode}
+    image = str(pay_params.get("qrcode_image") or "").strip()
+    if image:
+        return {"pay_type": "image", "pay_info": image}
+    return {}
+
+
+# 平台把「同一面额已被占用」报成这类文案（`code=0`）。判据用**关键词**而不是
+# 逗号后的 code：mpay 的错误码在 code=0 下并不细分，而这句话里的"金额/偏移"
+# 才是它真正想表达的事实。写成元组便于将来补充同义说法。
+_SAME_AMOUNT_HINTS = ("可用金额偏移", "金额偏移", "偏移已用尽")
+
+
+def _looks_like_same_amount_busy(js: dict) -> bool:
+    msg = str(js.get("msg") or "")
+    return any(h in msg for h in _SAME_AMOUNT_HINTS)
+
+
 async def create_charge(order: dict, ctx: dict, client=None) -> dict:
     """向 mpay 下单（出码），返回支付呈现信息。
 
@@ -210,11 +284,17 @@ async def create_charge(order: dict, ctx: dict, client=None) -> dict:
         device      选填，pc / mobile / wechat …（缺省 pc）
 
     返回 `{"trade_no", "pay_type", "pay_info"}`：
-        pay_type ∈ {"qrcode", "jump", "urlscheme"}，三者只会返回其一；
+        pay_type ∈ {"qrcode", "jump", "urlscheme", "image"}，四者只会返回其一；
         pay_info 是**渲染所需的内容**（qrcode=二维码内容 / jump=跳转链接 /
-        urlscheme=小程序跳转链接）。
+        urlscheme=小程序跳转链接 / image=收款码图片地址）。
 
-    失败抛 `PayChannelError`（网络不通 / 下游 code != 1 / 返回不可解析）。
+    ⚠️ `image` 是本通道特有的第四种形态：微信个人收款通道允许**只配收款码图片**
+        （`receipt_qrcode_image`）而不配内容。图片地址**不能**当二维码内容编码
+        （那会变成一个"指向图片"的二维码），所以单列一型交给前端按 `<img>` 渲染。
+        ⚠️ 由 `jump` 升级成 `qrcode`/`image` 靠回查收银台（见 `_fetch_receipt_qrcode`）。
+
+    失败抛 `PayChannelError`（网络不通 / 下游 code != 1 / 返回不可解析）；
+    其中「同一面额已被占用」抛的是**用户可照做**的文案 + 409，不是通道故障文案。
     """
     c = _conf()
     problem = charge_problem()
@@ -248,14 +328,28 @@ async def create_charge(order: dict, ctx: dict, client=None) -> dict:
         raise PayChannelError(f"mpay 下单返回格式异常：{js!r}")
     # ⚠️ ePay V1 是 code == 1 才算成功（V2 才是 0），别写反。
     if int(js.get("code", 0)) != 1:
+        # 「同一面额已被占用」是**预期内的业务结果**，不是通道故障：换成用户看得懂、
+        # 且能照做的文案（与 service 侧预检用同一句，前端无需区分来源）。
+        if _looks_like_same_amount_busy(js):
+            from . import service
+            raise PayChannelError(service.SAME_AMOUNT_BUSY_MSG, 409)
         raise PayChannelError(f"mpay 下单失败：{js.get('msg') or js}（code={js.get('code')}）")
 
+    trade_no = str(js.get("trade_no") or "")
     for field, pay_type in (("qrcode", "qrcode"), ("payurl", "jump"), ("urlscheme", "urlscheme")):
         val = js.get(field)
-        if val:
-            return {
-                "trade_no": str(js.get("trade_no") or ""),
-                "pay_type": pay_type,
-                "pay_info": str(val),
-            }
+        if not val:
+            continue
+        if pay_type == "jump":
+            # 个人收款通道只会走到这里（`pay_page='page'` 被 V1 兜底成收银台 URL）。
+            # 回查收银台把**真实收款码**取回来，让前端在本页直接渲染 —— 拿不到就
+            # 保持跳转（体验优化不得成为付款路径的单点故障）。
+            got = await _fetch_receipt_qrcode(trade_no, client)
+            if got:
+                return {"trade_no": trade_no, **got}
+        return {
+            "trade_no": trade_no,
+            "pay_type": pay_type,
+            "pay_info": str(val),
+        }
     raise PayChannelError(f"mpay 下单成功但未返回可支付内容（qrcode/payurl/urlscheme 皆空）：{js!r}")

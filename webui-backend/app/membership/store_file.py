@@ -34,6 +34,7 @@ from ..config import DATA_DIR
 from ..json_store import read_json as _read, write_json as _write
 from .store_contract import (
     IDEMPOTENT_KINDS,
+    ORDER_EXPIRED,
     ORDER_PAID,
     ORDER_PENDING,
     AlreadyApplied,
@@ -335,20 +336,40 @@ def find_order(out_trade_no: str) -> Optional[dict]:
 
 
 def claim_order(order_id: str, provider: str, out_trade_no: str) -> Optional[dict]:
-    """CAS 抢单：`pending → paid`。抢到返回订单，状态已不是 pending 则返回 None。
+    """CAS 抢单：`pending|expired → paid`。抢到返回订单，状态已不是可支付态则返回 None。
 
-    这是"同一订单只入账一次"的**唯一闸门**：并发回调里只有一个能把它从
-    pending 翻成 paid（file 版靠模块锁，mongo 版靠单文档原子更新）。
+    这是"同一订单只入账一次"的**唯一闸门**：并发回调里只有一个能把它翻成 paid
+    （file 版靠模块锁，mongo 版靠单文档原子更新）。
+
+    ⚠️ 来源状态**必须**同时包含 `expired`：我们判的"过期"只是展示态，平台侧可能
+    仍认这一单 —— 只认 pending 会让"踩着过期点付款"变成钱到了积分不给。
+    """
+    with _lock:
+        orders = _read(ORDERS_FILE, {})
+        order = orders.get(order_id)
+        if not order or order.get("status") not in (ORDER_PENDING, ORDER_EXPIRED):
+            return None
+        order["status"] = ORDER_PAID
+        order["provider"] = provider
+        order["out_trade_no"] = out_trade_no or order.get("out_trade_no") or order_id
+        order["paid_at"] = datetime.now().isoformat()
+        orders[order_id] = order
+        _write(ORDERS_FILE, orders)
+        return dict(order)
+
+
+def expire_order(order_id: str) -> Optional[dict]:
+    """CAS 置过期：`pending → expired`（已 paid 的绝不动）。没抢到返回 None。
+
+    返回 None 是正常并发结果（回调刚抢成 paid），**不是错误**。
     """
     with _lock:
         orders = _read(ORDERS_FILE, {})
         order = orders.get(order_id)
         if not order or order.get("status") != ORDER_PENDING:
             return None
-        order["status"] = ORDER_PAID
-        order["provider"] = provider
-        order["out_trade_no"] = out_trade_no or order.get("out_trade_no") or order_id
-        order["paid_at"] = datetime.now().isoformat()
+        order["status"] = ORDER_EXPIRED
+        order["expired_at"] = datetime.now().isoformat()
         orders[order_id] = order
         _write(ORDERS_FILE, orders)
         return dict(order)

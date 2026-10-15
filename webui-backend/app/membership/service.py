@@ -40,7 +40,7 @@ from ..config import logger
 from ..db import DBUnavailable
 from . import store
 from . import session_store
-from .store_contract import ORDER_PAID, ORDER_PENDING
+from .store_contract import ORDER_EXPIRED, ORDER_PAID, ORDER_PENDING
 from .security import hash_password, new_token, verify_password
 from . import mailer
 from . import packs as _packs
@@ -92,7 +92,10 @@ PAY_AMOUNT_CHECK = (os.environ.get("PAY_AMOUNT_CHECK", "") or "").strip()
 #    用户就会在「平台已经不再认这张码」的时间段里被复用旧码
 #    ⇒ 付了钱、平台匹配不到订单 = **必然漏单**（2026-10-15 实测踩到）。
 #    取值口径：与 mpay 后台逐字对齐；改一边必须同时改另一边（清单里已列成一步）。
-PAY_CHARGE_VALID_SECONDS = int(os.environ.get("PAY_CHARGE_VALID_SECONDS", "900"))
+# 2026-10-15 由 900 改为 300（用户拍板统一 5 分钟）：这个值同时决定
+#   ① 前端「请在 N 分钟内完成支付」② 复用窗口 ③ 订单多久后判为 expired。
+#   ⇒ 三方同源，任一处改了另外两处自动跟随，不会各说各话。
+PAY_CHARGE_VALID_SECONDS = int(os.environ.get("PAY_CHARGE_VALID_SECONDS", "300"))
 # 出码信息复用窗口（秒）：同一订单在此窗口内重复请求出码，直接复用已有 pay_info，
 # 不重复向下游下单 —— 各通道对「同一商户订单号重复下单」的行为不一致，复用最安全。
 # ⚠️ 由 `PAY_CHARGE_VALID_SECONDS` **派生**（留 60 秒余量），不是独立开关：
@@ -132,6 +135,25 @@ class MemberError(Exception):
         self.code = code
 
 
+class SessionStoreUnavailable(Exception):
+    """**会话存储不可用** —— 与「token 无效」是两回事，必须能被调用方区分开。
+
+    为什么单列一个异常（2026-10-15 本地"操作几下就被登出"事故）：
+      `resolve_token` 原先把存储故障**压成 None**（= 按未登录处理）。要求登录的
+      端点因此回 **401**，而前端 `authFetch` 见 401 就 `localStorage.removeItem`
+      —— 一次 Redis/TLS 抖动就直接抹掉浏览器里的 token（服务端会话其实还活着，
+      TTL 30 天）。日志实证：本地 4 次 `Timeout reading from socket`，每次之后
+      用户都得重新登录；生产 Redis 在 compose 内网不抖，所以没暴露。
+    ⇒ 现在：存储故障抛本异常，由 `routes.get_optional_user` 决定怎么呈现 ——
+      「请求带了 token」⇒ 503（前端不清 token）；「压根没带 token」⇒ 仍返回 None
+      （保住"公开链路不因存储故障被打挂"这条原有性质）。
+    """
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail or "会话存储不可用")
+        self.detail = detail
+
+
 # ─── 用户序列化 ─────────────────────────────────────────────
 
 def public_user(user: dict) -> dict:
@@ -157,24 +179,27 @@ def public_user(user: dict) -> dict:
 #   * 过期不再需要自己扫表清理（Redis 靠 TTL，file 后端自己惰性清）；
 #   * 「踢某用户全部下线」从「读全表 → 过滤 → 盖回去」变成一个明确的语义操作。
 #
-# 故障语义（两条**刻意不同**，理由见下）：
-#   * 读路径（resolve_token）：存储故障 ⇒ **按未登录处理**（返回 None）+ 一条 warning。
-#     不能抛错 —— 合成提交走的是可选鉴权，会话存储故障不该把公开链路一起打挂。
+# 故障语义（2026-10-15 修订，理由见 SessionStoreUnavailable 的 docstring）：
+#   * 读路径（resolve_token）：存储故障 ⇒ **抛 SessionStoreUnavailable**（不再静默
+#     返回 None）。调用方 `routes.get_optional_user` 按「这次请求带没带 token」分流：
+#     带了 ⇒ 503（前端因此**不会**清本地 token）；没带 ⇒ None（公开链路照旧）。
 #   * 建会话（create_session）：存储故障 ⇒ **MemberError(503)**。用户点了登录，必须
 #     拿到明确反馈，不能是 500，也不能含混成「密码错误」。
 #   * 删会话（登出 / 踢下线）：存储故障 ⇒ **记 warning 后忽略**。故障期间那个 token
 #     本来就通不过鉴权，报错只会让前端卡在「登出中」；会话最终由 TTL 自然过期。
 
 def resolve_token(token: Optional[str]) -> Optional[dict]:
-    """token → 用户；无效/过期返回 None（不抛错，供可选鉴权使用）。"""
+    """token → 用户；无效/过期返回 None。
+
+    ⚠️ **存储故障不返回 None，而是抛 `SessionStoreUnavailable`**（见上）。
+    """
     if not token:
         return None
     try:
         session = session_store.get_session(token)
     except DBUnavailable as e:
-        # 降级为「未登录」，但在日志里与「token 真的无效」区分得开
-        logger.warning("会话存储不可用，本次按未登录处理：%s", e)
-        return None
+        logger.warning("会话存储不可用（不再按「未登录」处理，由调用方区分 401/503）：%s", e)
+        raise SessionStoreUnavailable(str(e)) from e
     if not session:
         return None
     # 只取这一个用户 —— 不再为了鉴权把整张用户表反序列化一遍（Gate 2）
@@ -674,11 +699,58 @@ def get_order(user: dict, order_id: str) -> dict:
     return order
 
 
+# ─── 订单过期（2026-10-15）──────────────────────────────────
+#
+# 为什么要「过期」这个概念：个人收款监听是**按金额匹配**的，同一面额在平台侧
+# 同一时刻只能挂一张待付单。用户看到一堆"待支付"就会反复去点，点一次占一次；
+# 过期状态让"这张单已经没用了"在界面上**看得见**，从而把用户劝去重新下单。
+#
+# ⚠️ 三条设计约束（别改）：
+#   1. **expired 是展示态、不是终态**：入账路径（claim_order）必须同时接受
+#      pending 与 expired，否则"踩着过期点付款"会变成钱到了积分不给。
+#   2. **基准时间用 `pay_created_at`**（= 真正向平台出码的时刻）—— 平台侧的待付单元
+#      就是那一刻产生的。订单刚建还没出码时回落 `created_at`（那时平台侧什么都没有，
+#      纯展示判断）。
+#   3. **阈值就是 `PAY_CHARGE_VALID_SECONDS`**，与前端承诺时长、复用窗口同源。
+#      平台侧有效期与它不同值时，是**配置不一致**的问题（清单里有对齐步骤），
+#      不在这里用两套阈值糊过去。
+#
+# 落库时机：`list_orders` 读列表时顺手 CAS 落库（惰性）。没有后台清理任务。
+
+def order_expired(order: dict, now: Optional[datetime] = None) -> bool:
+    """订单是否已过支付码有效期（只看时间，不看状态 —— 状态判定交给调用方）。"""
+    base = order.get("pay_created_at") or order.get("created_at") or ""
+    if not base:
+        return False
+    try:
+        started = datetime.fromisoformat(base)
+    except (TypeError, ValueError):
+        return False
+    age = ((now or datetime.now()) - started).total_seconds()
+    return age >= PAY_CHARGE_VALID_SECONDS
+
+
+def _sweep_expired(orders: list) -> list:
+    """把 pending 且已过期的订单 CAS 落库成 expired，并就地改写返回的副本。
+
+    抢不到（返回 None）说明并发下已被改成别的状态 —— 以**库里的最新状态**为准，
+    不要用本地这份陈旧的 pending 覆盖它。
+    """
+    out = []
+    for o in orders:
+        if o.get("status") == ORDER_PENDING and order_expired(o):
+            fresh = store.expire_order(o["order_id"])
+            out.append(fresh or {**o, "status": ORDER_PENDING})
+        else:
+            out.append(o)
+    return out
+
+
 def list_orders(user: dict, offset: int = 0, limit: int = 20) -> dict:
     orders = [o for o in store.load_orders().values() if o.get("user_id") == user["user_id"]]
     orders.sort(key=lambda o: o.get("created_at") or "", reverse=True)
     total = len(orders)
-    page = orders[offset: offset + max(1, min(limit, 100))]
+    page = _sweep_expired(orders[offset: offset + max(1, min(limit, 100))])
     return {"total": total, "offset": offset, "orders": page}
 
 
@@ -796,6 +868,12 @@ def mock_pay(user: dict, order_id: str) -> dict:
 # 职责边界：service 只负责「组装通道上下文 + 落库 + 翻译错误」，
 # **不知道**任何通道字段（通道差异全在 app/membership/pay_*.py）。
 
+# 同一面额被占用时的用户文案。**平台无关**（放在 service 而不是 pay_mpay），
+# 因为它是业务结果、不是通道细节：谁来占用（自己的旧单 / 别人 / 平台历史单）
+# 对用户都是同一句话。`pay_mpay` 把平台的同类错误也翻译成这一句。
+SAME_AMOUNT_BUSY_MSG = "该面额当前有一笔待支付的订单，请约 5 分钟后重试"
+
+
 def _charge_recent(order: dict) -> bool:
     """订单里已存的出码信息是否还在复用窗口内。"""
     created = order.get("pay_created_at") or ""
@@ -806,6 +884,33 @@ def _charge_recent(order: dict) -> bool:
     except (TypeError, ValueError):
         return False
     return 0 <= age < PAY_CHARGE_REUSE_SECONDS
+
+
+def _same_amount_blocker(order: dict) -> Optional[dict]:
+    """**全局**找一单会占住同一面额的订单；没有就返回 None。
+
+    为什么要**全局**而不是只看当前用户：个人收款监听是平台**按金额**匹配的，
+    别人占着同一面额时我们同样下不进去 —— 只看自己会漏报，用户还是会撞到
+    「可用金额偏移已用尽」。所以口径必须与平台一致：**按金额，跨用户**。
+
+    「会占住」的判据照抄平台的事实：**已经出过码**（`pay_created_at` 存在）
+    且仍在有效期内。只建单、没出码的订单在平台侧**什么都不占** —— 用
+    `created_at` 当判据会把"用户自己一堆没付的旧单"误判成冲突，反而把正常下单堵死。
+    已支付/已过期的单自然不占位。
+    """
+    amount = order.get("amount_fen")
+    if amount is None:
+        return None
+    for other in store.load_orders().values():
+        if other.get("order_id") == order.get("order_id"):
+            continue
+        if other.get("status") != ORDER_PENDING:
+            continue
+        if other.get("amount_fen") != amount:
+            continue
+        if other.get("pay_created_at") and not order_expired(other):
+            return other
+    return None
 
 
 async def create_charge_for_order(user: dict, order_id: str,
@@ -825,10 +930,23 @@ async def create_charge_for_order(user: dict, order_id: str,
     为什么把出码信息**存进订单**并做复用窗口：各通道对「同一商户订单号重复下单」
     的行为不一致（可能复用同一支付单，也可能报错）；而用户关掉二维码后又需要能重开
     —— 复用窗口同时满足这两点。
+
+    ⚠️ 两道**同一面额**的闸门（2026-10-15）：
+      ① 出码前**我们侧预检**：同一 `amount_fen` 已有"已出码且未过期"的待付单 ⇒ 直接
+         回友好文案，不白跑一次平台往返。这是**主路径**（自己人能拦就自己拦）。
+      ② 平台侧兜底：mpay 按金额匹配，别人（或历史）占着同一面额时会回
+         「可用金额偏移已用尽（code=0）」—— 由 `pay_mpay` 翻译成同一句文案。
+    不同面额互不影响（"非同一面额的可继续下单支付"）。
     """
     order = get_order(user, order_id)          # 归属校验（不存在/不是你的 → 404）
+    if order.get("status") == ORDER_EXPIRED:
+        raise MemberError("该订单已过期（支付码有效期已过），请重新下单", 409)
     if order.get("status") != ORDER_PENDING:
         raise MemberError("该订单已支付或已关闭，无需再次支付", 409)
+    # 可能"看起来 pending，其实早过期了"（列表没被打开过就不会落库）—— 这里补一次 CAS
+    if order_expired(order):
+        store.expire_order(order_id)
+        raise MemberError("该订单已过期（支付码有效期已过），请重新下单", 409)
 
     if order.get("pay_info") and _charge_recent(order):
         return {"order": order, "pay": {"pay_type": order.get("pay_type", ""),
@@ -836,6 +954,9 @@ async def create_charge_for_order(user: dict, order_id: str,
                                         "trade_no": order.get("trade_no", ""),
                                         "valid_seconds": PAY_CHARGE_VALID_SECONDS,
                                         "reused": True}}
+
+    if _same_amount_blocker(order):
+        raise MemberError(SAME_AMOUNT_BUSY_MSG, 409)
 
     mod = _pay.default_provider()
     if mod is None:

@@ -77,7 +77,7 @@ _REQUIRED_API = (
     "load_checkins", "save_checkins", "insert_checkin_unique",
     # ── 积分购买订单 ──
     "load_orders", "save_orders",
-    "insert_order", "get_order", "find_order", "claim_order",
+    "insert_order", "get_order", "find_order", "claim_order", "expire_order",
     "mark_order_credited", "update_order_fields",
     # ── 邮箱验证码 ──
     "load_email_codes", "save_email_codes",
@@ -225,12 +225,26 @@ def find_order(out_trade_no: str) -> dict | None:
 
 
 def claim_order(order_id: str, provider: str, out_trade_no: str) -> dict | None:
-    """**CAS 抢单**：`status: pending → paid`。返回抢占后的订单；没抢到返回 None。
+    """**CAS 抢单**：`status: pending|expired → paid`。返回抢占后的订单；没抢到返回 None。
 
     ⚠️ 抢到 ≠ 已入账 —— 调用方拿到返回后**必须**紧接着做积分入账，
     否则会留下「paid 但无流水」的订单（由 Gate 4 的对账工具发现）。
+
+    ⚠️ 来源状态包含 `expired` 是**故意的**（资金安全）：我们判定的"过期"只是
+    展示态，支付平台侧可能仍认这一单。若这里只认 `pending`，用户踩着过期点付款
+    就会「钱到了、积分不给」（详见 store_contract 的订单状态注释）。
     """
     return _impl.claim_order(order_id, provider, out_trade_no)
+
+
+def expire_order(order_id: str) -> dict | None:
+    """**CAS 置过期**：`status: pending → expired`。返回置过期后的订单；没抢到返回 None。
+
+    只允许 pending 作为来源 —— 已 paid 的订单绝不能被改成 expired（那就是抹掉已到账
+    的事实）。改不了（返回 None）是正常情形，调用方**不要**当错误处理：
+    并发下多半是支付回调刚把它抢成 paid 了。
+    """
+    return _impl.expire_order(order_id)
 
 
 def mark_order_credited(order_id: str, log_id: str) -> None:

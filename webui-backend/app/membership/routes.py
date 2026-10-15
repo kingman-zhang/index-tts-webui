@@ -39,8 +39,27 @@ def get_optional_user(
     authorization: Optional[str] = Header(None),
     x_auth_token: Optional[str] = Header(None),
 ) -> Optional[dict]:
-    """可选鉴权：无 token 或 token 失效都返回 None，不报错。"""
-    return service.resolve_token(_extract_token(authorization, x_auth_token))
+    """可选鉴权：无 token 或 token 失效都返回 None，不报错。
+
+    ⚠️ **唯一例外**（2026-10-15）：**带了 token 但会话存储不可用** ⇒ 抛 503，
+    绝不返回 None。原因是这个 None 会在"要求登录"的端点被翻译成 **401**，
+    而前端 `authFetch` 见 401 就清掉本地 token —— 一次 Redis 抖动 = 被登出
+    （本地实测：4 次 `Timeout reading from socket`，每次都要重新登录；
+    服务端会话其实还活着、TTL 30 天）。回 503 则前端不清 token，只表现为
+    这一次请求失败。
+
+    "不带 token" 的情形**保持原样返回 None**：合成提交等公开链路不能因为
+    会话存储故障被一起打挂 —— 这是原设计刻意要保住的性质。
+    """
+    token = _extract_token(authorization, x_auth_token)
+    try:
+        return service.resolve_token(token)
+    except service.SessionStoreUnavailable as e:
+        if not token:
+            # 本地会话存储故障不该牵连匿名请求（原语义）
+            return None
+        logger.warning("会话存储不可用，本请求回 503（不清前端登录态）：%s", e)
+        raise HTTPException(503, "会话服务暂时不可用，请稍后重试") from e
 
 
 def get_current_user(user: Optional[dict] = Depends(get_optional_user)) -> dict:

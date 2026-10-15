@@ -46,6 +46,7 @@ from pymongo.errors import DuplicateKeyError
 
 from ..db import get_mongo_db
 from .store_contract import (
+    ORDER_EXPIRED,
     ORDER_PAID,
     ORDER_PENDING,
     AlreadyApplied,
@@ -400,19 +401,35 @@ def find_order(out_trade_no: str) -> Optional[dict]:
 
 
 def claim_order(order_id: str, provider: str, out_trade_no: str) -> Optional[dict]:
-    """CAS 抢单：`status: pending → paid`。**一次单文档原子更新**。
+    """CAS 抢单：`status: pending|expired → paid`。**一次单文档原子更新**。
 
     这是"同一订单只入账一次"的唯一闸门：并发回调（平台重推、用户连点）里
-    只有一个能把 `pending` 翻成 `paid`，其余拿到 None 直接返回 already_paid。
+    只有一个能把状态翻成 `paid`，其余拿到 None 直接返回 already_paid。
+
+    ⚠️ 来源状态**必须**同时包含 `expired`：我们判的"过期"只是展示态，平台侧可能
+    仍认这一单 —— 只认 pending 会让"踩着过期点付款"变成钱到了积分不给。
     """
     doc = _orders().find_one_and_update(
-        {"_id": order_id, "status": ORDER_PENDING},
+        {"_id": order_id, "status": {"$in": [ORDER_PENDING, ORDER_EXPIRED]}},
         {"$set": {
             "status": ORDER_PAID,
             "provider": provider,
             "out_trade_no": out_trade_no or order_id,
             "paid_at": _now(),
         }},
+        return_document=ReturnDocument.AFTER,
+    )
+    return _clean(doc)
+
+
+def expire_order(order_id: str) -> Optional[dict]:
+    """CAS 置过期：`status: pending → expired`（已 paid 的绝不动）。
+
+    没抢到返回 None —— 那是正常并发结果（回调刚抢成 paid），**不是错误**。
+    """
+    doc = _orders().find_one_and_update(
+        {"_id": order_id, "status": ORDER_PENDING},
+        {"$set": {"status": ORDER_EXPIRED, "expired_at": _now()}},
         return_document=ReturnDocument.AFTER,
     )
     return _clean(doc)

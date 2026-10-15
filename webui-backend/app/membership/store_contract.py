@@ -27,10 +27,19 @@ IDEMPOTENT_KINDS = ("refund", "purchase")
 POINT_LOG_KINDS = ("earn", "spend", "redeem", "checkin", "grant", "refund", "purchase")
 
 # 订单状态（service 与存储层共用，避免两处各写一份字面量）
-#   pending = 待支付；paid = 已支付并已入账
-# 刻意不做 closed/expired —— 未支付订单挂着无害，且没有清理任务要维护。
+#   pending = 待支付；paid = 已支付并已入账；expired = 已过支付码有效期
+#
+# ⚠️ **expired 是「展示态」，不是终态** —— 这是资金安全红线，别改成终态：
+#   个人收款监听（mpay）的识别有效期与我们的有效期是**两侧各自的配置**，只要
+#   不一致或网络延迟几秒，就会出现「我们判过期、用户其实付成功」。若 `claim_order`
+#   只认 pending，那条回调就抢不到单 ⇒ **钱到了、积分不给**。
+#   所以入账路径（claim_order）接受的来源状态是 pending **和** expired；
+#   expired 只用于「列表展示 + 拦掉重复出码」，从前端看去就是「不能再去支付了」。
+# 2026-10-15 之前这里写的是「刻意不做 closed/expired」—— 现在要做，但上面那条
+# 约束是新增的、比"不做"更重要；没有任何后台清理任务，过期判定在 service 读时顺手落库。
 ORDER_PENDING = "pending"
 ORDER_PAID = "paid"
+ORDER_EXPIRED = "expired"
 
 
 # ─── 异常 ───────────────────────────────────────────────────
