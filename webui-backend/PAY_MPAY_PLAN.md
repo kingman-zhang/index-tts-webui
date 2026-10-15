@@ -705,6 +705,10 @@ POST https://mpay.lizigege.com/mapi.php
 ⚠️ **判据必须与平台一致：看「已出码」而不是「建过单」**。只建单、没出码的订单在平台侧
 什么都不占；用 `created_at` 当判据会把"用户自己一堆没付的旧单"误判成冲突，反而把正常下单堵死。
 
+> 🔴 **以上这张表与这句话已被 §14.1 取代**（2026-10-15 第三批）：预检前移到「下单」、
+> 判据反转成「`pending` 且未过期」，函数也改名成了 `_same_amount_holder()`。留在这里只为
+> 记录当时的推理过程，**别照着这张表改代码**。
+
 ### 13.3 `expired` 订单状态（**展示态，不是终态**）🔴
 
 - 契约：`store_contract.ORDER_EXPIRED`；存储侧新增 `expire_order()`（CAS `pending → expired`）。
@@ -754,3 +758,55 @@ mpay 侧的**真实**有效期首次变为可读。当前代码只用它取收�
   与「不带 token 的公开请求不受牵连」）。
 - 全量离线回归：`outputs/run-offline-tests.py` → **TOTAL 50 PASS 50**。
 - 前端 `tsc --noEmit` 通过。
+
+## 14. 实现记录（2026-10-15 第三批 · 用户 4 条体验修正 + 1 条跟进）
+
+### 14.1 同面额冲突：预检**前移**到「下单」（判据反转，取代 §13.2）
+
+`service._same_amount_blocker()` → `_same_amount_holder(amount_fen, exclude_order_id=None)`。
+两处调用：`create_order`（**在 `insert_order` 之前**，被拦就根本不落单）与
+`create_charge_for_order`（`exclude_order_id` 排除自己那笔，否则点自己待付单的「去支付」会被自己拦）。
+
+**判据反转**：由「已出码（`pay_created_at` 存在）且未过期」改为「**`status == pending` 且未过期**」。
+理由：拦的时机前移到下单前之后，就不该再有"建了单却没出码"的幽灵单占位。
+路过的过期单**当场真落库**成 `expired` —— 只改返回值不够，库里那条还是 pending，下次预检又会捞出来。
+
+### 14.2 业务错误码结构化下发
+
+`MemberError` / `PayChannelError` 加 `err_code`；`routes._err()` 改为返回
+`JSONResponse({"detail", "code"}, status)`（14 处调用点改成 `return _err(e)`）。
+不这么做前端只能按 HTTP 状态码猜，而**同一个 409 底下有三种原因**（已过期 / 已支付 / 同面额）。
+
+### 14.3 🔴 弹窗里那句指引，要看「占位的是谁」
+
+错误码分两个（`service._same_amount_error()` 按 `user_id` 判定）：
+
+| code | 场景 | 弹窗补的那句指引 |
+|---|---|---|
+| `same_amount_busy_self` | 占着面额的是**他自己**那笔单 | 「可在下方「最近订单」里找到那笔订单，直接点「去支付」」——他手里确实有单可付 |
+| `same_amount_busy_other` | **别人的**单占着 | **不补**。用户根本没下过单，指引他去找"他那笔待付单"＝指一条不存在的路 |
+
+- **正文文案两个码共用同一句**（用户指定的原文），差别只在前端补的指引。
+- `pay_mpay` 的平台侧兜底**固定归 `other`**：平台只说"金额偏移用尽"、不会告诉我们占位的是谁；
+  而我们侧预检已经把「自己的单占位」先拦掉了。宁可少说，也不能误导一个什么都没下过的用户。
+- 前端落点：`lib/payAlert.ts`（标题 / 指引的**唯一表格**，两个页面共用）+ `api/members.ts::sameAmountBusyKind()`。
+
+### 14.4 前端另三处
+
+- 「已接入真实支付通道（mpay）…」整段删除（含只此一用的 `ShieldCheck` 图标）。
+- 「最近订单」右侧加「查看更多」→ 新页 `/account/orders`（`OrdersPage.tsx`）：完整字段
+  （订单号 / 交易号 / 通道 / 创建与支付时间）+「加载更多」+ 待付单可直接「去支付」。
+  **"只看到部分订单"的根因是前端写死了 `orders(0, 5)`**，后端分页接口本来就有。
+- 抽 `lib/format.ts`：`fmtYuan` 原在 `AccountPage` 与 `PayDialog` 里**逐字重复两份**，
+  金额格式漂了就是"显示错的价钱"。
+
+### 14.5 验证
+
+- `tests/test_pay_mpay.py`：**139 通过 / 0 失败**（`[21]` 补 self / other 两类码，`[22]` 补 self）
+- 全量离线回归 `outputs/run-offline-tests.py` → **TOTAL 50 PASS 50**
+- 前端 `tsc --noEmit` + `vite build` 通过
+- 组件级取证 `outputs/verify-order-flow.js`：**29/29**，含两条对照断言
+  「别人占位 ⇒ 弹窗里**没有**「最近订单 / 去支付」」/「自己占位 ⇒ 才有」
+- 既有 `outputs/verify-pay-dialog.js`：**29/29**
+- ⚠️ 测试夹具 `new_order()` 原先走 HTTP（`POST /api/points/orders`），加了预检后会互相占位
+  ⇒ 改成直接落库（它要的是"一个订单"，不是"测下单接口"）。
