@@ -4,6 +4,7 @@ import PodcastPage from "./pages/PodcastPage";
 import DubbingPage from "./pages/DubbingPage";
 import AccountPage from "./pages/AccountPage";
 import OrdersPage from "./pages/OrdersPage";
+import DocsPage from "./pages/DocsPage";
 import { initAuth, navigate, useAuth } from "@/lib/auth";
 
 /**
@@ -14,13 +15,15 @@ import { initAuth, navigate, useAuth } from "@/lib/auth";
  *   /dubbing          → 单人配音
  *   /account          → 个人中心（登录/注册/积分/最近订单）
  *   /account/orders   → 全部订单（从个人中心的「查看更多」进入）
- * 强制登录：除 /account 外的所有页面，未登录一律跳转 /account（登录/注册页）。
+ *   /docs             → 产品使用文档（**免登录**：说明书不该拦在登录后面）
+ * 强制登录：除 /account 与 /docs 外的所有页面，未登录一律跳转 /account（登录/注册页）。
  */
 function resolvePage(pathname: string): ComponentType {
   // ⚠️ `/account/orders` 必须排在 `/account` 之前 —— 前缀匹配下两者都会命中后者。
   if (pathname.startsWith("/account/orders")) return OrdersPage;
   if (pathname.startsWith("/dubbing")) return DubbingPage;
   if (pathname.startsWith("/account")) return AccountPage;
+  if (pathname.startsWith("/docs")) return DocsPage;
   return PodcastPage;
 }
 
@@ -30,6 +33,7 @@ function normalizePath(pathname: string): string {
   if (pathname.startsWith("/dubbing")) return "/dubbing";
   if (pathname.startsWith("/podcast")) return "/podcast";
   if (pathname.startsWith("/account")) return "/account";
+  if (pathname.startsWith("/docs")) return "/docs";
   return "/";
 }
 
@@ -68,9 +72,9 @@ export default function App() {
     localStorage.setItem("wb-mode", path === "/dubbing" ? "dubbing" : "podcast");
   }, [path]);
 
-  // 强制登录：未登录访问工作页 → 跳登录/注册页
+  // 强制登录：未登录访问工作页 → 跳登录/注册页（个人中心与使用文档除外）
   const { ready, token, user } = useAuth();
-  const needsLogin = ready && (!token || !user) && path !== "/account";
+  const needsLogin = ready && (!token || !user) && path !== "/account" && path !== "/docs";
   useEffect(() => {
     if (needsLogin) navigate("/account");
   }, [needsLogin]);

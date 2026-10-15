@@ -44,9 +44,11 @@ interface HeaderProps {
 /**
  * 顶部全局导航：胶囊分段控件，当前页白底高亮。
  * 只含两个工作页；个人中心从右上角用户菜单进入，不占导航位。
+ * 使用文档（/docs）同样不占导航位，且**两个 tab 都不高亮** —— 它是"说明书"，
+ * 不是第三个工作区，让它把「双人播客」点亮会让人以为自己在播客页。
  */
 const NAV_TABS = [
-  { path: "/podcast", label: "双人播客", match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") },
+  { path: "/podcast", label: "双人播客", match: (p: string) => !p.startsWith("/dubbing") && !p.startsWith("/account") && !p.startsWith("/docs") },
   { path: "/dubbing", label: "单人配音", match: (p: string) => p.startsWith("/dubbing") },
 ];
 
