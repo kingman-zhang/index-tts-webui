@@ -23,6 +23,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs
@@ -38,7 +39,7 @@ os.environ["MEMBER_MOCK_PAY"] = "0"
 os.environ["PAY_PROVIDER"] = "mpay"
 os.environ["PAY_PUBLIC_BASE_URL"] = "https://api.example.com"
 os.environ["PAY_RETURN_URL"] = "https://example.com/account"
-os.environ["PAY_CHARGE_VALID_SECONDS"] = "900"   # 支付码有效期（＝平台侧「识别有效期」）
+os.environ["PAY_CHARGE_VALID_SECONDS"] = "300"   # 支付码有效期（＝平台侧「识别有效期」，2026-10-15 统一 5 分钟）
 os.environ["MPAY_BASE_URL"] = "https://mpay.test"
 os.environ["MPAY_PID"] = "1001"
 os.environ["MPAY_KEY"] = "testkey"
@@ -256,6 +257,91 @@ try:
 except PayChannelError as e:
     check("★HTTP 500 抛 PayChannelError", "HTTP 500" in e.message, e.message)
 
+# ─── [6b] 收银台回查：把 jump 升级成可直接渲染的收款码（2026-10-15）──
+# 背景：微信个人收款通道的 pay_page='page'，被 ePay V1 兜底成「收银台页 URL」，
+# 于是我们永远只拿到 jump，用户必须多开一个页签再扫码。收银台页本身是从
+# `/api/cashier/pay-order` 取数的 ⇒ 同源取回即可在本页直接渲染。
+print("[6b] 收银台回查（jump → 可直接渲染的收款码）")
+_CASHIER = "https://mpay.test/api/cashier/pay-order"
+
+
+def _charge2(post_payload: dict, get_payload=None, get_status: int = 200, get_capture: dict | None = None):
+    """POST /mapi.php 与 GET /api/cashier/pay-order **分别**打桩。"""
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.method == "GET":
+            if get_capture is not None:
+                get_capture["url"] = str(req.url)
+            return httpx.Response(get_status, json=get_payload if get_payload is not None else {})
+        return httpx.Response(200, json=post_payload)
+    async def _go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as c:
+            return await pay_mpay.create_charge(_order(), _ctx(), client=c)
+    return asyncio.run(_go())
+
+
+_gcap: dict = {}
+_rc = _charge2({"code": 1, "trade_no": "T1", "payurl": "https://mpay.test/payment/T1"},
+               {"code": 200, "data": {"presentation": {"pay_params": {"qrcode": "wxp://f2f0abc"}}}},
+               get_capture=_gcap)
+check("★payurl + 收银台有收款码内容 ⇒ 升级成 qrcode（用户少跳一步）",
+      _rc["pay_type"] == "qrcode" and _rc["pay_info"] == "wxp://f2f0abc", str(_rc))
+check("升级后 trade_no 仍带出", _rc["trade_no"] == "T1", str(_rc))
+check("★回查打到 /api/cashier/pay-order 且带 pay_no",
+      _gcap.get("url", "").startswith(_CASHIER) and "pay_no=T1" in _gcap.get("url", ""),
+      str(_gcap))
+
+_ri = _charge2({"code": 1, "trade_no": "T1", "payurl": "https://mpay.test/payment/T1"},
+               {"code": 200, "data": {"presentation": {"pay_params": {"qrcode_image": "https://mpay.test/qr.png"}}}})
+check("★只配了收款码图片 ⇒ pay_type=image（图片地址**不能**当二维码内容编码）",
+      _ri["pay_type"] == "image" and _ri["pay_info"].endswith(".png"), str(_ri))
+
+_rj = _charge2({"code": 1, "trade_no": "T1", "payurl": "https://mpay.test/payment/T1"}, {})
+check("★收银台取不到码 ⇒ 降级回 jump（体验优化不得堵住付款路径）",
+      _rj["pay_type"] == "jump" and _rj["pay_info"] == "https://mpay.test/payment/T1", str(_rj))
+
+_rj2 = _charge2({"code": 1, "trade_no": "T1", "payurl": "https://mpay.test/payment/T1"},
+                {"code": 500, "msg": "boom"}, get_status=500)
+check("收银台 HTTP 500 同样降级回 jump（不把优化点变成故障点）",
+      _rj2["pay_type"] == "jump", str(_rj2))
+
+_rj3 = _charge2({"code": 1, "trade_no": "T1", "payurl": "https://mpay.test/payment/T1"},
+                {"code": 200, "data": None})
+check("收银台返回空 data 也安全降级（不缺键崩溃）", _rj3["pay_type"] == "jump", str(_rj3))
+
+_seen_get = {"n": 0}
+
+
+def _handler_q_only(req: httpx.Request) -> httpx.Response:
+    if req.method == "GET":
+        _seen_get["n"] += 1
+        return httpx.Response(200, json={})
+    return httpx.Response(200, json={"code": 1, "trade_no": "T1", "qrcode": "weixin://direct"})
+
+
+async def _go_q_only():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler_q_only)) as c:
+        return await pay_mpay.create_charge(_order(), _ctx(), client=c)
+
+
+_rq = asyncio.run(_go_q_only())
+check("平台已直接给 qrcode ⇒ 不再多打一次收银台（省一次往返）",
+      _rq["pay_type"] == "qrcode" and _seen_get["n"] == 0, f"{_rq} get={_seen_get['n']}")
+
+try:
+    _charge({"code": 0, "msg": "当前通道可用金额偏移已用尽"})
+    check("★「可用金额偏移已用尽」应抛错", False, "未抛")
+except PayChannelError as e:
+    check("★平台占用文案被翻译成用户可照做的一句（不是通道故障文案）",
+          e.message == service.SAME_AMOUNT_BUSY_MSG and e.code == 409,
+          f"code={e.code} msg={e.message!r}")
+
+try:
+    _charge({"code": 0, "msg": "商户不存在"})
+    check("其它平台错误仍保留原文（别把不同原因混成一句）", False, "未抛")
+except PayChannelError as e:
+    check("其它平台错误仍保留原文（别把不同原因混成一句）",
+          "商户不存在" in e.message and "code=0" in e.message, e.message)
+
 # ─── [7] 出码端点（HTTP 端到端）──────────────────────────────
 print("[7] 出码端点")
 t1 = service.register("alice", "secret123")["token"]
@@ -280,7 +366,7 @@ check("pay_type/pay_info 正确",
       _pay["pay_type"] == "qrcode" and _pay["pay_info"].startswith("weixin://"), str(_pay))
 check("首次 reused=False", _pay["reused"] is False, str(_pay))
 check("★出码响应下发 valid_seconds（界面时长与平台有效期同源）",
-      _pay.get("valid_seconds") == 900, str(_pay))
+      _pay.get("valid_seconds") == 300, str(_pay))
 check("★复用窗口由有效期派生、且严格小于有效期（超窗复用＝必然漏单）",
       service.PAY_CHARGE_REUSE_SECONDS
       == service.PAY_CHARGE_VALID_SECONDS - service.PAY_CHARGE_REUSE_MARGIN_SECONDS
@@ -305,7 +391,7 @@ check("★窗口内复用（不重复向下游下单）",
       _resp2.status_code == 200 and _calls["n"] == 0
       and _resp2.json()["pay"]["reused"] is True, f"calls={_calls['n']}")
 check("复用响应同样下发 valid_seconds（两条路径不能有一处漏）",
-      _resp2.json()["pay"].get("valid_seconds") == 900, str(_resp2.json()["pay"]))
+      _resp2.json()["pay"].get("valid_seconds") == 300, str(_resp2.json()["pay"]))
 
 check("别人出码 → 404",
       client.post(f"/api/points/orders/{_order1['order_id']}/pay", headers=auth(t2)).status_code == 404)
@@ -532,6 +618,105 @@ _d19 = _mock_pay_default()
 check("★不设 MEMBER_MOCK_PAY ⇒ 默认 False（关）", _d19 == "False", _d19)
 check("显式给 0 ⇒ False", _mock_pay_default("0") == "False")
 check("显式给 1 ⇒ True（演示环境仍有开关）", _mock_pay_default("1") == "True")
+
+# ─── [20] 订单过期：落库 / 拒绝再出码 / ★★入账仍接受 ──────────
+# 2026-10-15 用户需求 3：积分商城里一堆「待支付」能反复点，过了有效期的单
+# 不该再让用户去支付。做法是引入 `expired` 状态（**惰性落库**，无后台任务）。
+# ⚠️ 本段最重要的一条是最后那个 ★★：expired **只是展示态**，不是终态。
+#    个人收款监听两侧有效期各配一份，只要差几秒就会出现「我们判过期、用户其实
+#    付成功」；若入账路径不认 expired，那条回调会抢单失败 ⇒ **钱到了、积分不给**。
+print("[20] 订单过期（落库 / 拒绝再出码 / 入账仍接受）")
+_o20 = new_order(t1)
+store.update_order_fields(_o20["order_id"], {
+    "pay_type": "qrcode", "pay_info": "weixin://old",
+    "pay_created_at": (datetime.now()
+                       - timedelta(seconds=service.PAY_CHARGE_VALID_SECONDS + 30)).isoformat(),
+})
+check("sanity：order_expired 判为已过期", service.order_expired(store.get_order(_o20["order_id"])) is True)
+
+_lo = client.get("/api/points/orders", headers=auth(t1)).json()
+_e20 = next(o for o in _lo["orders"] if o["order_id"] == _o20["order_id"])
+check("★列表把过期 pending 单标成 expired（不再显示「待支付」）", _e20["status"] == "expired", str(_e20))
+check("★真的落库（不是只改了返回值）",
+      store.get_order(_o20["order_id"])["status"] == "expired",
+      str(store.get_order(_o20["order_id"])["status"]))
+check("expired_at 已记录", bool(store.get_order(_o20["order_id"]).get("expired_at")))
+
+_calls20 = {"n": 0}
+
+
+async def _fake20(order, ctx, client=None):
+    _calls20["n"] += 1
+    return {"trade_no": "T", "pay_type": "qrcode", "pay_info": "weixin://x"}
+
+
+with patch.object(pay_mpay, "create_charge", _fake20):
+    _r20 = client.post(f"/api/points/orders/{_o20['order_id']}/pay", headers=auth(t1))
+check("★过期单再出码 → 409 且文案说清要重新下单",
+      _r20.status_code == 409 and "过期" in _r20.json().get("detail", ""),
+      f"{_r20.status_code} {_r20.json()}")
+check("★过期单不再向通道发请求（不给平台添一张占位单）", _calls20["n"] == 0, str(_calls20))
+
+_b20 = balance(t1)
+_r20n = client.get("/api/pay/notify/mpay", params=notify_params(_o20))
+check("★★过期订单收到真实支付回调**仍然入账**（expired 必须是展示态、非终态）",
+      _r20n.status_code == 200 and _r20n.text == "success" and balance(t1) == _b20 + 1000,
+      f"{_r20n.status_code} {_r20n.text!r} {_b20}->{balance(t1)}")
+check("过期单入账后转 paid", store.get_order(_o20["order_id"])["status"] == "paid")
+
+# ─── [21] 同一面额被占用（需求 2）───────────────────────────
+# 个人收款监听按**金额**匹配 ⇒ 同一面额同时刻只能挂一张待付单。我们自己先拦，
+# 比让 mpay 回一句「可用金额偏移已用尽」体验好得多，也省一次白跑的往返。
+# 判据必须与平台一致：**已出码 + 仍在有效期**（只建单没出码在平台侧什么都不占）。
+print("[21] 同一面额被占用（我们侧预检）")
+_o21a = new_order(t1)
+store.update_order_fields(_o21a["order_id"], {
+    "pay_type": "qrcode", "pay_info": "weixin://busy",
+    "pay_created_at": datetime.now().isoformat(),
+})
+_o21b = new_order(t2)                      # 别的用户下的**同面额**单
+_calls21 = {"n": 0}
+
+
+async def _fake21(order, ctx, client=None):
+    _calls21["n"] += 1
+    return {"trade_no": "T", "pay_type": "qrcode", "pay_info": "weixin://x"}
+
+
+with patch.object(pay_mpay, "create_charge", _fake21):
+    _r21 = client.post(f"/api/points/orders/{_o21b['order_id']}/pay", headers=auth(t2))
+check("★同一面额已被占用 ⇒ 409 + 用户可照做的文案（跨用户也算占用）",
+      _r21.status_code == 409 and _r21.json().get("detail") == service.SAME_AMOUNT_BUSY_MSG,
+      f"{_r21.status_code} {_r21.json()}")
+check("★被占用时未向通道发请求", _calls21["n"] == 0, str(_calls21))
+
+_o21c = client.post("/api/points/orders", json={"pack_id": "p3200"},
+                    headers=auth(t2)).json()["order"]
+with patch.object(pay_mpay, "create_charge", _fake21):
+    _r21c = client.post(f"/api/points/orders/{_o21c['order_id']}/pay", headers=auth(t2))
+check("★不同面额可继续下单支付（¥30 档不受 ¥10 档占用影响）",
+      _r21c.status_code == 200 and _calls21["n"] == 1,
+      f"{_r21c.status_code} {_r21c.text[:120]} calls={_calls21['n']}")
+
+# 只建单、没出码的旧单在平台侧**什么都不占** —— 不能把它误判成冲突（否则正常下单被堵死）
+_o21d = client.post("/api/points/orders", json={"pack_id": "p5750"},
+                    headers=auth(t2)).json()["order"]
+_o21e = client.post("/api/points/orders", json={"pack_id": "p5750"},
+                    headers=auth(t2)).json()["order"]
+with patch.object(pay_mpay, "create_charge", _fake21):
+    _r21e = client.post(f"/api/points/orders/{_o21e['order_id']}/pay", headers=auth(t2))
+check("★未出码的同面额旧单不算占用（判据是「已出码」而不是「建过单」）",
+      _r21e.status_code == 200, f"{_r21e.status_code} {_r21e.text[:120]}")
+check("sanity：同面额的两张未出码单都在", _o21d["order_id"] != _o21e["order_id"])
+
+# ─── [22] 过期订单可正常重新下单（流程闭环）──────────────────
+print("[22] 过期后重新下单")
+_o22 = new_order(t1)
+store.update_order_fields(_o22["order_id"], {"pay_created_at": (datetime.now() - timedelta(
+    seconds=service.PAY_CHARGE_VALID_SECONDS + 1)).isoformat()})
+_r22 = client.post("/api/points/orders", json={"pack_id": "p1000"}, headers=auth(t1))
+check("★过期不影响重新下单（拿到新单）", _r22.status_code == 200, str(_r22.status_code))
+check("新单状态为 pending", _r22.json()["order"]["status"] == "pending", str(_r22.json()["order"]))
 
 print(f"\n=== mpay 支付通道：{PASS} 通过 / {FAIL} 失败 ===")
 sys.exit(1 if FAIL else 0)

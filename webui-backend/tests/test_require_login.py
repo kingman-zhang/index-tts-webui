@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 TMP = tempfile.mkdtemp(prefix="wb-reqlogin-test-")
 os.environ["DATA_DIR"] = TMP
@@ -25,7 +26,8 @@ sys.path.insert(0, str(BACKEND_ROOT))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
-from app.membership import service, store  # noqa: E402
+from app.db import DBUnavailable  # noqa: E402
+from app.membership import service, session_store, store  # noqa: E402
 
 client = TestClient(app)
 
@@ -78,6 +80,30 @@ def main():
                               for e in store.load_point_logs()))
     # 清理：取消任务避免残留
     client.post(f"/api/queue/{task_id}/cancel")
+
+    print("── 会话存储故障：503（不是 401）──")
+    # 2026-10-15 本地「操作几下就被登出」事故的回归点：
+    #   旧行为 = 存储故障被压成「未登录」⇒ 要求登录的端点回 401 ⇒ 前端 authFetch
+    #   见 401 就 removeItem(localStorage 里的 token) ⇒ 一次 Redis 抖动 = 被登出
+    #   （服务端会话其实还活着）。新行为 = 回 503，前端不清 token。
+    _real_get = session_store.get_session
+
+    def _boom(_token):
+        raise DBUnavailable("Redis 会话操作失败（get_session）：TimeoutError: Timeout reading from socket")
+
+    with patch.object(session_store, "get_session", _boom):
+        _r503 = client.get("/api/points/balance", headers=auth)
+        check("★带 token + 存储故障 → 503", _r503.status_code == 503, f"{_r503.status_code} {_r503.text[:120]}")
+        check("★绝不能是 401（401 会让前端清掉本地 token = 被登出）",
+              _r503.status_code != 401, str(_r503.status_code))
+        check("文案说清是「稍后重试」而不是「请先登录」",
+              "稍后重试" in _r503.json().get("detail", "") and "登录" not in _r503.json().get("detail", ""),
+              str(_r503.json()))
+        _r_anon = client.get("/api/config")
+        check("不带 token 的公开请求不受牵连（原设计要保住的性质）",
+              _r_anon.status_code == 200, f"{_r_anon.status_code} {_r_anon.text[:120]}")
+    check("恢复存储后同一次登录态仍然可用（token 没被服务端吊销）",
+          client.get("/api/points/balance", headers=auth).status_code == 200)
 
     print(f"\n结果：{PASS} 通过，{FAIL} 失败")
     shutil.rmtree(TMP, ignore_errors=True)
