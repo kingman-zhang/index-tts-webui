@@ -69,12 +69,38 @@ def _local_path_fallback(name: str, local_path, why: str) -> dict:
     }
 
 
+def _with_live_paths(data: dict) -> dict:
+    """把 manifest 烘焙的 path 全部换成「本机现算」的路径 —— **name 才是真源**。
+
+    manifest.json 是在生成机（2026-09-22，compshare pod → 本机 Mac）上一次性生成
+    的静态文件，`path` 烘焙的是**生成那一刻的绝对路径**，换机器/换容器必死 ——
+    目前没炸全靠 `engines/voice_sync.locate_voice()` 按 basename 兜底。真正跨机
+    稳定的是 `name`（与上传到 tts-server 的文件同名，也是那个兜底的键），所以
+    响应前按分类把 path 重算一遍：manifest 从此只当**元数据源**
+    （description / tones_zh / voice_category / age），不再承担「定位文件」职责。
+
+    分类 → 落点：`emotion` 在 `emotions/` 子目录，其余（female/male）在根目录 ——
+    与下面目录扫描 fallback 的规则完全一致。
+    """
+    cats = data.get("categories")
+    if not isinstance(cats, dict):
+        return data
+    for cat, items in cats.items():
+        if not isinstance(items, list):
+            continue
+        base = PRESET_VOICES_DIR / "emotions" if cat == "emotion" else PRESET_VOICES_DIR
+        for item in items:
+            if isinstance(item, dict) and item.get("name"):
+                item["path"] = str(base / item["name"])
+    return data
+
+
 @router.get("/api/preset-voices")
 async def list_preset_voices():
     """列出预设音色（分类：女声/男声/情感参考）。"""
     manifest_path = PRESET_VOICES_DIR / "manifest.json"
     if manifest_path.exists():
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
+        return _with_live_paths(json.loads(manifest_path.read_text(encoding="utf-8")))
     # fallback：扫描目录
     categories = {"female": [], "male": [], "emotion": []}
     if PRESET_VOICES_DIR.exists():
