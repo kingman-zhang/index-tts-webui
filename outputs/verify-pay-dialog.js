@@ -8,7 +8,8 @@
 //   ② 付款前一直在轮询（只读单条订单），未支付时不误判成功
 //   ③ mpay 回调入账后（mock 里把订单翻成 paid）→ 轮询发现 → 弹窗转成功态并自动关闭 + 余额/订单刷新
 //   ④ 「支付成功」回调只触发一次（轮询与手动查询不会双发）
-//   ⑤ 待支付订单行「去支付」可重开弹窗；30 分钟复用窗口内显示复用提示
+//   ⑤ 待支付订单行「去支付」可重开弹窗；复用窗口内显示复用提示
+//      （时长取自后端下发的 valid_seconds，不硬编码）
 //   ⑥ jump / urlscheme / 未知形态 三种渲染各自正确
 //   ⑦ 真实通道 + 模拟支付双开时给红色告警（MEMBER_MOCK_PAY=1 安全提示）
 //   ⑧ 无支付通道时回落演示模式（点购买直接模拟入账）
@@ -119,7 +120,9 @@ const waitDialogWith = (page, t) => page.waitForFunction((s) => {
       if (/^\/api\/points\/orders\/[^/]+\/pay$/.test(path)) {
         st.payCalls++;
         return json({ order: ORDER(), pay: { pay_type: 'qrcode', pay_info: QR_VALUE,
-                                             trade_no: 'T20260001', reused: st.payCalls > 1 } });
+                                             trade_no: 'T20260001',
+                                             valid_seconds: 900,
+                                             reused: st.payCalls > 1 } });
       }
       if (/^\/api\/points\/orders\/[^/]+\/mock-pay$/.test(path)) {
         st.mockPayCalls++; st.orderPaid = true;

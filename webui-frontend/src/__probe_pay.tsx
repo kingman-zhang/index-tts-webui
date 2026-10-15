@@ -26,7 +26,9 @@ const ORDER: PointsOrder = {
 };
 
 const mkCharge = (pay_type: PayCharge["pay_type"], pay_info: string): PayCharge =>
-  ({ pay_type, pay_info, trade_no: "T20260001", reused: false });
+  // valid_seconds 由后端随出码下发，界面按它显示「请在 N 分钟内完成支付」——
+  // 探针要带上它，否则测的是「后端没给时长」的兜底分支，不是真实路径。
+  ({ pay_type, pay_info, trade_no: "T20260001", valid_seconds: 900, reused: false });
 
 const VARIANTS = {
   qrcode: mkCharge("qrcode", QR_VALUE),

@@ -25,9 +25,19 @@ import { cn } from "@/lib/utils";
 const POLL_FAST_MS = 2000;
 const POLL_SLOW_MS = 5000;
 const POLL_SWITCH_MS = 2 * 60 * 1000;
-/** 超过这个时长仍未支付 → 提示二维码可能已过期（不做自动重新出码：后端复用窗口
- *  内重新出码只会拿到同一张，无意义）。 */
-const STALE_HINT_MS = 3 * 60 * 1000;
+/** 「等待较久」提示阈值：**按有效期成比例**（有效期过半时提示）。
+ *  ⚠️ 曾经硬编码 3 分钟，而有效期是平台侧配置 —— 两边一旦不同步，就会出现
+ *  「界面说码已失效、其实还能付」的错位。凡是时长都从 `valid_seconds` 推。
+ *  不做自动重新出码：后端复用窗口内重新出码只会拿到同一张，无意义。 */
+function staleHintMs(validSec: number): number {
+  if (!Number.isFinite(validSec) || validSec <= 0) return Infinity;
+  return Math.max(60_000, validSec * 500);
+}
+
+/** 秒 → 「N 分钟」。后端下发的有效期按分钟呈现（不足 1 分钟按 1 分钟说）。 */
+function fmtValidMinutes(sec: number): string {
+  return `${Math.max(1, Math.round(sec / 60))} 分钟`;
+}
 
 function fmtYuan(fen: number): string {
   return `¥${(fen / 100).toFixed(2).replace(/\.00$/, "")}`;
@@ -57,6 +67,11 @@ export function PayDialog({
   const [stale, setStale] = useState(false);
   const startedAt = useRef(Date.now());
   const paidRef = useRef(false);        // 防止轮询与手动查询同时命中 → 重复回调
+
+  // 支付码有效期（秒）：由后端下发。0 = 后端没给（老版本），此时**不承诺任何时长**，
+  // 而不是编一个数字 —— 界面上的每个时长都必须有出处。
+  const validSec = charge.valid_seconds ?? 0;
+  const staleHint = staleHintMs(validSec);
 
   // 把回调塞进 ref：父组件每次重渲染都会产生新的函数身份，若直接进 useEffect
   // 依赖，轮询计时器会被反复重建（用户就看到「一直在等」却不查）。
@@ -88,14 +103,14 @@ export function PayDialog({
         // 轮询是尽力而为的，失败了最多晚几秒看到结果。
       }
       const elapsed = Date.now() - startedAt.current;
-      if (elapsed >= STALE_HINT_MS) setStale(true);
+      if (elapsed >= staleHint) setStale(true);
       if (cancelled) return;
       timer = setTimeout(tick, elapsed >= POLL_SWITCH_MS ? POLL_SLOW_MS : POLL_FAST_MS);
     };
 
     timer = setTimeout(tick, POLL_FAST_MS);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [order.order_id, paid, markPaid]);
+  }, [order.order_id, paid, markPaid, staleHint]);
 
   // ── 已支付：短暂展示成功态后自动关闭 ──────────────────────
   useEffect(() => {
@@ -186,7 +201,8 @@ export function PayDialog({
             </div>
             <p className="text-[0.625rem] text-gray-400 text-center leading-4">
               订单号 <span className="tabular-nums">{order.order_id}</span>
-              {charge.reused && "（沿用本次会话已生成的支付码，30 分钟内有效）"}
+              {charge.reused && validSec > 0 &&
+                `（沿用本次会话已生成的支付码，${fmtValidMinutes(validSec)}内有效）`}
             </p>
           </div>
         )}
@@ -207,7 +223,11 @@ function PayBody({
 }) {
   const hint = (
     <p className={cn("mt-2 text-[0.6875rem] text-center", stale ? "text-amber-600" : "text-gray-400")}>
-      {stale ? "等待时间较长，若支付码已失效请关闭后重试" : "请在 30 分钟内完成支付"}
+      {stale
+        ? "等待时间较长，若支付码已失效请关闭后重试"
+        : (charge.valid_seconds ?? 0) > 0
+          ? `请在 ${fmtValidMinutes(charge.valid_seconds as number)}内完成支付`
+          : "请尽快完成支付"}
     </p>
   );
 

@@ -488,7 +488,9 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
     }
   };
 
-  /** 待支付订单「去支付」：重新出码或复用上次支付码（后端 30 分钟内复用）。 */
+  /** 待支付订单「去支付」：重新出码或复用上次支付码。
+   *  复用窗口由后端 `PAY_CHARGE_VALID_SECONDS`（支付码有效期）派生、留 60 秒余量，
+   *  界面显示的时长也取自它 —— 三处同源，不再各处写死。 */
   const openPay = async (order: PointsOrder) => {
     setBusyId(order.order_id);
     try {

@@ -68,6 +68,10 @@ export interface PayCharge {
   trade_no: string;
   /** true = 落在复用窗口内，沿用了上一次的出码结果（未重复向下游下单） */
   reused: boolean;
+  /** 支付码有效期（秒），**由后端下发** —— 界面按它显示「请在 N 分钟内完成支付」，
+   *  不硬编码。它必须与支付平台后台那条通道的「识别有效期」同值，
+   *  否则界面承诺的时长远大于平台实际认单的时长 ⇒ 超时付款必然漏单。 */
+  valid_seconds?: number;
 }
 
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
