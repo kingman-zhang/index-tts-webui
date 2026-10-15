@@ -8,7 +8,7 @@
   "emo_melancholic": 0,
   "emo_random": false,
   "emo_sad": 0,
-  "emo_surprised": "0",
+  "emo_surprised": 0,
   "prompt_simple": "{{AUDIO}}",
   "prompt_text": "{{TEXT}}"
 }

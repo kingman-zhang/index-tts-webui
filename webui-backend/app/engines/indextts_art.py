@@ -12,13 +12,22 @@
   以 autodl_body.json 模板为准（随包位于 app/engines/，仓库根 tools/ 有同步副本）——
   字段名随工作流版本可能变化）。
 
-情绪控制结论（2026-09-18 深夜实测修正，覆盖当日早间"平台不支持情绪"的误判）：
-  **"使用情感向量控制"档是可用的**，前提：
-  - emo_surprised 必须传字符串 "0"（schema type=enum，写 int 报
-    "enum 参数值必须是字符串"；官方 input_example 自己写 int 0 也是错的）；
-  - 早间误判根因：探测请求体里 {{AUDIO}}/{{TEXT}} 占位符未替换，
-    prompt_simple 是 audio 类型字段，占位符非法导致所有模式一律
-    "参数值非法"，与情绪档位无关（教训：探测必须用生产级合法请求体）。
+情绪控制结论（"使用情感向量控制"档 2026-09-18 首次跑通，2026-10-15 复测仍可用）：
+  ⚠️ **emo_surprised 的类型被平台悄悄改过，且这次改动让 art 全线提交挂掉**
+  （2026-10-15 生产故障 q_a1edf18f99）：
+    - 2026-09-18：schema type=enum，写 int 报"enum 参数值必须是字符串"
+      ⇒ 当时的结论是"必须传字符串 \"0\""；
+    - 2026-10-15：**已改成 number 滑杆（0–1.4，与其余 8 个滑杆同口径）**，
+      再传字符串 "0" 就被拒 —— 报的是笼统的 `参数值非法`（**不点字段名**），
+      于是**每一个 art 提交都失败**。实测：传 int 0 成功、传 "0" 失败、
+      传 1.5 时平台明说"emo_surprised 的值: 1.5 大于最大值 1.4"。
+    ⇒ 模板 autodl_body.json 里该字段现为**数字 0**；**8 个标签现已全部可表达**，
+      surprised 自 2026-10-15 起与其余标签同路径启用（`_LABEL_TO_FIELD` 映射
+      `emo_surprised`，此前为 None/降级）。
+  教训：平台改 schema 不通知、改完只给一句"参数值非法"。遇到这种集体失败，
+  先用**最小请求体二分字段**（只留必填的 prompt_simple/prompt_text 再逐个加回），
+  不要先在业务代码里找原因 —— 上一次（2026-09-18 早间）的误判根因也是探测
+  请求体不合法（{{AUDIO}}/{{TEXT}} 占位符未替换）：**探测必须用生产级合法请求体**。
   策略：有情绪标签（非 neutral）→ emo_control_method="使用情感向量控制"
   + 置对应滑杆；无标签/neutral → 保持默认档"与音色参考音频相同"。
   另：emo_ref_audio（情感参考音频）字段存在，"使用情感参考音频"档可作备选。
@@ -47,9 +56,9 @@ MAX_CHARS_PER_SUBMIT = 2048
 
 # 情绪标签 → autodl.art 滑杆字段
 # 注意：平台字段含 emo_melancholic、无 neutral（全零滑杆即中性）
-# 实测（2026-09-18）：工作流 indextts2-v1 的 emo_surprised 是单选项枚举
-# （options 仅 ["0"]，int 会报"enum 参数值必须是字符串"，其它值不在 options），
-# 平台侧锁死无法表达惊喜 → surprised 映射 None，降级为跟随参考音频
+# emo_surprised：2026-10-15 实测平台已把它从 enum 字符串改成 number 滑杆
+# （0–1.4，与其余滑杆同口径），报错原因见文件头。**8 个滑杆现在全部可表达**，
+# 故 surprised 自 2026-10-15 起启用（与其余标签同路径：切向量档 + 置 1.0）。
 _LABEL_TO_FIELD = {
     "happy": "emo_happy",
     "sad": "emo_sad",
@@ -57,7 +66,7 @@ _LABEL_TO_FIELD = {
     "afraid": "emo_afraid",
     "disgusted": "emo_disgusted",
     "melancholic": "emo_melancholic",
-    "surprised": None,  # 平台 v1 锁死为 "0"，无法表达；降级跟随音色
+    "surprised": "emo_surprised",  # 2026-10-15 起启用（平台已支持该滑杆）
     "calm": "emo_calm",
     "neutral": None,  # 中性：保持全零滑杆
 }
@@ -72,8 +81,7 @@ class IndexttsArtEngine:
         max_concurrency=None,   # 读 TTS_CONCURRENCY
         # 请求体模板（autodl_body.json）没有 speed 字段 ⇒ 传了也无效
         supports_speed=False,
-        # 8 个情绪滑杆可用，但 emo_surprised 被平台锁死为 "0"
-        # （见 _LABEL_TO_FIELD 注释），故「支持情绪」但存在单标签缺口
+        # 8 个情绪滑杆全部可用（emo_surprised 2026-10-15 起也随平台类型启用）
         supports_emotion=True,
         # ComfyUI 工作流返回的音频是否归一过未知 ⇒ 不承诺，由 backend 归一（默认 False）
         normalizes_loudness=False,
@@ -183,8 +191,8 @@ class IndexttsArtEngine:
         # 统一 8 标签 → 平台 8 滑杆：
         # - 有标签（非 neutral）→ 切"使用情感向量控制"档 + 置滑杆（该档下平台
         #   真正读滑杆；默认档下滑杆被静默忽略——2026-09-18 实测）
-        # - emo_surprised 平台锁死单选项枚举 "0"，必须字符串（int 报
-        #   "enum 参数值必须是字符串"）→ surprised 无法表达，降级跟随音色
+        # - 8 个滑杆一律置**数值**（schema type=number）；曾错传字符串 "0" 被
+        #   平台判"参数值非法"，见文件头 2026-10-15 故障
         # - 无标签/neutral → 保持模板默认档"与音色参考音频相同"，滑杆不碰
         field_name = _LABEL_TO_FIELD.get(req.emotion_label or "") if req.emotion_label else None
         if field_name:
@@ -192,8 +200,7 @@ class IndexttsArtEngine:
             for label, f in _LABEL_TO_FIELD.items():
                 if f and f in body:
                     selected = f == field_name
-                    # 数值滑杆保持数值类型（schema type=number）；emo_surprised
-                    # 不在循环内赋值（锁死 "0"，见 _LABEL_TO_FIELD 映射 None）
+                    # 数值滑杆保持数值类型（schema type=number）
                     body[f] = 1.0 if selected else 0.0
         return body
 
