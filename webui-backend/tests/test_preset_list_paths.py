@@ -162,6 +162,23 @@ try:
           r.text[:200])
     check("⑤ 不存在的分类 → 404", client.get("/api/preset-voices/nope").status_code == 404)
 
+    # ── ⑥ manifest 条目不带 path 键（2026-10-15 清理后的新常态）─────────
+    print("⑥ manifest 无 path 键 → 响应照样补出活路径")
+    write_manifest({
+        "count": 3,
+        "categories": {"female": [{"name": F_NAME, "size_kb": 1.0, "description": "无path"}],
+                       "emotion": [{"name": E_NAME, "size_kb": 2.0}]},
+    })
+    r = client.get("/api/preset-voices")
+    d = r.json()
+    check("⑥ HTTP 200 且 female/emotion 均有活 path",
+          r.status_code == 200
+          and d["categories"]["female"][0]["path"] == str(PRESET_DIR / F_NAME)
+          and d["categories"]["emotion"][0]["path"] == str(EMO_DIR / E_NAME),
+          r.text[:200])
+    check("⑥ 元数据字段保留", d["categories"]["female"][0]["description"] == "无path",
+          str(d["categories"]["female"][0]))
+
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
