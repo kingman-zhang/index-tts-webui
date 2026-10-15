@@ -1,16 +1,19 @@
 /** 个人中心页（/account）：登录/注册、资料编辑、积分（签到/兑换/流水）。 */
 import { useCallback, useEffect, useState } from "react";
 import {
-  AlertTriangle, Coins, Gift, KeyRound, Loader2, LogIn, QrCode, Save, ShieldCheck, ShoppingCart, Sparkles,
+  AlertTriangle, ChevronRight, Coins, Gift, KeyRound, Loader2, LogIn, QrCode, Save, ShoppingCart, Sparkles,
   Ticket, UserRound, Zap, History, CheckCircle2,
 } from "lucide-react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Textarea, Badge } from "@/components/ui";
 import { Header } from "@/components/Header";
+import { AlertDialog } from "@/components/AlertDialog";
 import { ToastNode, useToast } from "@/hooks/useAppInit";
 import { clearSession, initAuth, navigate, refreshUser, setSession, updateUser, useAuth } from "@/lib/auth";
 import { memberApi, type PayCharge, type PointLog, type PointsOrder, type PointsPack, type PointsPackList } from "@/api/members";
 import { PayDialog } from "@/components/PayDialog";
+import { sameAmountAlert, type PayAlert } from "@/lib/payAlert";
 import type { MemberUser } from "@/lib/auth";
+import { fmtTime, fmtYuan } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 let authInited = false;
@@ -25,13 +28,8 @@ const KIND_META: Record<PointLog["kind"], { label: string; cls: string }> = {
   spend:    { label: "消费", cls: "bg-gray-100 text-gray-600" },
 };
 
-function fmtTime(iso?: string) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+/** 「同面额被占」弹窗的内容（标题 / 正文 / 指引）由 `lib/payAlert` 统一组装 ——
+ *  两个页面各有一份这个弹窗，判断散在页面里迟早会漂。 */
 
 export default function AccountPage() {
   const { toast, showToast } = useToast();
@@ -432,8 +430,27 @@ function fmtChars(n: number | null): string {
   return `${Number.isInteger(wan) ? wan : wan.toFixed(1)} 万字`;
 }
 
-function fmtYuan(fen: number): string {
-  return `¥${(fen / 100).toFixed(2).replace(/\.00$/, "")}`;
+/** 合成语速，**字/秒**。用来把「字数」折算成「时长」给用户看。
+ *
+ *  来源＝本地历史 A/B 产物（`data/outputs/<实验名>/results.json`，44 条 ≥3 秒的「文本 + 秒数」配对）
+ *  加权实测 **5.08 字/秒**（默认 speed=1.0）。短样本明显偏低（首尾静音与固定开销占比大），
+ *  所以只取 ≥3 秒那一档。详见项目记忆 `队列与计费.md` 的「积分 ↔ 时长」换算条。
+ *
+ *  ⚠️ **这是写死在前端的**（2026-10-15 用户拍板：不新增后端下发字段）。代价要记住：
+ *  改了 `MEMBER_POINTS_PER_1000_CHARS`（单价）或换引擎导致语速变化，这里**不会**跟着变；
+ *  时长是按「同一份字数」现算的，所以至少不会和旁边的「N 万字」自相矛盾。 */
+const TTS_CHARS_PER_SECOND = 5.08;
+
+/** 把字数折算成「N 小时 / N 分钟」（不含「约」，由调用处的 ≈ 承担）。
+ *
+ *  ⚠️ **只给量级，别写分钟级精度**：同一内容换读法（「230」读「二三零」vs「两百三十」）
+ *  或改标点密度，实测时长能差 20–40%。用户按「65 分钟」去规划节目、做出来 50 分钟，
+ *  会觉得被坑；「约 1 小时」既好记又抗波动。 */
+function fmtDuration(chars: number | null): string {
+  if (!chars || chars <= 0) return "";
+  const seconds = chars / TTS_CHARS_PER_SECOND;
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} 分钟`;
+  return `${Number((seconds / 3600).toFixed(1))} 小时`;
 }
 
 /** 积分商城（导出以便交互探针 `src/__probe_pay.tsx` 单独挂载取证）。 */
@@ -444,6 +461,10 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
   const [loadErr, setLoadErr] = useState("");
   // 非空 = 出码弹窗打开（存订单 + 出码结果）。以 order_id 作 key，换单即重置弹窗内部状态。
   const [pay, setPay] = useState<{ order: PointsOrder; charge: PayCharge } | null>(null);
+  // 非空 = 「该面额已被占用」告知弹窗打开（标题/正文/指引由 lib/payAlert 按「占位的是谁」组装）。
+  // 为什么不用 toast：这条信息决定了"用户此刻什么都做不了"，必须让他看清并确认收到；
+  // 转瞬即逝的角落提示会被直接忽略，然后他就去反复点购买、堆积一堆待付单。
+  const [busyAlert, setBusyAlert] = useState<PayAlert | null>(null);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -459,7 +480,11 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
     void loadOrders();
   }, [loadOrders]);
 
-  /** 真实通道就绪 → 出码；否则回落到演示用的模拟支付；都没有则只落单。 */
+  /** 真实通道就绪 → 出码；否则回落到演示用的模拟支付；都没有则只落单。
+   *
+   *  ⚠️ 同面额被占用时**后端在「下单」这一步就拒绝了**（根本不落单），所以这里拿到的
+   *  409 意味着"什么都没发生"。仍要 `loadOrders()`：让用户看见占位的那笔单（他可以直接
+   *  去付），顺带触发列表的惰性过期，把已经超时的旧单流转掉。 */
   const buy = async (pack: PointsPack) => {
     setBusyId(pack.id);
     try {
@@ -482,6 +507,8 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
       showToast("订单已创建，但支付通道尚未就绪，请联系管理员");
     } catch (e) {
       await loadOrders();
+      const busy = sameAmountAlert(e, "order");
+      if (busy) { setBusyAlert(busy); return; }
       showToast(e instanceof Error ? e.message : "购买失败");
     } finally {
       setBusyId("");
@@ -499,6 +526,10 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
     } catch (e) {
       // 订单已支付/已关闭等 → 刷新列表让状态回正
       await loadOrders();
+      // 出码时才发现同面额被占（下单之后、出码之前被别人抢了同一面额）—— 与「下单被拦」
+      // 共用同一个告知弹窗，用户不需要区分它来自哪一步（但标题按"发起支付"给）。
+      const busy = sameAmountAlert(e, "pay");
+      if (busy) { setBusyAlert(busy); return; }
       showToast(e instanceof Error ? e.message : "发起支付失败");
     } finally {
       setBusyId("");
@@ -526,6 +557,11 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
     }
   };
 
+  // 顶部那行「1000 积分 ≈ N 万字 ≈ X 小时」：字数与时长的**唯一来源**，不把同一个表达式写两遍。
+  const charsPer1000Points = data && data.points_per_1000_chars > 0
+    ? 1000 * 1000 / data.points_per_1000_chars
+    : 0;
+
   if (loadErr) {
     return (
       <Card>
@@ -545,7 +581,7 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
           </CardTitle>
         {data && data.points_per_1000_chars > 0 && (
           <span className="text-[0.6875rem] text-gray-400">
-            1 元 = {data.points_per_yuan} 积分 · 1000 积分 ≈ {fmtChars(1000 * 1000 / data.points_per_1000_chars)}
+            1 元 = {data.points_per_yuan} 积分 · 1000 积分 ≈ {fmtChars(charsPer1000Points)} ≈ {fmtDuration(charsPer1000Points)}音频
           </span>
         )}
       </CardHeader>
@@ -570,7 +606,7 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
                 </p>
                 <p className="text-[0.6875rem] text-gray-400">
                   {fmtYuan(pack.price_fen)}
-                  {pack.est_chars ? ` · 约 ${fmtChars(pack.est_chars)}` : ""}
+                  {pack.est_chars ? ` · 约 ${fmtChars(pack.est_chars)} ≈ ${fmtDuration(pack.est_chars)}` : ""}
                 </p>
                 {pack.bonus_points > 0 && (
                   <p className="text-[0.625rem] text-amber-600">含赠送 {pack.bonus_points} 积分</p>
@@ -587,12 +623,6 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
           </div>
         )}
 
-        {data?.pay_channel_ready && (
-          <p className="text-[0.6875rem] text-gray-400 flex items-center gap-1">
-            <ShieldCheck className="w-3 h-3" />
-            已接入真实支付通道（{data.pay_provider || "自定义"}）：扫码付款后，到账由支付回调自动完成。
-          </p>
-        )}
         {data && !data.pay_channel_ready && !data.mock_pay_enabled && (
           <p className="text-[0.6875rem] text-gray-400">
             购买后订单会保留，支付通道接入完成后由支付回调自动入账。
@@ -612,7 +642,16 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
 
         {orders.length > 0 && (
           <div className="border-t border-gray-100 pt-3">
-            <p className="text-[0.6875rem] font-medium text-gray-500 mb-2">最近订单</p>
+            {/* 这里只放最近 5 条（订单可能很多，全铺在个人中心会把页面撑爆）；
+                完整列表在 /account/orders。 */}
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[0.6875rem] font-medium text-gray-500">最近订单</p>
+              <button type="button"
+                onClick={() => navigate("/account/orders")}
+                className="text-[0.6875rem] font-medium text-indigo-600 hover:text-indigo-700 flex items-center gap-0.5 transition-colors">
+                查看更多<ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
             <div className="divide-y divide-gray-50">
               {orders.map(o => (
                 <div key={o.order_id} className="flex items-center gap-3 py-2">
@@ -665,6 +704,17 @@ export function ShopCard({ showToast }: { showToast: (m: string) => void }) {
           onClose={() => setPay(null)}
         />
       )}
+
+      {/* 「同面额已被占用」告知弹窗：正文取后端下发的原句（文案的单一真源在后端，
+          前端不复制一份），标题与那句"那你现在能做什么"由 lib/payAlert 按「占位的是
+          谁」给 —— 占位的是**别人**时不给指引（用户手里没有单，指了就是误导）。 */}
+      <AlertDialog
+        open={!!busyAlert}
+        title={busyAlert?.title ?? ""}
+        description={busyAlert?.description ?? ""}
+        hint={busyAlert?.hint}
+        onClose={() => setBusyAlert(null)}
+      />
     </>
   );
 }

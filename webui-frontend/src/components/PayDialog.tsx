@@ -21,6 +21,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { CheckCircle2, Copy, ExternalLink, Loader2, RefreshCw, Smartphone, X } from "lucide-react";
 import { Button } from "./ui";
 import { memberApi, type PayCharge, type PointsOrder } from "@/api/members";
+import { fmtYuan } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** 轮询间隔：前 2 分钟 2s（回调通常几秒内到达，做到「付款即见」），之后 5s 降频。 */
@@ -39,10 +40,6 @@ function staleHintMs(validSec: number): number {
 /** 秒 → 「N 分钟」。后端下发的有效期按分钟呈现（不足 1 分钟按 1 分钟说）。 */
 function fmtValidMinutes(sec: number): string {
   return `${Math.max(1, Math.round(sec / 60))} 分钟`;
-}
-
-function fmtYuan(fen: number): string {
-  return `¥${(fen / 100).toFixed(2).replace(/\.00$/, "")}`;
 }
 
 /** 看起来像可以直接打开的链接（http/https/自定义 scheme）。 */

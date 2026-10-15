@@ -3,24 +3,30 @@ import { Loader2 } from "lucide-react";
 import PodcastPage from "./pages/PodcastPage";
 import DubbingPage from "./pages/DubbingPage";
 import AccountPage from "./pages/AccountPage";
+import OrdersPage from "./pages/OrdersPage";
 import { initAuth, navigate, useAuth } from "@/lib/auth";
 
 /**
  * 零依赖路径路由：双人播客与单人配音拆为两个独立页面，便于日后
  * 在统一入口页分别跳转。路由约定：
- *   /            → 双人播客（默认；老用户 localStorage wb-mode=dubbing 时自动迁到 /dubbing）
- *   /podcast     → 双人播客
- *   /dubbing     → 单人配音
- *   /account     → 个人中心（登录/注册/积分）
+ *   /                 → 双人播客（默认；老用户 localStorage wb-mode=dubbing 时自动迁到 /dubbing）
+ *   /podcast          → 双人播客
+ *   /dubbing          → 单人配音
+ *   /account          → 个人中心（登录/注册/积分/最近订单）
+ *   /account/orders   → 全部订单（从个人中心的「查看更多」进入）
  * 强制登录：除 /account 外的所有页面，未登录一律跳转 /account（登录/注册页）。
  */
 function resolvePage(pathname: string): ComponentType {
+  // ⚠️ `/account/orders` 必须排在 `/account` 之前 —— 前缀匹配下两者都会命中后者。
+  if (pathname.startsWith("/account/orders")) return OrdersPage;
   if (pathname.startsWith("/dubbing")) return DubbingPage;
   if (pathname.startsWith("/account")) return AccountPage;
   return PodcastPage;
 }
 
 function normalizePath(pathname: string): string {
+  // 同上：更长的前缀先判，否则 /account/orders 会被归一成 /account。
+  if (pathname.startsWith("/account/orders")) return "/account/orders";
   if (pathname.startsWith("/dubbing")) return "/dubbing";
   if (pathname.startsWith("/podcast")) return "/podcast";
   if (pathname.startsWith("/account")) return "/account";

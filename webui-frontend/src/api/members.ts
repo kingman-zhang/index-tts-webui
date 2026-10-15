@@ -84,17 +84,67 @@ export interface PayCharge {
   valid_seconds?: number;
 }
 
+/**
+ * 后端业务错误码：同一面额已经有一笔待付单占着（镜像 `service.SAME_AMOUNT_BUSY_*_CODE`）。
+ * 前端据此弹「只有确认按钮」的告知弹窗 —— 而不是去匹配那句中文文案。
+ *
+ * 为什么是两个码而不是一个：弹窗里还有一句"那你现在能做什么"，而它**只对"占位的是
+ * 自己"成立**（自己占着 → 手里确实有一笔能付的单，可以去「最近订单」付掉；别人占着
+ * → 用户根本没下过单，再指引他去找自己那笔待付单只会让人懵）。正文文案两个码相同，
+ * 差别只在前端补的那句指引，见 `lib/payAlert.ts`。
+ */
+export const ERR_SAME_AMOUNT_BUSY_SELF = "same_amount_busy_self";
+export const ERR_SAME_AMOUNT_BUSY_OTHER = "same_amount_busy_other";
+
+/** 「同面额被占」的两个子类，决定弹窗里那句指引给不给。 */
+export type SameAmountBusyKind = "self" | "other";
+
+/**
+ * 判断这个错误是不是「同一面额被占用」，并区分**占位的是自己还是别人**。
+ * 不是这一类就返回 null（调用方据此走 toast 而不是弹窗）。
+ */
+export function sameAmountBusyKind(e: unknown): SameAmountBusyKind | null {
+  if (!(e instanceof ApiError)) return null;
+  if (e.code === ERR_SAME_AMOUNT_BUSY_SELF) return "self";
+  if (e.code === ERR_SAME_AMOUNT_BUSY_OTHER) return "other";
+  return null;
+}
+
+/**
+ * 带状态码与业务错误码的接口错误。
+ *
+ * 为什么需要它：同一个 HTTP 409 底下可能是好几种业务原因（订单已过期 / 已支付 /
+ * 同面额被占），前端要分支就必须拿到**机器可读**的 `code`；也不该退而匹配中文文案
+ * —— 文案会改，而匹配文案的代码不会跟着改。
+ * 它 `extends Error`，所以现存的 `e instanceof Error ? e.message : …` 全部照旧可用。
+ */
+export class ApiError extends Error {
+  /** HTTP 状态码 */
+  readonly status: number;
+  /** 业务错误码（后端 `MemberError.err_code`）；后端没给就是空串 */
+  readonly code: string;
+
+  constructor(message: string, status: number, code = "") {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
   const resp = await authFetch(url, options);
   if (!resp.ok) {
     let detail = resp.statusText;
+    let code = "";
     try {
       const body = await resp.json();
       detail = body.detail || body.error || detail;
+      code = body.code || "";
     } catch {
       detail = await resp.text().catch(() => detail);
     }
-    throw new Error(detail);
+    throw new ApiError(detail, resp.status, code);
   }
   return resp.json();
 }
