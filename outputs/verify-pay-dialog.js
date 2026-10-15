@@ -149,9 +149,11 @@ const waitDialogWith = (page, t) => page.waitForFunction((s) => {
 
   const report = { viewport: VIEW };
 
-  // ── ① 初始：商城显示已接入真实通道，无弹窗 ────────────────────
+  // ── ① 初始：商城不再挂「已接入真实支付通道」那行说明，无弹窗 ──────
+  //    2026-10-15 用户要求删掉那段文案（通道名一变它就得跟着改，且它不是必需信息）。
   let ht = await homeText(page);
-  check('① 商城提示「已接入真实支付通道（mpay）」', ht.includes('已接入真实支付通道（mpay）'));
+  check('① 「已接入真实支付通道」说明文案已删除', !ht.includes('已接入真实支付通道'),
+    JSON.stringify(ht.slice(0, 80)));
   check('① 初始无弹窗', (await dialogText(page)) === null);
 
   // ── ① 点「购买」→ 出码 → 二维码弹窗 ──────────────────────────
