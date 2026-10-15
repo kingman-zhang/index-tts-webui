@@ -38,7 +38,7 @@ os.environ["MEMBER_MOCK_PAY"] = "0"
 os.environ["PAY_PROVIDER"] = "mpay"
 os.environ["PAY_PUBLIC_BASE_URL"] = "https://api.example.com"
 os.environ["PAY_RETURN_URL"] = "https://example.com/account"
-os.environ["PAY_CHARGE_REUSE_SECONDS"] = "1800"
+os.environ["PAY_CHARGE_VALID_SECONDS"] = "900"   # 支付码有效期（＝平台侧「识别有效期」）
 os.environ["MPAY_BASE_URL"] = "https://mpay.test"
 os.environ["MPAY_PID"] = "1001"
 os.environ["MPAY_KEY"] = "testkey"
@@ -279,6 +279,13 @@ _pay = _resp.json()["pay"]
 check("pay_type/pay_info 正确",
       _pay["pay_type"] == "qrcode" and _pay["pay_info"].startswith("weixin://"), str(_pay))
 check("首次 reused=False", _pay["reused"] is False, str(_pay))
+check("★出码响应下发 valid_seconds（界面时长与平台有效期同源）",
+      _pay.get("valid_seconds") == 900, str(_pay))
+check("★复用窗口由有效期派生、且严格小于有效期（超窗复用＝必然漏单）",
+      service.PAY_CHARGE_REUSE_SECONDS
+      == service.PAY_CHARGE_VALID_SECONDS - service.PAY_CHARGE_REUSE_MARGIN_SECONDS
+      and 0 < service.PAY_CHARGE_REUSE_SECONDS < service.PAY_CHARGE_VALID_SECONDS,
+      f"reuse={service.PAY_CHARGE_REUSE_SECONDS} valid={service.PAY_CHARGE_VALID_SECONDS}")
 check("出码信息已落库", store.get_order(_order1["order_id"])["pay_info"] == _pay["pay_info"])
 check("★notify_url 由 PAY_PUBLIC_BASE_URL 拼出",
       _ctx_seen["notify_url"] == "https://api.example.com/api/pay/notify/mpay", str(_ctx_seen))
@@ -297,6 +304,8 @@ with patch.object(pay_mpay, "create_charge", _counting_charge):
 check("★窗口内复用（不重复向下游下单）",
       _resp2.status_code == 200 and _calls["n"] == 0
       and _resp2.json()["pay"]["reused"] is True, f"calls={_calls['n']}")
+check("复用响应同样下发 valid_seconds（两条路径不能有一处漏）",
+      _resp2.json()["pay"].get("valid_seconds") == 900, str(_resp2.json()["pay"]))
 
 check("别人出码 → 404",
       client.post(f"/api/points/orders/{_order1['order_id']}/pay", headers=auth(t2)).status_code == 404)

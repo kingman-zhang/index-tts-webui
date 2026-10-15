@@ -84,9 +84,22 @@ PAY_RETURN_URL = os.environ.get("PAY_RETURN_URL", "") or ""
 # 回调金额校验策略的**全局覆盖**（留空 = 按通道默认）。
 # 可选 strict/ge/off —— 见 pay_contract.AMOUNT_POLICIES 与 pay.resolve_amount_policy。
 PAY_AMOUNT_CHECK = (os.environ.get("PAY_AMOUNT_CHECK", "") or "").strip()
+# 支付码**有效期**（秒）。
+# ⚠️ 必须与支付平台侧那条通道的「识别有效期」设成**同一个值**
+#    （mpay 后台：`receipt_valid_seconds`，默认 300、上限 1800）。
+#    为什么这件事必须由我们记住：钱到账后**能不能认单，全看平台那个有效期**——
+#    平台只在有效期内为订单保留匹配资格；而我们的复用窗口若比它长，
+#    用户就会在「平台已经不再认这张码」的时间段里被复用旧码
+#    ⇒ 付了钱、平台匹配不到订单 = **必然漏单**（2026-10-15 实测踩到）。
+#    取值口径：与 mpay 后台逐字对齐；改一边必须同时改另一边（清单里已列成一步）。
+PAY_CHARGE_VALID_SECONDS = int(os.environ.get("PAY_CHARGE_VALID_SECONDS", "900"))
 # 出码信息复用窗口（秒）：同一订单在此窗口内重复请求出码，直接复用已有 pay_info，
 # 不重复向下游下单 —— 各通道对「同一商户订单号重复下单」的行为不一致，复用最安全。
-PAY_CHARGE_REUSE_SECONDS = int(os.environ.get("PAY_CHARGE_REUSE_SECONDS", "1800"))
+# ⚠️ 由 `PAY_CHARGE_VALID_SECONDS` **派生**（留 60 秒余量），不是独立开关：
+#    「复用窗口 ≤ 平台有效期」是硬约束，写成同一个表达式才不会被人单独调漂。
+#    用户在前端看到的「请在 N 分钟内完成支付」也取自有效期那一项，三者同源。
+PAY_CHARGE_REUSE_MARGIN_SECONDS = 60
+PAY_CHARGE_REUSE_SECONDS = max(0, PAY_CHARGE_VALID_SECONDS - PAY_CHARGE_REUSE_MARGIN_SECONDS)
 
 # ── 通道：mpay_v2（码支付，ePay V1 / MD5）—— 仅 PAY_PROVIDER=mpay 时生效 ──
 # 通道专属配置刻意留在 service（与其它 MEMBER_* 同一处），通道模块 delayed-import
@@ -799,11 +812,15 @@ async def create_charge_for_order(user: dict, order_id: str,
                                   clientip: str = "", device: str = "pc") -> dict:
     """为 pending 订单向**当前通道**下单（出码）；窗口内重复调用复用已有结果。
 
-    返回 `{"order": <订单>, "pay": {pay_type, pay_info, trade_no, reused}}`，
+    返回 `{"order": <订单>, "pay": {pay_type, pay_info, trade_no, valid_seconds, reused}}`，
     前端按 `pay_type` 渲染：
         `qrcode`    → 把 pay_info 渲染成二维码
         `jump`      → 跳转到 pay_info
         `urlscheme` → 唤起小程序（移动端）
+
+    `valid_seconds` 随每次出码下发（复用与新建都有）：前端据此显示「请在 N 分钟内
+    完成支付」，**不再硬编码时长** —— 否则改了平台有效期，界面承诺就成了一句谎话
+    （2026-10-15 前的 bug：前端写 30 分钟、mpay 只认 5 分钟）。
 
     为什么把出码信息**存进订单**并做复用窗口：各通道对「同一商户订单号重复下单」
     的行为不一致（可能复用同一支付单，也可能报错）；而用户关掉二维码后又需要能重开
@@ -817,6 +834,7 @@ async def create_charge_for_order(user: dict, order_id: str,
         return {"order": order, "pay": {"pay_type": order.get("pay_type", ""),
                                         "pay_info": order.get("pay_info", ""),
                                         "trade_no": order.get("trade_no", ""),
+                                        "valid_seconds": PAY_CHARGE_VALID_SECONDS,
                                         "reused": True}}
 
     mod = _pay.default_provider()
@@ -847,7 +865,8 @@ async def create_charge_for_order(user: dict, order_id: str,
         "trade_no": charge.get("trade_no", ""),
         "pay_created_at": datetime.now().isoformat(),
     }) or order
-    return {"order": updated, "pay": {**charge, "reused": False}}
+    return {"order": updated, "pay": {**charge, "valid_seconds": PAY_CHARGE_VALID_SECONDS,
+                                      "reused": False}}
 
 
 # ─── 合成任务扣费钩子（MEMBER_ENFORCE / 记账模式） ──────────

@@ -283,7 +283,11 @@ def _membership() -> dict:
             # PAY_PUBLIC_BASE_URL 形态）；problem=没配好时的**具体原因**
             # （直接点名缺哪个环境变量 / 哪一项填错了，避免"配了却不生效"要到日志里翻）；
             # notify_url=实际拼出的回调地址（取值域：直接看它，比对着 .env 猜快）。
-            "pay": mpay.describe(),
+            # charge_valid_seconds=支付码有效期（2026-10-15 新增）—— **必须与支付平台
+            # 后台那条通道的「识别有效期」同值**，否则用户会在平台已不认单的时间段里
+            # 被复用旧码（付了钱认不到账）。部署后对着这两处核一眼即可。
+            "pay": {**mpay.describe(),
+                    "charge_valid_seconds": msvc.PAY_CHARGE_VALID_SECONDS},
             "packs": [p["id"] for p in msvc._packs.sorted_packs()],
         }
     except Exception as e:  # 自检本身不能把进程带崩
