@@ -387,6 +387,13 @@ def order_pay(order_id: str, request: Request, user = Depends(get_current_user))
 2. **金额校验**（§4.2）—— 处理不当要么全部拒收，要么资损。
 3. **个人收款监听的合规边界** —— 属平台规则外玩法，账号存在被限制风险，官方文档亦明确提示自行评估。请自行判断。
 4. **回调无鉴权、只靠 MD5** —— `MPAY_KEY` 一旦泄露即可伪造入账。`KEY` 只写服务器 `.env`，不入库、不进日志。
+5. 🔴 **支付码有效期必须与平台同值**（2026-10-15 实测补入）—— mpay 后台那条通道的
+   「识别有效期(秒)」与我们的 `PAY_CHARGE_VALID_SECONDS` **必须一致**。平台只在有效期内
+   为订单保留匹配资格；我们若比它长，用户会在「平台已不认这张码」的时间段里被复用旧码
+   ⇒ **付了钱、平台匹配不到订单 = 必然漏单**（踩到的实例：界面承诺 30 分钟、mpay 只认 5 分钟，
+   用户在 11:49 付款，mpay 回「金额通知未匹配到唯一支付单」）。
+   代码只能钉住「复用窗口 < 有效期」这一半（`tests/test_pay_mpay.py` 有断言），
+   **平台侧那个值不出现在任何接口响应里，只能人工对齐** —— 改一边必须改另一边。
 5. **订单超时未处理** —— 现有 pending 订单会一直挂着；建议加超时作废（§7.3-13）。
 6. **`out_trade_no` 可重复下单** —— 同一订单重复调 `/mapi.php` 的行为需实测（可能复用同一支付单，也可能报错）；方案里对 30 分钟内已出码的订单**直接复用** `pay_info`，避免重复下单。
 7. **对账** —— `tools/reconcile.py` 已能报出「paid 无流水 / 有流水非 paid」；接支付后建议按周跑一次，并与 mpay 后台账单核对。
@@ -418,7 +425,7 @@ def order_pay(order_id: str, request: Request, user = Depends(get_current_user))
 
 | 文件 | 改动 |
 |---|---|
-| `service.py` | 新增 `PAY_PROVIDER` / `PAY_PUBLIC_BASE_URL` / `PAY_RETURN_URL` / `PAY_AMOUNT_CHECK` / `PAY_CHARGE_REUSE_SECONDS` / `MPAY_*`；`pay_channel_ready()`；`create_charge_for_order()`（async）；`settle_order` / `settle_by_out_trade_no` 加 `amount_policy`（默认 `strict`，**向后兼容**）；`_check_amount()` 策略化 |
+| `service.py` | 新增 `PAY_PROVIDER` / `PAY_PUBLIC_BASE_URL` / `PAY_RETURN_URL` / `PAY_AMOUNT_CHECK` / `PAY_CHARGE_VALID_SECONDS`（2026-10-15；原 `PAY_CHARGE_REUSE_SECONDS` 已**改为由它派生的内部值**，不再是环境变量）/ `MPAY_*`；`pay_channel_ready()`；`create_charge_for_order()`（async）；`settle_order` / `settle_by_out_trade_no` 加 `amount_policy`（默认 `strict`，**向后兼容**）；`_check_amount()` 策略化 |
 | `routes.py` | 回调端点 `POST` → `api_route(GET, POST)`；新增 `_collect_payload()`（query / form / JSON 三载体）与 `_client_ip()`；应答按通道声明走纯文本或 JSON；新增 `POST /api/points/orders/{order_id}/pay` |
 | `store.py` / `store_file.py` / `store_mongo.py` | 新增 `update_order_fields()`（落出码信息；**明令不得用它改 status**） |
 | `.env.example` | 新增「真实支付通道」段（4 个通用项 + mpay 4 项） |
@@ -507,8 +514,10 @@ def order_pay(order_id: str, request: Request, user = Depends(get_current_user))
    轮询计时器会被反复重建（表现为「一直在等却从不查」）—— 所以 `onPaid` / `onClose`
    一律走 ref，让 `markPaid` 保持稳定。
 5. **弹窗 `key={order_id}`**：换单必须重置内部状态，否则会沿用上一单的支付码。
-6. **不做自动重新出码**：后端复用窗口（`PAY_CHARGE_REUSE_SECONDS`，默认 30 分钟）内重新
-   出码只会拿到**同一张**，无意义；超时只给一句「若支付码已失效请关闭后重试」。
+6. **不做自动重新出码**：后端复用窗口（＝ `PAY_CHARGE_VALID_SECONDS` − 60 秒；2026-10-15 起
+   改为由**支付码有效期派生**，不再是独立开关）内重新出码只会拿到**同一张**，无意义；
+   超时只给一句「若支付码已失效请关闭后重试」。前端显示的「请在 N 分钟内完成支付」
+   也取自同一个 `valid_seconds`（后端随出码下发），不再硬编码。
 7. **兜底 `pay_type=""`**：后端在无可支付内容时会直接报错，正常不会出现；仍渲染原文，
    避免用户面对一个空白弹窗。
 8. **双开告警**：`pay_channel_ready && mock_pay_enabled` 同时为真时给**红色**提示
