@@ -85,22 +85,6 @@
       }
     },
     {
-      "name": "用户菜单里有「使用文档」",
-      "pass": true
-    },
-    {
-      "name": "点「使用文档」是新开标签",
-      "pass": true,
-      "detail": {
-        "u": "/docs",
-        "t": "_blank"
-      }
-    },
-    {
-      "name": "个人中心积分卡有引导链接",
-      "pass": true
-    },
-    {
       "name": "无 JS 报错",
       "pass": true,
       "detail": []
