@@ -681,3 +681,76 @@ POST https://mpay.lizigege.com/mapi.php
 
 真单冒烟生成了数笔**待付订单**（`0.01` 元失败 1 笔 + `10.00` 元成功 2 笔，`out_trade_no` 前缀
 `smoke*` / `mod*`），均**未付款、不扣款**，会在复用窗口外自然过期。要清理可在 mpay 后台按该前缀查。
+
+---
+
+## 13. 实现记录（2026-10-15 第二批 · 用户 6 条修正）
+
+### 13.1 有效期统一 5 分钟（900 → 300）
+
+`PAY_CHARGE_VALID_SECONDS` 的值现在是**三处同源**的单一真源：前端承诺时长、出码复用窗口
+（本值 − 60 秒）、订单判过期阈值。改一个数，三处自动跟随。
+**mpay 后台那条通道的「识别有效期(秒)」必须手工改成同值** —— 这是唯一无法由代码代劳的一半。
+
+### 13.2 同一面额被占用：两道闸门
+
+个人收款监听**按金额匹配**（`amount_offset_max=0` 时每档只剩原价一个候选），所以同一面额
+同一时刻只能挂一张待付单。
+
+| 闸门 | 落点 | 行为 |
+|---|---|---|
+| ① 我们侧预检（主路径） | `service._same_amount_blocker()` | 出码前扫全局订单：存在**同 `amount_fen` + 已出码（`pay_created_at`）+ 未过期**的 `pending` 单 ⇒ 409 + `SAME_AMOUNT_BUSY_MSG`，**不向 mpay 发请求** |
+| ② 平台侧兜底 | `pay_mpay._looks_like_same_amount_busy()` | 收到 `code=0` 且 msg 含「可用金额偏移 / 偏移已用尽」⇒ 抛同一句文案 + 409（其余平台错误**保留原文**，别混成一句） |
+
+⚠️ **判据必须与平台一致：看「已出码」而不是「建过单」**。只建单、没出码的订单在平台侧
+什么都不占；用 `created_at` 当判据会把"用户自己一堆没付的旧单"误判成冲突，反而把正常下单堵死。
+
+### 13.3 `expired` 订单状态（**展示态，不是终态**）🔴
+
+- 契约：`store_contract.ORDER_EXPIRED`；存储侧新增 `expire_order()`（CAS `pending → expired`）。
+  **新增一个 store 接口 = 两个后端都要实现**，否则门面 import 期就会报缺接口。
+- 落库时机：**惰性**（`list_orders` 读列表时顺手 CAS + 出码被拒时补一次）。没有后台清理任务。
+- 基准时间：`pay_created_at` 优先（= 真正向平台出码、平台侧待付单元诞生的时刻），
+  无则回落 `created_at`。
+- 🔴 **`claim_order` 的来源状态必须同时包含 `expired`**（mongo 用 `$in`、file 用 tuple）：
+  两侧有效期各配一份，只要差几秒就存在「我们判过期、用户其实付成功」。只认 `pending`
+  ⇒ 那条回调抢单失败 ⇒ **钱到了、积分不给**。回归测试钉在 `[20]`。
+
+### 13.4 出码弹窗直接显示收款码（不再跳转）
+
+**根因（源码级）**：微信个人收款通道 `WechatReceiptPayment::pay()` 用 `payResult('page', …)`
+⇒ `presentation.pay_page = 'page'`；而 `EpayV1ProtocolService::buildMapiResponse()`
+**只认 `qrcode`/`jump`/`urlscheme` 三种**，`'page'` 一律落到兜底
+`payurl = {站点}/payment/{pay_no}`（收银台 SPA）⇒ 我们只能拿到 jump。
+
+**解法**：`pay_mpay._fetch_receipt_qrcode()` 回查收银台自己的取数接口
+`GET {base}/api/cashier/pay-order?pay_no=…`，取 `data.presentation.pay_params`：
+- `qrcode` ⇒ `pay_type=qrcode`（可直接编码成二维码）
+- 只有 `qrcode_image` ⇒ `pay_type=image`（前端按 `<img>` 显示；**图片地址不能当二维码内容编码**，
+  否则扫出来指向一张图片）
+- 都取不到 ⇒ **降级回 jump**（旧路径）。这条回查纯属体验优化，**绝不能成为付款路径的单点故障**。
+
+**顺带收益**：该接口还返回 `receipt_valid_seconds` 与 `expire_at_timestamp` ⇒
+mpay 侧的**真实**有效期首次变为可读。当前代码只用它取收款码，**没有**拿它自动纠偏或告警
+（要做需另立一条：这属于"加东西"，先问）。
+
+### 13.5 会话存储抖动不再把人登出（**与支付无关，但同一批**）
+
+见 `service.SessionStoreUnavailable` 的 docstring：存储故障原先被压成「未登录」⇒ 要求登录的
+端点回 401 ⇒ 前端 `authFetch` 见 401 清掉本地 token（服务端会话其实还活着）。
+现在：**带了 token** 的请求在存储故障时回 503（前端不清 token）；**没带 token** 的仍返回 None
+（保住"公开链路不因存储故障被打挂"）。落点只有 `routes.get_optional_user()` 一处。
+
+### 13.6 容器时区（**不是支付问题，但同一批上线**）
+
+`docker-compose.yml` 的 backend 加 `TZ: Asia/Shanghai`。成因与判据（`/api/version` 的
+`process_started_ts` 与 `process_started_at` 之差 = 进程时区偏移）写进了 `命令大全.md` §4.1b。
+
+### 13.7 验证
+
+- `tests/test_pay_mpay.py`：**128 通过 / 0 失败**（新增 `[6b]` 收银台回查、`[20]` 过期与入账兼容、
+  `[21]` 同面额预检、`[22]` 过期后重新下单）。
+- `tests/test_require_login.py`：**12 通过 / 0 失败**（新增「带 token + 存储故障 ⇒ 503 且绝不是 401」
+  与「不带 token 的公开请求不受牵连」）。
+- 全量离线回归：`outputs/run-offline-tests.py` → **TOTAL 50 PASS 50**。
+- 前端 `tsc --noEmit` 通过。

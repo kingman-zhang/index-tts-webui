@@ -15,6 +15,13 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: "3001"
+      # ⚠️ 必须显式设时区（2026-10-15）：基础镜像 python:3.11-slim 的默认时区是 **UTC**，
+      #    而代码里所有时间戳都是 `datetime.now().isoformat()`（**裸串、不带时区标记**）
+      #    ⇒ 容器里写出来的就是 UTC 字面量，前端按浏览器本地时区解析后**显示比实际早 8 小时**
+      #    （生产实测：/api/version 的 process_started_ts 与 process_started_at 正好差 8.00 小时）。
+      #    本地 backend 跑在 macOS（Asia/Shanghai）所以看不出来 —— 两边写进同一份库才暴露。
+      #    python:*-slim 自带 tzdata，所以只加这一行即可，无需改 Dockerfile.base。
+      TZ: "${PODCAST_TZ:-Asia/Shanghai}"
       # 显式环境变量优先于挂载的旧 backend .env；仍允许部署环境自定义或设 0 关闭。
       # ⚠️ 这两个必须在这里显式透传：挂载进容器的旧 .env 里的 MEMBER_REG_BONUS=100
       # 会顶掉代码新默认值 500（2026-10-05 调值时的真实教训）。
