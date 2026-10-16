@@ -90,8 +90,14 @@ docker_upgrade() {
   #
   # 基线为什么不能是 HEAD 的提交时间：见 lib_deploy_checks.sh 里
   # check_image_fresh 的注释（2026-09-29 ff0cfb0 的线上假失败）。
+  # ⚠️ 这个清单必须覆盖**所有构建输入**：Dockerfile 里是 `COPY . .` + `npm run build`，
+  #    所以 public/（落地页素材、robots.txt、sitemap.xml）与 scripts/（落地页静态预渲染）
+  #    同样决定镜像内容。少列的后果是「只改了这些文件 + 用 --skip-frontend 部署」
+  #    会被自检**静默放过**（镜像明明早于改动，却报 [ok]）。
+  #    仍未列入（既有缺口，与本次落地页无关）：postcss.config.js、tailwind.config.js、
+  #    tsconfig*.json —— 改它们的同理会漏判，需要时一并补上。
   BACKEND_SRC="webui-backend/app webui-backend/server.py webui-backend/Dockerfile webui-backend/Dockerfile.base webui-backend/requirements.txt"
-  FRONTEND_SRC="webui-frontend/src webui-frontend/Dockerfile webui-frontend/nginx.conf webui-frontend/index.html webui-frontend/package.json webui-frontend/package-lock.json webui-frontend/vite.config.ts"
+  FRONTEND_SRC="webui-frontend/src webui-frontend/public webui-frontend/scripts webui-frontend/Dockerfile webui-frontend/nginx.conf webui-frontend/index.html webui-frontend/package.json webui-frontend/package-lock.json webui-frontend/vite.config.ts"
   check_image_fresh podcast-backend:latest $BACKEND_SRC || exit 1
   check_image_fresh podcast-web:latest $FRONTEND_SRC || exit 1
 
