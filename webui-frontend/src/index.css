@@ -171,3 +171,29 @@ input[type="range"]::-moz-range-thumb {
   color: #d1d5db;
   pointer-events: none;
 }
+
+/* ─── 落地页（/）专用装饰动效 ──────────────────────────────
+   只被 LandingPage 用到；两条都在 prefers-reduced-motion 下关闭。
+   为什么不写在组件里：Tailwind 的 content 扫描不认 JS 里拼的动画名，
+   而这些 keyframes 也无处安放（内联 <style> 会随每次渲染重复注入）。 */
+@keyframes landing-eq {
+  0%, 100% { transform: scaleY(0.28); }
+  50%      { transform: scaleY(1); }
+}
+.landing-eq-bar {
+  transform-origin: bottom;
+  animation: landing-eq 1.15s ease-in-out infinite;
+}
+@keyframes landing-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-10px); }
+}
+.landing-float {
+  animation: landing-float 7s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-eq-bar,
+  .landing-float {
+    animation: none;
+  }
+}

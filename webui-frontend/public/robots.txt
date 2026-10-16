@@ -1,0 +1,23 @@
+# 播客工坊 robots.txt
+#
+# 只放行有公开价值的页面。
+# 工作台与个人中心都在登录后面：抓取它们只会得到一张登录页，
+# 既浪费抓取预算，又可能把「无内容页」计入站点质量。
+#
+# ⚠️ 落地页 `/` 在生产环境由 nginx 直接返回静态预渲染的 landing.html
+#    （见 scripts/prerender.mjs），因此不执行 JS 的爬虫也能读到完整正文。
+#
+# 换域名时同步改这里 + sitemap.xml（这两个是纯静态文件，构建期不参与，无法自动生成）。
+
+User-agent: *
+Allow: /
+Allow: /docs
+
+Disallow: /api/
+Disallow: /account
+Disallow: /podcast
+Disallow: /dubbing
+Disallow: /index.html
+Disallow: /landing.html
+
+Sitemap: https://media.lizigege.com/sitemap.xml

@@ -17,7 +17,19 @@ import {
 } from "lucide-react";
 import { Header } from "@/components/Header";
 import { navigate } from "@/lib/auth";
+import { usePageSeo } from "@/lib/seo";
 import { cn } from "@/lib/utils";
+
+/** 本页 head（模块级常量：引用稳定）。文档页是**免登录**的长尾内容页，
+ *  「AI配音教程 / 怎么用」这类词的落点就在这，所以给它独立的 title 与 canonical，
+ *  避免与落地页共用同一个 title 自己跟自己抢词。 */
+const PAGE_SEO = {
+  title: "产品使用文档 - 播客工坊 AI 配音工具（含实操截图）",
+  description:
+    "播客工坊完整使用文档：注册登录、单人配音、书稿模式、双人播客、音色管理与术语词汇表，每一步都配真实界面截图，照着做就能做出第一条音频。",
+  canonicalPath: "/docs",
+  keywords: ["AI配音教程", "文字转语音怎么用", "播客工坊使用文档", "有声书制作教程", "双人播客怎么录"],
+};
 
 /** 目录（同时也是 scrollspy 的监听目标，顺序即页面顺序） */
 const SECTIONS = [
@@ -168,6 +180,8 @@ function K({ children }: { children: React.ReactNode }) {
 export default function DocsPage() {
   const [zoom, setZoom] = useState<string | null>(null);
   const [active, setActive] = useState(SECTIONS[0].id);
+
+  usePageSeo(PAGE_SEO);
 
   // 大图：ESC 关闭 + 打开期间锁滚动
   useEffect(() => {

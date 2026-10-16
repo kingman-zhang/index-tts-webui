@@ -23,6 +23,10 @@ outputs/*.log
 # /docs 离线快照（4 MB 级生成物，脚本 outputs/snapshot-docs.js 随时可重出）
 outputs/*-离线快照.html
 
+# 落地页配图的 AI 生成原图（18 MB，是「素材源」不是产物：真正上线的是
+# webui-frontend/public/landing-assets/ 里压好的 WebP；原图留着只为日后重新裁切）
+outputs/landing-images/
+
 # 撕音扫描工具的运行日志（tools/scan_tts_artifacts.py 默认写在调用目录）
 scan_tts_artifacts.log
 

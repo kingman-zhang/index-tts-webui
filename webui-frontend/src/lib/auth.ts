@@ -109,8 +109,7 @@ export function useAuth(): AuthState {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-/** 零依赖路由跳转（与 App.tsx 的 popstate 路由配套）。 */
-export function navigate(path: string) {
-  window.history.pushState(null, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
+/** 零依赖路由跳转（与 App.tsx 的 popstate 路由配套）。
+ *  实现搬到 `lib/router.ts` —— 本模块在**模块作用域**读 localStorage，
+ *  落地页的静态预渲染（Node 侧）不能碰它。这里转出，老引用路径不变。 */
+export { navigate } from "./router";

@@ -4,7 +4,58 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2'%3E%3Cpath d='M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z'/%3E%3Cpath d='M19 10v2a7 7 0 0 1-14 0v-2'/%3E%3Cline x1='12' y1='19' x2='12' y2='23'/%3E%3C/svg%3E" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>播客工坊 · Podcast Studio</title>
+
+    <!-- ═══ SEO / 社交分享 ═══════════════════════════════════════════════════
+         这份 head 属于**应用外壳**：同一个文档要服务 /docs、/account、/dubbing、
+         /podcast 这些路由，所以这里只写「站点级」信息，不写单页专属的东西：
+
+         · 不写 <link rel=canonical>。一份 head 服务多个路由，写死 canonical 会把
+           /docs 之类一并指成 `/`，那是主动申请合并收录。
+         · title / description / canonical / og:url 由运行时 `usePageSeo()`（src/lib/seo.ts）
+           按当前路由写入；不执行 JS 的爬虫看到的就是下面这份站点默认值。
+         · 落地页 `/` 另有**静态** head：构建期由 scripts/prerender.mjs 生成
+           dist/landing.html（文案取自 src/landing/content.ts），生产由 nginx 的
+           `location = /` 直接返回它 —— 不执行 JS 也能读到完整正文与 FAQ 结构化数据。
+         ══════════════════════════════════════════════════════════════════════ -->
+    <title>播客工坊 · AI 配音工作台（文字转语音在线生成）</title>
+    <meta
+      name="description"
+      content="播客工坊是一个在浏览器里运行的 AI 配音工作台：粘贴文稿、挑选音色、一键生成可下载的音频。支持单人配音、双人播客与整本书按章连载。"
+    />
+    <meta name="keywords" content="AI配音,AI配音工具,文字转语音,在线配音,有声书制作,播客生成,双人播客,声音克隆" />
+    <meta name="robots" content="index,follow" />
+    <meta name="theme-color" content="#06060c" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="播客工坊" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="播客工坊 · AI 配音工作台（文字转语音在线生成）" />
+    <meta
+      property="og:description"
+      content="粘贴文稿、挑选音色、一键生成可下载的音频。支持单人配音、双人播客与整本书按章连载。"
+    />
+    <meta property="og:image" content="https://media.lizigege.com/landing-assets/og-cover.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "播客工坊",
+        "alternateName": "Podcast Studio",
+        "url": "https://media.lizigege.com/",
+        "inLanguage": "zh-CN"
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "播客工坊",
+        "url": "https://media.lizigege.com/",
+        "inLanguage": "zh-CN"
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

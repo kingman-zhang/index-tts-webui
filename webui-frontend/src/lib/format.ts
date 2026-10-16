@@ -29,3 +29,29 @@ export function fmtTime(iso?: string | null): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/** 合成语速，**字/秒**。用来把「字数」折算成「时长」给用户看。
+ *
+ *  来源＝本地历史 A/B 产物（`data/outputs/<实验名>/results.json`，44 条 ≥3 秒的「文本 + 秒数」配对）
+ *  加权实测 **5.08 字/秒**（默认 speed=1.0）。短样本明显偏低（首尾静音与固定开销占比大），
+ *  所以只取 ≥3 秒那一档。详见项目记忆 `队列与计费.md` 的「积分 ↔ 时长」换算条。
+ *
+ *  ⚠️ **这是写死在前端的**（2026-10-15 用户拍板：不新增后端下发字段）。代价要记住：
+ *  改了 `MEMBER_POINTS_PER_1000_CHARS`（单价）或换引擎导致语速变化，这里**不会**跟着变；
+ *  时长是按「同一份字数」现算的，所以至少不会和旁边的「N 万字」自相矛盾。
+ *
+ *  2026-10-16 从 `AccountPage.tsx` 提到这里：落地页也要用同一口径，
+ *  再抄一份就等于给自己埋一个「两处时长对不上」的坑。 */
+export const TTS_CHARS_PER_SECOND = 5.08;
+
+/** 把字数折算成「N 小时 / N 分钟」（不含「约」，由调用处的 ≈ 承担）。
+ *
+ *  ⚠️ **只给量级，别写分钟级精度**：同一内容换读法（「230」读「二三零」vs「两百三十」）
+ *  或改标点密度，实测时长能差 20–40%。用户按「65 分钟」去规划节目、做出来 50 分钟，
+ *  会觉得被坑；「约 1 小时」既好记又抗波动。 */
+export function fmtDuration(chars: number | null): string {
+  if (!chars || chars <= 0) return "";
+  const seconds = chars / TTS_CHARS_PER_SECOND;
+  if (seconds < 3600) return `${Math.max(1, Math.round(seconds / 60))} 分钟`;
+  return `${Number((seconds / 3600).toFixed(1))} 小时`;
+}
