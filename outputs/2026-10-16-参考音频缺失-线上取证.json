@@ -1,0 +1,69 @@
+{
+  "when": "2026-10-16T04:29:45.570Z",
+  "bad_voice": "data/voices/u_a5afc66e2d67/voc_notexist_live.wav",
+  "tasks": [
+    {
+      "project_name": "输入侧错误实测 ①",
+      "status": "failed",
+      "message": "参考音频文件不存在，请检查任务音色配置",
+      "error": "参考音频文件不存在: [Errno 2] No such file or directory: 'data/voices/u_a5afc66e2d67/voc_notexist_live.wav'"
+    },
+    {
+      "project_name": "输入侧错误实测 ②",
+      "status": "failed",
+      "message": "参考音频文件不存在，请检查任务音色配置",
+      "error": "参考音频文件不存在: [Errno 2] No such file or directory: 'data/voices/u_a5afc66e2d67/voc_notexist_live.wav'"
+    },
+    {
+      "project_name": "输入侧错误实测 ③",
+      "status": "failed",
+      "message": "参考音频文件不存在，请检查任务音色配置",
+      "error": "参考音频文件不存在: [Errno 2] No such file or directory: 'data/voices/u_a5afc66e2d67/voc_notexist_live.wav'"
+    }
+  ],
+  "results": [
+    {
+      "name": "前置：队列已清空",
+      "pass": true,
+      "detail": 0
+    },
+    {
+      "name": "三条任务都进入终态",
+      "pass": true,
+      "detail": [
+        "failed",
+        "failed",
+        "failed"
+      ]
+    },
+    {
+      "name": "三条任务的 message 都点明「参考音频文件不存在」",
+      "pass": true,
+      "detail": [
+        "参考音频文件不存在，请检查任务音色配置",
+        "参考音频文件不存在，请检查任务音色配置",
+        "参考音频文件不存在，请检查任务音色配置"
+      ]
+    },
+    {
+      "name": "三条任务的 error 都带上原始路径（便于定位）",
+      "pass": true,
+      "detail": [
+        "参考音频文件不存在: [Errno 2] No such file or directory: 'data/voices",
+        "参考音频文件不存在: [Errno 2] No such file or directory: 'data/voices",
+        "参考音频文件不存在: [Errno 2] No such file or directory: 'data/voices"
+      ]
+    },
+    {
+      "name": "没有任何一条报「资源 xx 合成失败」（修前的指错方向症状）",
+      "pass": true,
+      "detail": 0
+    },
+    {
+      "name": "第 2、3 条没有变成「所有 TTS 资源均处于冷却中」（修前会连累）",
+      "pass": true,
+      "detail": 0
+    }
+  ],
+  "failed": []
+}

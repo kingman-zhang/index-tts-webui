@@ -26,6 +26,10 @@ const TOKEN = 'Fv8y6-kRXgR9l-rfpC_1RBAUyTHXng-v-3mHoBycMpw';
 const V_PRESET_W = `${SANDBOX}/data/preset-voices/女-温暖闺蜜.mp3`;
 const V_PRESET_M = `${SANDBOX}/data/preset-voices/男-不羁青年.mp3`;
 const V_MINE = `${SANDBOX}/data/voices/u_a5afc66e2d67/voc_dcf77a73d20c.mp3`;
+// 「不存在的参考音频」：**刻意用相对路径**，别用 SANDBOX 绝对路径 ——
+// 绝对路径会把本机 home 目录（/Users/<me>/...）印进对外可见的报错截图里，
+// 而相对路径的报错是 `data/voices/<user_id>/<voice_id>.wav`，像产品内部路径。
+const V_MISSING = 'data/voices/u_a5afc66e2d67/voc_notexist.wav';
 
 // ─── 演示内容 ──────────────────────────────────────────────
 const MONO_TEXT = [
@@ -545,10 +549,11 @@ S['queue-failed'] = async (s) => {
   await clearQueue('mono');
   await sleep(500);
   const page = await s.open({ path: '/dubbing', mono: monoDraft(), wait: 2500 });
-  // 用一个不存在的音色路径 → 必然失败
-  // ⚠️ 实测此时报的是「资源 xxx 合成失败…」而不是「音色文件不存在」（见 memory 记录），
-  //    所以任务名保持中性，别写「音色缺失」以免与报错不符
-  await submitMono('演示：合成失败', MONO_TEXT.split('\n').slice(0, 2).join('\n'), `${SANDBOX}/data/voices/u_a5afc66e2d67/voc_notexist.wav`);
+  // 用一个不存在的音色路径 → 必然失败，且**提交前**就失败（不发请求、不计费）
+  // ✅ 2026-10-16 修掉池门面的异常包装后，这里如实报「参考音频文件不存在，请检查任务音色配置」
+  //    （修前被包成「资源 xxx 合成失败，提交状态可能未知」，指错方向；取证见
+  //     outputs/verify-input-error-live.js 与 .workbuddy/memory/2026-10-16.md）
+  await submitMono('演示：音色缺失', MONO_TEXT.split('\n').slice(0, 2).join('\n'), V_MISSING);
   // ⚠️ 这条任务是「瞬败」的，靠 UI 的自动弹窗抓不稳 ⇒ 直接点任务卡上的 ⚠（title=查看报错详情）
   let hit = false;
   for (let i = 0; i < 30; i++) {
