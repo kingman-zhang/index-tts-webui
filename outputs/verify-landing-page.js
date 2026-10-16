@@ -42,6 +42,13 @@ function startStatic() {
     const server = http.createServer((req, res) => {
       const url = new URL(req.url, "http://x");
       let p = decodeURIComponent(url.pathname);
+      // 「已登录」那条断言要用的假后端：只认带 Authorization 的请求，行为与 backend 一致
+      // （没 token = 401）。不连真后端，保证这个脚本始终离线可跑。
+      if (p === "/api/auth/me") {
+        const ok = /^Bearer\s+\S+/.test(req.headers.authorization || "");
+        res.writeHead(ok ? 200 : 401, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify(ok ? { user: MOCK_USER } : { detail: "未登录" }));
+      }
       const landing = path.join(DIST, "landing.html");
       if (p === "/landing.html") { res.writeHead(301, { Location: "/" }); return res.end(); }
       if (p === "/") p = fs.existsSync(landing) ? "/landing.html" : "/index.html";
@@ -53,6 +60,14 @@ function startStatic() {
     server.listen(PORT, "127.0.0.1", () => resolve(server));
   });
 }
+
+/** 假用户（字段对齐 `MemberUser`；只用于「已登录导航」这一条断言）。 */
+const MOCK_USER = {
+  user_id: "u_000000000000", username: "verify", nickname: "验证账号",
+  bio: "", points: 500, disabled: false,
+};
+/** 预置到 localStorage 的 token（本脚本不校验它，`/api/auth/me` 只认「有没有」）。 */
+const MOCK_TOKEN = "verify-token";
 
 const results = [];
 function check(name, ok, detail = "") {
@@ -94,6 +109,44 @@ function check(name, ok, detail = "") {
       const textOnly = raw.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<[^>]+>/g, "").replace(/\s+/g, "");
       check("静态 HTML 里就有正文（不执行 JS 也可见）", textOnly.length > 4000, `${textOnly.length} 字`);
       check("静态 HTML 里有 H1 与最佳实践正文", raw.includes("<h1") && raw.includes("照着案例 A 做第一条"));
+      // 预渲染产物是**未登录**形态：爬虫/首屏看到的永远是注册入口，不会带用户态内容。
+      check("静态 HTML 是未登录形态（不含「控制台」）", !raw.includes("控制台"));
+    }
+
+    // ── 2.5 登录态：已登录用户的导航是「控制台」，不是注册入口 ────────
+    // 生产 `/` 是静态产物，React 接管后才按 localStorage 里的 token 决定导航形态。
+    // 这里预置 token + 用上面 mock 的 `/api/auth/me`，跑一次真点击。仅静态产物路径可跑
+    // （开发服务器那一侧没有后端）。
+    if (!DEV_URL) {
+      // ⚠️ 必须用**独立的 browser context**：`localStorage` 是按 origin 共享的，
+      //    在同一个 context 里预置 token 会污染后面「未登录」那几条真点击断言
+      //    （页面重新加载后变成已登录形态，于是找不到「免费注册」）。
+      const ctx = await browser.createBrowserContext();
+      const p2 = await ctx.newPage();
+      await p2.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+      await p2.evaluateOnNewDocument(t => localStorage.setItem("wb-auth-token", t), MOCK_TOKEN);
+      await p2.goto(base + "/", { waitUntil: "networkidle2" });
+      const nav = await p2.evaluate(() => {
+        const labels = [...document.querySelectorAll("header button")].map(b => b.textContent.trim());
+        return { labels, hasDash: labels.includes("控制台"), hasRegister: labels.some(l => l.includes("免费注册")) };
+      });
+      check("已登录：导航显示「控制台」", nav.hasDash, nav.labels.join(" / "));
+      check("已登录：导航不再显示「免费注册」与「登录」",
+        !nav.hasRegister && !nav.labels.includes("登录"), nav.labels.join(" / "));
+      await p2.screenshot({
+        path: path.join(OUT, "2026-10-16-落地页-已登录导航.png"),
+        clip: { x: 0, y: 0, width: 1440, height: 120 },
+      });
+      const clicked = await p2.evaluate(() => {
+        const b = [...document.querySelectorAll("header button")].find(x => x.textContent.trim() === "控制台");
+        if (!b) return false;
+        b.click();
+        return true;
+      });
+      await new Promise(r => setTimeout(r, 400));
+      check("已登录：点「控制台」跳到单人配音 /dubbing",
+        clicked && p2.url().endsWith("/dubbing"), p2.url());
+      await ctx.close();
     }
 
     // ── 2. 关键内容在位 ────────────────────────────────────
