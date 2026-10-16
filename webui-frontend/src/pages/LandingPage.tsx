@@ -62,6 +62,17 @@ const LOGIN_URL = "/account";
 /** 已登录用户的落点：单人配音工作台（他回到首页时想做的事是「接着做」，不是「再注册一次」）。 */
 const DASHBOARD_URL = "/dubbing";
 
+/**
+ * 导航主按钮：未登录的「免费注册」与已登录的「控制台」共用同一套外观与 hover 效果。
+ *
+ * ⚠️ hover **不能用 `scale`**：那会把整颗按钮（含文字）一起放大，视觉上像「文字在变大/发虚」。
+ *    这里跟 Hero 主 CTA（`PrimaryBtn`）完全对齐 —— `transition-all` + hover 时辉光变亮 +
+ *    active 轻微回缩，文字本身纹丝不动。
+ * ⚠️ 两个按钮是**同一个卡位**（同一时刻只出现一个），共用一份类名才不会各自漂移。
+ */
+const NAV_PRIMARY =
+  "inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2 text-[0.875rem] font-semibold text-emerald-950 shadow-[0_0_40px_-8px_rgba(16,185,129,0.75)] transition-all hover:shadow-[0_0_52px_-6px_rgba(16,185,129,0.95)] active:scale-[0.985]";
+
 // ─── 通用零件 ───────────────────────────────────────────────
 
 function go(path: string) {
@@ -306,7 +317,7 @@ function LandingNav() {
             <button
               type="button"
               onClick={() => go(DASHBOARD_URL)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2 text-[0.875rem] font-semibold text-emerald-950 transition-transform hover:scale-[1.02]"
+              className={NAV_PRIMARY}
             >
               <LayoutDashboard className="h-4 w-4" />
               控制台
@@ -323,7 +334,7 @@ function LandingNav() {
               <button
                 type="button"
                 onClick={() => go(REGISTER_URL)}
-                className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2 text-[0.875rem] font-semibold text-emerald-950 transition-transform hover:scale-[1.02]"
+                className={NAV_PRIMARY}
               >
                 免费注册
               </button>
@@ -382,6 +393,10 @@ function LandingNav() {
 // ─── Hero ───────────────────────────────────────────────────
 
 function Hero() {
+  // 已登录用户看到的 CTA 不该再是「注册」（他已经注册过了）：改成直接进工作台。
+  // 同步读 localStorage ⇒ 首帧就准，不会先闪「免费做第一条音频」再变。
+  const { token } = useAuth();
+  const loggedIn = !!token;
   return (
     <section id="top" className="relative overflow-hidden">
       {/* 主视觉：构建期预渲染的 landing.html 里已 <link rel=preload>，首屏不吃发现延迟 */}
@@ -430,25 +445,31 @@ function Hero() {
           </p>
 
           <div className="mt-9 flex flex-wrap items-center gap-3">
-            <PrimaryBtn href={REGISTER_URL} size="lg">
-              <Mic className="h-5 w-5" /> 免费做第一条音频
+            <PrimaryBtn href={loggedIn ? DASHBOARD_URL : REGISTER_URL} size="lg">
+              {loggedIn
+                ? <><LayoutDashboard className="h-5 w-5" /> 进入工作台</>
+                : <><Mic className="h-5 w-5" /> 免费做第一条音频</>}
             </PrimaryBtn>
             <GhostBtn href="/docs" size="lg">
               <BookOpen className="h-5 w-5" /> 3 分钟看完怎么用
             </GhostBtn>
           </div>
 
-          <p className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[0.8125rem] text-zinc-400">
-            <span className="inline-flex items-center gap-1.5">
-              <Gift className="h-3.5 w-3.5 text-emerald-400" /> 注册即送 {REG_BONUS_POINTS} 积分
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Zap className="h-3.5 w-3.5 text-amber-400" /> 约可免费合成 1 万字
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" /> 邮箱注册，开箱即用
-            </span>
-          </p>
+          {/* ⚠️ 这行三个标签是**给未注册的人**看的（送积分 / 能免费用多少 / 注册方式），
+              已登录用户看了没有意义，且与上面的「进入工作台」自相矛盾 ⇒ 登录后整行不渲染。 */}
+          {!loggedIn && (
+            <p className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[0.8125rem] text-zinc-400">
+              <span className="inline-flex items-center gap-1.5">
+                <Gift className="h-3.5 w-3.5 text-emerald-400" /> 注册即送 {REG_BONUS_POINTS} 积分
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <Zap className="h-3.5 w-3.5 text-amber-400" /> 约可免费合成 1 万字
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" /> 邮箱注册，开箱即用
+              </span>
+            </p>
+          )}
         </div>
 
         <div className="landing-float min-w-0">
@@ -1021,6 +1042,8 @@ function Faq() {
 // ─── 结尾 CTA + 页脚 ────────────────────────────────────────
 
 function FinalCta() {
+  const { token } = useAuth();
+  const loggedIn = !!token;
   return (
     <section className="relative mx-auto max-w-[1180px] px-5 py-20">
       <div className="relative overflow-hidden rounded-[2.5rem] border border-white/[0.12] bg-gradient-to-br from-violet-600/25 via-[#0b0b16] to-cyan-500/20 px-8 py-14 text-center lg:px-16">
@@ -1030,25 +1053,52 @@ function FinalCta() {
             现在去做你的第一条音频
           </h2>
           <p className="mx-auto mt-4 max-w-2xl text-[1rem] leading-8 text-zinc-300">
-            注册只要邮箱和验证码，{REG_BONUS_POINTS} 积分到账后就能开始；照着
-            <button
-              type="button"
-              onClick={() => document.getElementById("practice")?.scrollIntoView({ behavior: "smooth" })}
-              className="mx-1 text-emerald-300 underline decoration-dotted underline-offset-4"
-            >
-              最佳实践里的案例 A
-            </button>
-            走一遍，你会拿到一条真的能发出去的音频。
+            {loggedIn ? (
+              <>
+                回到工作台接着做；忘了怎么用就翻
+                <a href="/docs" className="mx-1 text-emerald-300 underline decoration-dotted underline-offset-4">
+                  产品使用文档
+                </a>
+                ，或者从
+                <button
+                  type="button"
+                  onClick={() => document.getElementById("practice")?.scrollIntoView({ behavior: "smooth" })}
+                  className="mx-1 text-emerald-300 underline decoration-dotted underline-offset-4"
+                >
+                  最佳实践里的案例 A
+                </button>
+                再走一遍。
+              </>
+            ) : (
+              <>
+                注册只要邮箱和验证码，{REG_BONUS_POINTS} 积分到账后就能开始；照着
+                <button
+                  type="button"
+                  onClick={() => document.getElementById("practice")?.scrollIntoView({ behavior: "smooth" })}
+                  className="mx-1 text-emerald-300 underline decoration-dotted underline-offset-4"
+                >
+                  最佳实践里的案例 A
+                </button>
+                走一遍，你会拿到一条真的能发出去的音频。
+              </>
+            )}
           </p>
           <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
-            <PrimaryBtn href={REGISTER_URL} size="lg">
-              <Mic className="h-5 w-5" /> 免费注册，开始第一条
+            {/* 已登录时主副按钮不能再都是「进入工作台」（两颗相邻的同名按钮是坏 UI），
+                所以副按钮换成登录后仍然有用的「查看使用文档」——与 Hero 的副 CTA 同款。 */}
+            <PrimaryBtn href={loggedIn ? DASHBOARD_URL : REGISTER_URL} size="lg">
+              {loggedIn
+                ? <><LayoutDashboard className="h-5 w-5" /> 进入工作台</>
+                : <><Mic className="h-5 w-5" /> 免费注册，开始第一条</>}
             </PrimaryBtn>
-            <GhostBtn href={LOGIN_URL} size="lg">
-              我已有账号，去登录
+            <GhostBtn href={loggedIn ? "/docs" : LOGIN_URL} size="lg">
+              {loggedIn ? "查看使用文档" : "我已有账号，去登录"}
             </GhostBtn>
           </div>
-          <p className="mt-5 text-[0.8125rem] text-zinc-400">已有账号登录后直接进工作台 · 不需要信用卡</p>
+          {/* 这行说的是「注册之后会自动进工作台」，对已登录用户毫无意义 ⇒ 登录后不渲染。 */}
+          {!loggedIn && (
+            <p className="mt-5 text-[0.8125rem] text-zinc-400">已有账号登录后直接进工作台</p>
+          )}
         </div>
       </div>
     </section>
