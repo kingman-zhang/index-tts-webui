@@ -69,9 +69,14 @@ podcast-webui/
 │   ├── server.py         # API 网关、项目、队列、音频代理
 │   └── README.md         # 后端部署和 API
 └── webui-frontend/
-    ├── src/App.tsx       # 应用状态与页面布局
+    ├── src/App.tsx       # 零依赖路由（/ 落地页、/podcast、/dubbing、/account、/docs）
     ├── src/api/client.ts # 前端 API 客户端
     ├── src/types/        # 前端数据类型与默认项目
+    ├── src/landing/      # 落地页对外口径单一来源（content.ts）+ 结构化数据 + Node 侧渲染入口
+    ├── src/lib/          # site.ts 站点身份 / seo.ts 按路由写 head / router.ts 跳转 / format.ts 时长折算
+    ├── scripts/prerender.mjs      # 构建期把落地页渲染成 dist/landing.html
+    ├── public/landing-assets/     # 落地页图与 4 条 18 秒试听（WebP/MP3）
+    ├── public/{robots.txt,sitemap.xml}  # 纯静态，构期不参与；换域名要手改
     └── src/components/   # 角色、脚本、情感、参数、队列等组件
 ```
 
@@ -329,6 +334,28 @@ disgusted, melancholic, surprised, calm
 
 截图与验收命令见 `命令大全.md` §5.2；实现说明见 `DocsPage.tsx` 头部注释。
 
+### 产品落地页（`/`，2026-10-16）
+
+`/` 从「双人播客工作台」改为**免登录的产品落地页**（工作台挪到 `/podcast`、`/dubbing`）。
+页面承担的是「被搜到」：关键词地图、375 条音色试听、三个可照做的**最佳实践**案例、
+10 条 FAQ、登录/注册入口、积分与价格口径。
+
+**SEO 的关键一手是静态预渲染**：本站是 SPA，`index.html` 的 `<body>` 只有一个空 `#root`，
+百度不保证执行 JS。于是 `npm run build` 末尾跑 `scripts/prerender.mjs`，在构建期用
+`react-dom/server` 产出 `dist/landing.html`（完整 head + 正文 + 4 段 JSON-LD），
+生产 nginx 用 `location = /` 直接吐它，`try_files` 回落到 `index.html`（产物缺失也不会 404）。
+
+⚠️ 三个容易踩的点：
+
+1. **预渲染产物必须打成 CJS** —— `react-dom/server` 的 Node 入口内部 `require("stream")`。
+2. **`lib/router.ts` 是为它抽出来的** —— `lib/auth.ts` 在模块作用域读 `localStorage`，
+   Node 侧预渲染一碰就抛错。
+3. **落地页的数字只能有一个来源**（`src/landing/content.ts`）—— 结构化数据与可见正文
+   不一致属"误导性标记"，会被判罚。文案里手写的数字由 `outputs/verify-landing-numbers.js` 反查。
+
+命令与验收见 `命令大全.md` §5.4；完整决策与剩余风险见
+`outputs/2026-10-16-产品落地页-实施与SEO说明.md`。
+
 ### 最近修复
 
 #### 生成按钮不可点击
@@ -407,6 +434,9 @@ cd webui-frontend
 npm run build
 npm run typecheck
 ```
+
+前端页面级验收（落地页 / 文档页）见 `命令大全.md` §5.2 与 §5.4 —— 这些是
+**真浏览器 + 真点击 + 断言**的脚本，不是靠肉眼看截图自证。
 
 ## 11. 常见问题速查
 
