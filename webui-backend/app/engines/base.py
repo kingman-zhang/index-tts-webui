@@ -158,6 +158,35 @@ class SynthesisCancelled(RuntimeError):
     """
 
 
+class EngineInputError(RuntimeError):
+    """输入侧 / 配置侧错误：参考音频缺失、音色在服务器上补齐不了等。
+
+    与 NonRetryableSynthesisError 的区别在**归因**：那类是「平台可能已经接单或计费，
+    别重试」；这一类是「这件事跟资源好坏无关，是喂进去的音色/路径不对」。
+
+    两条后果（2026-10-16 修）：
+      - **资源池不得因此隔离该资源**（见 EnginePoolFacade.synthesize_segment）。
+        旧行为把它和真正的资源故障一起丢进 `except Exception` ⇒ 一份坏音色会让
+        整台服务器/平台冷却 cooldown_sec，把之后所有正常任务一起拖下水。
+      - **也不该重试**：输入不变，重试必然同样失败（见 NON_RETRYABLE_ERRORS）。
+    """
+
+
+# 「输入侧错误」的统一判据：本层自定义异常 + 语义相同的内置异常。
+# FileNotFoundError 是内置类型、没法继承 EngineInputError，但归因完全一致
+# （典型场景：任务里存的参考音频文件在磁盘上没了），所以并进同一个名单。
+ENGINE_INPUT_ERRORS: tuple[type[BaseException], ...] = (EngineInputError, FileNotFoundError)
+
+# runner 首次失败后**一律不重试**的异常（真值见 mono_runner._failed 的说明）：
+#   可能已计费（NonRetryableSynthesisError）/ 输入侧永久错误 / 用户主动取消。
+# 集中定义在一处，避免同一个名单散落在 base、mono_runner、podcast_runner 三份里各写一遍。
+NON_RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
+    NonRetryableSynthesisError,
+    *ENGINE_INPUT_ERRORS,
+    SynthesisCancelled,
+)
+
+
 # 统一输出规格：24kHz / 单声道 / PCM16（与 tts-server 播客引擎输出对齐）
 NORM_RATE = 24000
 NORM_CHANNELS = 1
@@ -467,6 +496,16 @@ class EnginePoolFacade:
         except asyncio.CancelledError:
             # HTTP 取消不代表远端任务终止，隔离一段时间避免立刻再提交。
             self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
+            raise
+        except ENGINE_INPUT_ERRORS as exc:
+            # 输入侧错误（参考音频缺失 / 音色补齐不了…）：**不动资源状态，也不冷却**。
+            # 这条分支必须排在下面 `except Exception` 之前，否则会被它吞掉 —— 那正是
+            # 旧行为的病：一份坏音色 → 报「资源 x 合成失败」指错方向 + 整台资源被
+            # 冷却 cooldown_sec，连累之后所有正常任务。
+            # 原样抛出（不包装）：类型保真是刻意的 —— mono/podcast runner 的
+            # `raise first` 注释要求「保留原始异常类型」，queue_worker 据此给出
+            # 准确文案（「参考音频文件不存在，请检查任务音色配置」）。
+            logger.error("[engine] resource=%s 输入侧错误，不隔离该资源：%s", cfg.id, exc)
             raise
         except Exception as exc:
             self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec

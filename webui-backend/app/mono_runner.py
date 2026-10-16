@@ -60,7 +60,7 @@ from .engines import (
     select_engine,
 )
 from .engines.chunker import split_for_art
-from .engines.base import NonRetryableSynthesisError
+from .engines.base import NON_RETRYABLE_ERRORS
 
 OUTPUTS_DIR = DATA_DIR / "outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -144,6 +144,11 @@ def _emotion_label(line: dict) -> str | None:
 
 class _TaskCancelled(Exception):
     """用户取消（在并发 worker 内抛出，由 run_mono_task 汇总处理）。"""
+
+
+# 首次失败后**不重试**的异常全集 = 公共名单（可能已计费 / 输入侧永久错误 / 已取消）
+# + 本模块的「任务已取消」。podcast_runner 直接复用这个常量，别再各写一份。
+_NO_RETRY_ERRORS: tuple[type[BaseException], ...] = (*NON_RETRYABLE_ERRORS, _TaskCancelled)
 
 
 def _flatten_segments(lines: list[dict], caps: EngineCapabilities) -> list[dict]:
@@ -486,10 +491,14 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
         return await asyncio.gather(*[_worker(i, e) for i, e in batch], return_exceptions=True)
 
     def _failed(results: list) -> list[int]:
-        # 不可重试的失败（可能已计费）与主动取消都不重试：
-        # NonRetryableSynthesisError 重试会重复扣平台费用，SynthesisCancelled 是用户主动放弃。
+        # 不可重试的失败一律不重试（名单见 _NO_RETRY_ERRORS 的说明）：
+        #   NonRetryableSynthesisError 重试会重复扣平台费用；
+        #   EngineInputError / FileNotFoundError 是输入侧永久错误，重试必然同样失败；
+        #   SynthesisCancelled / _TaskCancelled 是主动取消。
+        # 名单必须与资源池的「不冷却」判据一致 —— 否则会出现「不冷却但反复重试」这种
+        # 既没用又刷屏「重试 N 个失败段」的组合。
         return [i for i, r in enumerate(results) if isinstance(r, Exception)
-                and not isinstance(r, (NonRetryableSynthesisError, SynthesisCancelled, _TaskCancelled))]
+                and not isinstance(r, _NO_RETRY_ERRORS)]
 
     # 并发合成。注意 results 里存的不再是音频字节，而是 None（成功/命中缓存）
     # 或异常对象 —— 音频已经逐段落盘，内存里不累积整章（G4）。

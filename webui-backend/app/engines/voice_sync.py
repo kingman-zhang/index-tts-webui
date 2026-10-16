@@ -58,15 +58,20 @@ from pathlib import Path
 import httpx
 
 from ..config import DATA_DIR, LOCAL_VOICES_DIR, PRESET_VOICES_DIR, logger
-from .base import VoiceRef
+from .base import EngineInputError, VoiceRef
 
 SHARED = "shared"   # 全员共享：同名即同内容，服务器上用原名
 USER = "user"       # 用户独有：需要按 owner 隔离命名
 UNKNOWN = "unknown"  # 认不出归属：按独有处理（安全优先）
 
 
-class VoiceUnavailable(RuntimeError):
-    """参考音频在 tts-server 与 backend 上都找不到，无法补齐。"""
+class VoiceUnavailable(EngineInputError):
+    """参考音频在 tts-server 与 backend 上都找不到，无法补齐。
+
+    继承 EngineInputError（而不是裸 RuntimeError）：这是**输入侧**问题，不是
+    「那台服务器/那个平台坏了」。资源池据此不隔离该资源、runner 据此不重试
+    （见 base.py 的 ENGINE_INPUT_ERRORS / NON_RETRYABLE_ERRORS）。
+    """
 
 
 # 服务器音色表缓存：{tts_url: (monotonic 时间戳, {服务器文件名: 服务器绝对路径})}

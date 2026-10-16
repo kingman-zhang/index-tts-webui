@@ -45,7 +45,6 @@ from .config import logger
 from .engines import (
     EngineCapabilities,
     SegmentRequest,
-    SynthesisCancelled,
     VoiceRef,
     atempo_filters,
     effective_concurrency,
@@ -55,6 +54,7 @@ from .engines import (
 from .mono_runner import (
     MAX_GAP_MS,
     OUTPUTS_DIR,
+    _NO_RETRY_ERRORS,
     _TaskCancelled,
     _concat_wavs,
     _emotion_label,
@@ -62,7 +62,7 @@ from .mono_runner import (
     split_by_pauses,
 )
 from .engines.chunker import split_for_art
-from .engines.base import NonRetryableSynthesisError, find_ffmpeg, fix_wav_header
+from .engines.base import find_ffmpeg, fix_wav_header
 
 # ── 响度归一已上提到池门面（2026-10-09）──
 # 常量、开关（PODCAST_NORM）与实现全部在 app/audio_norm.py —— 那是
@@ -311,8 +311,10 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
         return
 
     # 失败段重试一次（只重试失败段；成功段保留原结果不重复扣调用）
+    # 不重试的名单与 mono 共用（mono_runner._NO_RETRY_ERRORS），别再各写一份 —— 两份
+    # 走样过一次「一个重试一个不重试」，判据必须同源。
     retry_idx = [i for i, r in enumerate(results) if isinstance(r, Exception)
-                 and not isinstance(r, (NonRetryableSynthesisError, SynthesisCancelled, _TaskCancelled))]
+                 and not isinstance(r, _NO_RETRY_ERRORS)]
     if retry_idx:
         for i in retry_idx:
             logger.warning("[podcast] task=%s 段 %d/%d 首次合成失败，重试: %s", task_id, i + 1, total, results[i])
