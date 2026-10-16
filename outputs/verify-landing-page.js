@@ -49,6 +49,12 @@ function startStatic() {
         res.writeHead(ok ? 200 : 401, { "Content-Type": "application/json" });
         return res.end(JSON.stringify(ok ? { user: MOCK_USER } : { detail: "未登录" }));
       }
+      // 其余接口一律按**真实后端的样子**回 JSON 404（而不是回落到 index.html 的 HTML）——
+      // 否则前端 `res.json()` 会吃到 HTML 抛 SyntaxError，错误形态与线上不一致。
+      if (p.startsWith("/api/")) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ detail: "本脚本的假后端未实现该接口" }));
+      }
       const landing = path.join(DIST, "landing.html");
       if (p === "/landing.html") { res.writeHead(301, { Location: "/" }); return res.end(); }
       if (p === "/") p = fs.existsSync(landing) ? "/landing.html" : "/index.html";
@@ -110,12 +116,17 @@ function check(name, ok, detail = "") {
       check("静态 HTML 里就有正文（不执行 JS 也可见）", textOnly.length > 4000, `${textOnly.length} 字`);
       check("静态 HTML 里有 H1 与最佳实践正文", raw.includes("<h1") && raw.includes("照着案例 A 做第一条"));
       // 预渲染产物是**未登录**形态：爬虫/首屏看到的永远是注册入口，不会带用户态内容。
-      check("静态 HTML 是未登录形态（不含「控制台」）", !raw.includes("控制台"));
+      // 已登录专属的东西（控制台、进入工作台、查看使用文档）一个都不该出现在静态 HTML 里。
+      check("静态 HTML 是未登录形态（不含「控制台」「进入工作台」等）",
+        !raw.includes("控制台") && !raw.includes("进入工作台") && !raw.includes("查看使用文档"));
+      // 结尾 CTA 的脚注：「已有账号登录后直接进工作台 · 不需要信用卡」→ 去掉信用卡那半句
+      check("静态 HTML：结尾脚注已去掉「不需要信用卡」",
+        raw.includes("已有账号登录后直接进工作台") && !raw.includes("不需要信用卡"));
     }
 
-    // ── 2.5 登录态：已登录用户的导航是「控制台」，不是注册入口 ────────
-    // 生产 `/` 是静态产物，React 接管后才按 localStorage 里的 token 决定导航形态。
-    // 这里预置 token + 用上面 mock 的 `/api/auth/me`，跑一次真点击。仅静态产物路径可跑
+    // ── 2.5 登录态：导航与 CTA 都指向工作台，不是注册 ──────────────
+    // 生产 `/` 是静态产物，React 接管后才按 localStorage 里的 token 决定形态。
+    // 这里预置 token + 用上面 mock 的 `/api/auth/me`，跑真点击。仅静态产物路径可跑
     // （开发服务器那一侧没有后端）。
     if (!DEV_URL) {
       // ⚠️ 必须用**独立的 browser context**：`localStorage` 是按 origin 共享的，
@@ -126,6 +137,7 @@ function check(name, ok, detail = "") {
       await p2.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await p2.evaluateOnNewDocument(t => localStorage.setItem("wb-auth-token", t), MOCK_TOKEN);
       await p2.goto(base + "/", { waitUntil: "networkidle2" });
+
       const nav = await p2.evaluate(() => {
         const labels = [...document.querySelectorAll("header button")].map(b => b.textContent.trim());
         return { labels, hasDash: labels.includes("控制台"), hasRegister: labels.some(l => l.includes("免费注册")) };
@@ -133,20 +145,111 @@ function check(name, ok, detail = "") {
       check("已登录：导航显示「控制台」", nav.hasDash, nav.labels.join(" / "));
       check("已登录：导航不再显示「免费注册」与「登录」",
         !nav.hasRegister && !nav.labels.includes("登录"), nav.labels.join(" / "));
+
+      // 已登录时的 CTA 形态：Hero 与结尾 CTA 的主按钮都该是「进入工作台」
+      const cta = await p2.evaluate(() => {
+        const btns = [...document.querySelectorAll("button")];
+        const text = t => btns.filter(b => b.textContent.trim() === t);
+        const body = document.body.innerText;
+        return {
+          hero: text("进入工作台").length,
+          registerCta: btns.filter(b => /免费做第一条音频|免费注册，开始第一条/.test(b.textContent)).length,
+          docsBtn: text("查看使用文档").length,
+          loginBtn: text("我已有账号，去登录").length,
+          // ⚠️ 必须**限定在 Hero 节内**查：定价区的「白拿」卡本来就有「注册即送 500 积分」，
+          //    用全文匹配会把那条算进来（第一版就是这么误报的）。
+          heroRegTags: (document.querySelector("#top")?.innerText || "").includes("注册即送"),
+          footnote: body.includes("已有账号登录后直接进工作台"),
+        };
+      });
+      check("已登录：Hero 与结尾 CTA 都是「进入工作台」（共 2 处）", cta.hero === 2, `找到 ${cta.hero} 个`);
+      check("已登录：不再出现注册 CTA（免费做第一条音频 / 免费注册，开始第一条）",
+        cta.registerCta === 0, `找到 ${cta.registerCta} 个`);
+      check("已登录：结尾副按钮换成「查看使用文档」（不再是「我已有账号，去登录」）",
+        cta.docsBtn === 1 && cta.loginBtn === 0, `文档 ${cta.docsBtn} / 登录 ${cta.loginBtn}`);
+      check("已登录：Hero 节内的注册标签行不渲染", !cta.heroRegTags);
+      check("已登录：结尾脚注「已有账号登录后直接进工作台」不渲染", !cta.footnote);
+
+      // hover 只该改辉光，不该改几何 —— 起因：这里原来用 `hover:scale-[1.02]`，整颗按钮
+      // （含文字）一起放大，用户看到的是「文字在变大/发虚」。真悬停只能用 puppeteer 的
+      // hover()（合成 mouseover 事件不会触发 CSS :hover），所以顺带断言 :hover 真的生效，
+      // 否则「什么都没变」也可能是悬停没生效的假绿灯。
+      const dash = await p2.evaluateHandle(
+        () => [...document.querySelectorAll("header button")].find(b => b.textContent.trim() === "控制台") || null);
+      const geom = e => {
+        const r = e.getBoundingClientRect();
+        const cs = getComputedStyle(e);
+        return { w: +r.width.toFixed(2), h: +r.height.toFixed(2), t: cs.transform, s: cs.boxShadow, hov: e.matches(":hover") };
+      };
+      const g0 = await dash.evaluate(geom);
+      await dash.hover();
+      await new Promise(r => setTimeout(r, 450));
+      const g1 = await dash.evaluate(geom);
+      check("已登录：「控制台」hover 只变辉光、不变几何（防止文字跟着放大）",
+        g1.hov && g0.w === g1.w && g0.h === g1.h && g0.t === g1.t && g0.s !== g1.s,
+        `${g0.w}×${g0.h} → ${g1.w}×${g1.h} · transform=${g1.t} · 辉光变化=${g0.s !== g1.s} · 悬停生效=${g1.hov}`);
+
       await p2.screenshot({
         path: path.join(OUT, "2026-10-16-落地页-已登录导航.png"),
         clip: { x: 0, y: 0, width: 1440, height: 120 },
       });
-      const clicked = await p2.evaluate(() => {
-        const b = [...document.querySelectorAll("header button")].find(x => x.textContent.trim() === "控制台");
+      await p2.screenshot({
+        path: path.join(OUT, "2026-10-16-落地页-已登录-首屏.png"),
+        clip: { x: 0, y: 0, width: 1440, height: 720 },
+      });
+
+      // 真点击：三处「进入工作台」/ 副按钮都要落到正确的页
+      const clickNth = (label, n) => p2.evaluate((t, i) => {
+        const b = [...document.querySelectorAll("button")].filter(x => x.textContent.trim() === t)[i];
         if (!b) return false;
         b.click();
         return true;
+      }, label, n);
+      const where = async () => { await new Promise(r => setTimeout(r, 450)); return p2.evaluate(() => location.pathname + location.search); };
+
+      check("已登录：点导航「控制台」→ 单人配音 /dubbing", await clickNth("控制台", 0) && (await where()) === "/dubbing");
+      await p2.goto(base + "/", { waitUntil: "networkidle2" });
+      check("已登录：点 Hero「进入工作台」→ /dubbing", await clickNth("进入工作台", 0) && (await where()) === "/dubbing");
+      await p2.goto(base + "/", { waitUntil: "networkidle2" });
+      check("已登录：点结尾「进入工作台」→ /dubbing", await clickNth("进入工作台", 1) && (await where()) === "/dubbing");
+      await p2.goto(base + "/", { waitUntil: "networkidle2" });
+      check("已登录：点结尾「查看使用文档」→ /docs", await clickNth("查看使用文档", 0) && (await where()) === "/docs");
+
+      // ── 2.6 工作页左上角 logo：点击回落地页 ────────────────────
+      await p2.goto(base + "/dubbing", { waitUntil: "networkidle2" });
+      await new Promise(r => setTimeout(r, 900));
+      const logo = await p2.evaluate(() => {
+        const a = document.querySelector('header a[href="/"]');
+        return a ? { href: a.getAttribute("href"), label: a.getAttribute("aria-label") } : null;
       });
-      await new Promise(r => setTimeout(r, 400));
-      check("已登录：点「控制台」跳到单人配音 /dubbing",
-        clicked && p2.url().endsWith("/dubbing"), p2.url());
+      check("工作页左上角 logo 是指向首页的链接", !!logo, logo ? `${logo.href} · ${logo.label}` : "未找到 header a[href=\"/\"]");
+      const logoPath = await p2.evaluate(async () => {
+        const a = document.querySelector('header a[href="/"]');
+        if (!a) return "no-logo";
+        a.click();
+        await new Promise(r => setTimeout(r, 500));
+        return location.pathname;
+      });
+      const landed = logoPath === "/" && (await p2.evaluate(() => (document.querySelector("h1")?.textContent || "").includes("AI 配音工具")));
+      check("工作页点 logo 回到落地页（/ 且渲染出 H1）", landed, String(logoPath));
       await ctx.close();
+
+      // ── 2.7 回归：带 wb-mode=dubbing 时访问 `/` 不该被弹回 /dubbing ──
+      // 复现用户报告：在 /dubbing 工作过之后（wb-mode=dubbing 已写入），在地址栏敲站点根地址。
+      // 老代码里那条「老用户迁移」会把 `/` 直接 replaceState 到 /dubbing —— 首页反而进不去。
+      const ctxHome = await browser.createBrowserContext();
+      const p3 = await ctxHome.newPage();
+      await p3.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+      await p3.evaluateOnNewDocument(() => localStorage.setItem("wb-mode", "dubbing"));
+      await p3.goto(base + "/", { waitUntil: "networkidle2" });
+      await new Promise(r => setTimeout(r, 500));
+      const home = await p3.evaluate(() => ({
+        path: location.pathname,
+        h1: (document.querySelector("h1")?.textContent || "").trim(),
+      }));
+      check("回归：有 wb-mode=dubbing 时访问 / 仍是落地页（不被弹回 /dubbing）",
+        home.path === "/" && home.h1.includes("AI 配音工具"), `${home.path} · H1=${home.h1.slice(0, 14)}`);
+      await ctxHome.close();
     }
 
     // ── 2. 关键内容在位 ────────────────────────────────────
