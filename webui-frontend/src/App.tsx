@@ -25,6 +25,14 @@ import { initAuth, navigate, useAuth } from "@/lib/auth";
  *    两条路径渲染的是同一个组件，内容一致。
  * ⚠️ 工作台成了 `/podcast`、`/dubbing`，所以未知路径不再回落到「播客工作台」而是
  *    显式给到 `/podcast`（保持旧行为，且这类 URL 已被 robots.txt 排除收录）。
+ *
+ * ⚠️ **不要恢复 `wb-mode` 的「老用户迁移」**（2026-10-16 删除）：那条逻辑是「访问 `/` 且
+ *    localStorage 里 `wb-mode === 'dubbing'` 就 replaceState 到 `/dubbing`」，在 `/` 还是
+ *    工作台时成立（把没有 URL 路由的年代的用户接回去）。`/` 变成落地页之后它就成了 bug：
+ *    用户只要在单配页工作过，`wb-mode` 就恒为 `dubbing` ⇒ **在地址栏输入站点根地址永远
+ *    会被弹回 `/dubbing`，首页反而进不去**。URL 路由已经是显式的，这个迁移没有存在意义了，
+ *    连 `wb-mode` 的写入也一并删掉（否则会留下一个「看起来还有人读」的假象）。
+ *    浏览器里遗留的 `wb-mode` 键无害（已无任何读取方），不主动清理。
  */
 function resolvePage(pathname: string): ComponentType {
   // ⚠️ `/account/orders` 必须排在 `/account` 之前 —— 前缀匹配下两者都会命中后者。
@@ -58,15 +66,7 @@ function BootSpinner() {
 }
 
 export default function App() {
-  const [path, setPath] = useState(() => {
-    const p = normalizePath(window.location.pathname);
-    // 老用户迁移：此前靠 localStorage wb-mode 进入配音模式，落地到对应 URL
-    if (p === "/" && localStorage.getItem("wb-mode") === "dubbing") {
-      window.history.replaceState(null, "", "/dubbing");
-      return "/dubbing";
-    }
-    return p;
-  });
+  const [path, setPath] = useState(() => normalizePath(window.location.pathname));
 
   // 登录态恢复（App 级只调一次；auth.ts 内部防重入）
   useEffect(() => {
@@ -78,14 +78,6 @@ export default function App() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
-
-  // 同步 wb-mode，保留旧约定的兼容性。
-  // ⚠️ 只在两个工作页写：落地页 `/` 不该改写用户的「上次用哪个工作台」偏好 ——
-  //    否则一个本来会被迁移到 /dubbing 的老用户，只是看了一眼落地页就丢了这条便利。
-  useEffect(() => {
-    if (path === "/dubbing") localStorage.setItem("wb-mode", "dubbing");
-    else if (path === "/podcast") localStorage.setItem("wb-mode", "podcast");
-  }, [path]);
 
   // 强制登录：未登录访问工作页 → 跳登录/注册页（落地页、个人中心与使用文档除外）
   const { ready, token, user } = useAuth();
