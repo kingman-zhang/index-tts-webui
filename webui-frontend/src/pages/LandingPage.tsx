@@ -14,8 +14,8 @@
  *  2. 开发环境 / landing.html 缺失时的回落 → 本组件由浏览器渲染（React），内容一致。
  *
  * ⚠️ 因此本文件及其依赖**不能有模块级的浏览器 API 访问**（`window`/`localStorage`/`document`），
- *    否则 Node 侧预渲染会抛错。跳转请用 `@/lib/router`（而不是 `@/lib/auth`，后者在模块
- *    作用域读 localStorage）。
+ *    否则 Node 侧预渲染会抛错。跳转请用 `@/lib/router`；`@/lib/auth` 已按这条约束改造
+ *    （凭证读取收进 `readToken` 的函数体），所以这里可以安全 import 它来判断登录态。
  *
  * ## SEO 约定
  *  - H1 只有一个，含主词「AI 配音」；每节一个 H2，卡片用 H3，层级不跳。
@@ -25,8 +25,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, Coins, FileText, Gift,
-  Lightbulb, ListMusic, Mic, Pause, Play, Radio, Sparkles, Ticket, Users, Volume2, Wand2, Zap,
+  LayoutDashboard, Lightbulb, ListMusic, Mic, Pause, Play, Radio, Sparkles, Ticket, Users,
+  Volume2, Wand2, Zap,
 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
 import { navigate } from "@/lib/router";
 import { SITE_NAME, SITE_NAME_EN } from "@/lib/site";
 import { cn } from "@/lib/utils";
@@ -57,6 +59,8 @@ const SHOT = "/docs-assets";
 /** 注册入口：带上 `?tab=register`，落地到账户页时直接停在注册表单（少一次点击）。 */
 const REGISTER_URL = "/account?tab=register";
 const LOGIN_URL = "/account";
+/** 已登录用户的落点：单人配音工作台（他回到首页时想做的事是「接着做」，不是「再注册一次」）。 */
+const DASHBOARD_URL = "/dubbing";
 
 // ─── 通用零件 ───────────────────────────────────────────────
 
@@ -252,6 +256,11 @@ const NAV_LINKS = [
 
 function LandingNav() {
   const [open, setOpen] = useState(false);
+  // 登录态读自 localStorage（`readToken` 是**同步**的）⇒ 首帧就是准的，不会先渲染
+  // 「免费注册」再跳成「控制台」。构建期预渲染的 `landing.html` 里一定是未登录形态
+  // （Node 没有 localStorage），所以爬虫看到的始终是注册入口 —— 这正是 SEO 想要的。
+  const { token } = useAuth();
+  const loggedIn = !!token;
   const toSection = (id: string) => {
     setOpen(false);
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -293,20 +302,33 @@ function LandingNav() {
         </nav>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => go(LOGIN_URL)}
-            className="hidden rounded-full px-4 py-2 text-[0.875rem] text-zinc-200 transition-colors hover:text-white sm:inline-flex"
-          >
-            登录
-          </button>
-          <button
-            type="button"
-            onClick={() => go(REGISTER_URL)}
-            className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2 text-[0.875rem] font-semibold text-emerald-950 transition-transform hover:scale-[1.02]"
-          >
-            免费注册
-          </button>
+          {loggedIn ? (
+            <button
+              type="button"
+              onClick={() => go(DASHBOARD_URL)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2 text-[0.875rem] font-semibold text-emerald-950 transition-transform hover:scale-[1.02]"
+            >
+              <LayoutDashboard className="h-4 w-4" />
+              控制台
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => go(LOGIN_URL)}
+                className="hidden rounded-full px-4 py-2 text-[0.875rem] text-zinc-200 transition-colors hover:text-white sm:inline-flex"
+              >
+                登录
+              </button>
+              <button
+                type="button"
+                onClick={() => go(REGISTER_URL)}
+                className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-400 px-4 py-2 text-[0.875rem] font-semibold text-emerald-950 transition-transform hover:scale-[1.02]"
+              >
+                免费注册
+              </button>
+            </>
+          )}
           <button
             type="button"
             aria-label="展开导航"
@@ -333,13 +355,24 @@ function LandingNav() {
           <a href="/docs" className="block w-full rounded-lg px-2 py-2.5 text-left text-[0.9375rem] text-zinc-300 hover:bg-white/[0.06]">
             使用文档
           </a>
-          <button
-            type="button"
-            onClick={() => go(LOGIN_URL)}
-            className="mt-1 block w-full rounded-lg px-2 py-2.5 text-left text-[0.9375rem] text-zinc-300 hover:bg-white/[0.06]"
-          >
-            登录已有账号
-          </button>
+          {loggedIn ? (
+            <button
+              type="button"
+              onClick={() => go(DASHBOARD_URL)}
+              className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-2.5 text-left text-[0.9375rem] font-medium text-emerald-300 hover:bg-white/[0.06]"
+            >
+              <LayoutDashboard className="h-4 w-4" />
+              进入控制台
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => go(LOGIN_URL)}
+              className="mt-1 block w-full rounded-lg px-2 py-2.5 text-left text-[0.9375rem] text-zinc-300 hover:bg-white/[0.06]"
+            >
+              登录已有账号
+            </button>
+          )}
         </div>
       )}
     </header>
@@ -413,7 +446,7 @@ function Hero() {
               <Zap className="h-3.5 w-3.5 text-amber-400" /> 约可免费合成 1 万字
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" /> 邮箱注册，不用信用卡
+              <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" /> 邮箱注册，开箱即用
             </span>
           </p>
         </div>

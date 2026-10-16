@@ -14,13 +14,32 @@ export interface MemberUser {
 
 const TOKEN_KEY = "wb-auth-token";
 
+/**
+ * 同步读取本地凭证。
+ *
+ * ⚠️ 必须收在**函数体**里，不能写成模块级的 `localStorage.getItem(TOKEN_KEY)`：
+ *   落地页（`/`）在构建期会被 **Node 侧静态预渲染**（`scripts/prerender.mjs` →
+ *   `src/landing/entry-server.tsx`），那里没有 `localStorage`，模块级读取会让
+ *   **构建直接失败**。放进函数体后只有真正调用才求值，于是落地页也能安全地
+ *   `import` 本模块并拿到登录态。
+ * ✅ 浏览器里是**同步**返回 ⇒ 首帧就带正确登录态，已登录用户不会先看到
+ *   「免费注册」再跳成「控制台」。
+ */
+export function readToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;   // Node（构建期预渲染）或浏览器禁用了本地存储
+  }
+}
+
 interface AuthState {
   ready: boolean;          // 是否完成首次恢复
   token: string | null;
   user: MemberUser | null;
 }
 
-let state: AuthState = { ready: false, token: localStorage.getItem(TOKEN_KEY), user: null };
+let state: AuthState = { ready: false, token: readToken(), user: null };
 const listeners = new Set<() => void>();
 
 function emit() {
