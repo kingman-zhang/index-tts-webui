@@ -100,9 +100,20 @@ export function Header({
   return (
     <header className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0">
       <div className="flex items-center">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
+        {/* 站点 logo：点击回产品首页（落地页 `/`）。用 <a href="/"> 而不是纯按钮 ——
+            「回到首页」本来就是链接语义（可中键/右键新开、可被屏读识别），
+            再 preventDefault 走 SPA 路由，避免整页刷新。
+            ⚠️ 图标上的 `w-4.5 h-4.5` 是既有写法，Tailwind 没有 4.5 这一档 ⇒ 实际不生成样式，
+            图标仍按 lucide 默认的 24px 渲染。本次不动它（改了会改变图标大小）。 */}
+        <a
+          href="/"
+          title="返回首页"
+          aria-label="返回首页"
+          onClick={e => { e.preventDefault(); navigate("/"); }}
+          className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0 transition-transform hover:scale-105"
+        >
           <Radio className="w-4.5 h-4.5 text-white" />
-        </div>
+        </a>
         <NavTabs />
       </div>
 
