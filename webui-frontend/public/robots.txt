@@ -7,7 +7,9 @@
 # ⚠️ 落地页 `/` 在生产环境由 nginx 直接返回静态预渲染的 landing.html
 #    （见 scripts/prerender.mjs），因此不执行 JS 的爬虫也能读到完整正文。
 #
-# 换域名时同步改这里 + sitemap.xml（这两个是纯静态文件，构建期不参与，无法自动生成）。
+# 换域名时同步改这里 + sitemap.xml + index.html + src/lib/site.ts（四处字面量，
+# 构建期不参与替换，无法自动同步）。漏改会让搜索引擎沿旧域名抓取。
+# 兜底：scripts/check-site-url.mjs 在 build 前全部比对，不一致直接构建失败。
 
 User-agent: *
 Allow: /
@@ -20,4 +22,4 @@ Disallow: /dubbing
 Disallow: /index.html
 Disallow: /landing.html
 
-Sitemap: https://media.lizigege.com/sitemap.xml
+Sitemap: https://voice.lizigege.com/sitemap.xml

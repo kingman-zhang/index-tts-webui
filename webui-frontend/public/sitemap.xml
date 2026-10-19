@@ -2,18 +2,19 @@
 <!--
   播客工坊 sitemap。
   ⚠️ 只列**有公开价值**的页面：工作台与个人中心在登录后面，收录它们只会得到登录页。
-  ⚠️ 域名换掉时同步改这里 + robots.txt（这两个是纯静态文件，构建期不参与）。
+  ⚠️ 域名换掉时同步改这里 + robots.txt + index.html + src/lib/site.ts（四处字面量）。
+     兜底：scripts/check-site-url.mjs 在 build 前比对，不一致直接构建失败。
 -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://media.lizigege.com/</loc>
-    <lastmod>2026-10-16</lastmod>
+    <loc>https://voice.lizigege.com/</loc>
+    <lastmod>2026-10-19</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://media.lizigege.com/docs</loc>
-    <lastmod>2026-10-16</lastmod>
+    <loc>https://voice.lizigege.com/docs</loc>
+    <lastmod>2026-10-19</lastmod>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>

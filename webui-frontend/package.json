@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/prerender.mjs",
+    "build": "node scripts/check-site-url.mjs && vite build && node scripts/prerender.mjs",
     "build:spa-only": "vite build",
+    "check:site-url": "node scripts/check-site-url.mjs",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview"
   },

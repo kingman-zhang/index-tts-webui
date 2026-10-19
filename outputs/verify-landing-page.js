@@ -29,6 +29,18 @@ const PORT = 6099;
 const CHROME = "/Users/zhangjianwen/Library/Caches/ms-playwright/chromium-1161/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
 const DEV_URL = process.argv.includes("--dev") ? "http://localhost:6008" : null;
 
+/**
+ * canonical 的期望值直接读真源（webui-frontend/src/lib/site.ts），不在这里写第二份。
+ * 否则换域名时这个验收脚本会自己变成一个假失败的来源。
+ */
+function expectedSiteUrl() {
+  const src = fs.readFileSync(
+    path.resolve(__dirname, "..", "webui-frontend", "src", "lib", "site.ts"), "utf8");
+  const m = src.match(/export\s+const\s+SITE_URL\s*=\s*["']([^"']+)["']/);
+  if (!m) throw new Error("读不到 src/lib/site.ts 里的 SITE_URL，无法断言 canonical");
+  return m[1].replace(/\/+$/, "");
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
   ".webp": "image/webp", ".jpg": "image/jpeg", ".png": "image/png", ".svg": "image/svg+xml",
@@ -102,7 +114,7 @@ function check(name, ok, detail = "") {
 
     const canonical = await page.$eval('link[rel="canonical"]', el => el.href).catch(() => null);
     if (!DEV_URL) {
-      check("canonical 指向首页", canonical === "https://media.lizigege.com/", String(canonical));
+      check("canonical 指向首页", canonical === expectedSiteUrl() + "/", String(canonical));
       const ldjson = await page.$$eval('script[type="application/ld+json"]', els => els.map(e => e.textContent));
       check("结构化数据含 FAQPage 与 SoftwareApplication",
         ldjson.some(t => t.includes("FAQPage")) && ldjson.some(t => t.includes("SoftwareApplication")),
