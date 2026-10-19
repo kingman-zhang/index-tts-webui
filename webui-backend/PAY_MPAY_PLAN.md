@@ -584,7 +584,7 @@ def order_pay(order_id: str, request: Request, user = Depends(get_current_user))
 
 | 项 | 原值 | 改为 |
 |---|---|---|
-| `PAY_PUBLIC_BASE_URL` | `https://media.lizigege.com/api/pay/notify/mpay` | `https://media.lizigege.com` |
+| `PAY_PUBLIC_BASE_URL` | `https://voice.lizigege.com/api/pay/notify/mpay` | `https://voice.lizigege.com` |
 | `MEMBER_MOCK_PAY` | （键不存在 ⇒ 吃代码默认 `1`） | `0`（**追加在文件末尾**） |
 | `PAY_PROVIDER` | `mpay` | 不变 |
 
@@ -602,7 +602,7 @@ def order_pay(order_id: str, request: Request, user = Depends(get_current_user))
   `MEMBER_MOCK_PAY` 代码默认值用**干净子进程**验）。
 - **全量离线回归 48/48**（与守卫前同基线，无回归）。
 - 真实 `.env` 下 `/api/version` 实测：
-  `mock_pay_enabled=False`、`notify_url=https://media.lizigege.com/api/pay/notify/mpay`（单段，正确）、
+  `mock_pay_enabled=False`、`notify_url=https://voice.lizigege.com/api/pay/notify/mpay`（单段，正确）、
   `problem` 精确点名 `MPAY_PID`。
 - 后端仍差：`MPAY_PID` 改成纯数字后跑一笔真单。→ **已完成，见 §12**。
 
@@ -654,7 +654,7 @@ POST https://mpay.lizigege.com/mapi.php
 
 ### 12.3 ✅ 公网回调地址确实路由到我们的 backend
 
-`https://media.lizigege.com/api/version` → `200` 且 `data_dir=/app/data`（Docker 容器内）⇒ 域名没写错。
+`https://voice.lizigege.com/api/version` → `200` 且 `data_dir=/app/data`（Docker 容器内）⇒ 域名没写错。
 
 ### 12.4 🔴 **唯一阻塞：线上跑的是 10-10 的旧代码**
 
