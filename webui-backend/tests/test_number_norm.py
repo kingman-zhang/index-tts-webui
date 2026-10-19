@@ -22,6 +22,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 _TMP = tempfile.mkdtemp(prefix="number_norm_test_")
 os.environ["DATA_DIR"] = _TMP
 os.environ["NUM_NORMALIZE"] = "1"
+# 第 4 部分要真的走一遍 `queue_worker._execute_task`，那会读术语表 ⇒ 落到
+# `CONTENT_STORE`。开发机的 `.env` 常常是 mongo（连内网 192.168.x.x），沙箱到内网
+# 3 秒超时 ⇒ 同一份代码随机 2~3 次失败一次（2026-10-19 实测 8 次里 3 次），
+# 报错却是「任务执行失败」，看起来像被测代码坏了。这里钉死四个开关，
+# 与 `outputs/run-offline-tests.py`（剥掉环境、只留 PATH/HOME/TMPDIR/LANG）同一个意图。
+for _k in ("MEMBER_STORE", "SESSION_STORE", "CONTENT_STORE", "QUEUE_STORE"):
+    os.environ[_k] = "file"
 
 from app.number_norm import ENABLED, normalize_numbers, read_digits  # noqa: E402
 
