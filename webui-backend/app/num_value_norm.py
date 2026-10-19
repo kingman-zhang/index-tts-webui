@@ -103,7 +103,7 @@ import re
 # 复用号码层的三样东西。**刻意 import 而不是复制**：
 # `_context_before` 必须与号码层是同一个函数，否则两层的「左语境窗口」会出现
 # 细微差异，「命中集合不相交」这条性质就不再成立。
-from .number_norm import NUMERIC_PREFIXES, UNITS, _context_before
+from .number_norm import NUMERIC_PREFIXES, SPACE_CHARS, UNITS, _context_before
 
 # 默认开启：修的是已确证的真实缺陷（阿拉伯数字进模型 = unk），
 # 且命中面窄（必须有单位或幅度词），精度高于号码层。NUM_VALUE_NORMALIZE=0 关闭。
@@ -156,12 +156,14 @@ _NUMERAL_UNITS = ("万", "亿", "千", "百", "十")
 # 只有把这张表报出来才能一眼看出「终于是修过的那一版」）。改表即变。
 ORDINAL_MARKERS = _ER_PREFIXES + _ER_UNITS
 
-# 候选数字。两分支：带千分位 / 不带。`(\s*)` 负责吃掉「数字 ↔ 单位」之间的空格
-# （用户从网页粘贴的文本经常带空格，TN 正是被这个空格打挂的）。
+# 候选数字。两分支：带千分位 / 不带。
+# 组 3 负责吃掉「数字 ↔ 单位」之间的空白（用户从网页粘贴的文本经常带空格，TN 正是
+# 被这个空格打挂的）。用 `SPACE_CHARS` 而不是 `\s`：`\s` 含 `\n`（会把跨行数字
+# 拼成一处），又不含零宽字符（网页粘贴的隐形垃圾会留在输出里）。
 _CANDIDATE = re.compile(
     r"(?<![0-9A-Za-z.,])([-−+＋])?"
     r"(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
-    r"(\s*)([%％]?)(?![0-9])"
+    rf"([{SPACE_CHARS}]*)([%％]?)(?![0-9])"
 )
 
 
@@ -320,7 +322,9 @@ def _replace(match: re.Match) -> str:
         return match.group(0)
 
     before = _context_before(text, num_start)
-    after = text[num_end:num_end + 6].lstrip(" \t")
+    # 右语境同样剥掉全部空白字符：`2　章`（全角空格）、`2\u200b章`（零宽）
+    # 原来都判不出来（只 lstrip 了 " \t"），于是 `第 2 章` 落到「第两章」。
+    after = text[num_end:num_end + 6].lstrip(SPACE_CHARS)
 
     # 命中：紧跟百分号（百分号要前置成「百分之」，不是「三十%」）；
     # 或右邻单位/量词；或左语境窗口末尾是幅度词。

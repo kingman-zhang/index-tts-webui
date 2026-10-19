@@ -89,6 +89,14 @@ _DIGIT_READ = {
 }
 _SEPARATORS = "-–—－ "
 
+# 数字两侧「不改变语义」的空白 —— **文本前处理三层共用这一个常量**
+# （本层、`num_value_norm`、`range_norm` 都 import 它，避免三份拷贝各自漂移）。
+# 逐个列而不是用 `\s`：
+#   - `\s` 含 `\n` ⇒ 会把跨行的两个数字拼成一个语境（`10~\n15` → 「十到十五」）；
+#   - `\s` 不含零宽字符（U+200B/200C/200D、U+FEFF），而网页粘贴常带这些隐形垃圾。
+# U+3000 全角空格是中文输入法在全角模式下敲空格得到的，Word / PDF / 公众号常见。
+SPACE_CHARS = " \t\u00a0\u3000\u200b\u200c\u200d\ufeff"
+
 
 def read_digits(s: str) -> str:
     """把数字串逐位读成汉字（分隔符丢弃、非数字字符原样保留）。"""
@@ -96,13 +104,18 @@ def read_digits(s: str) -> str:
 
 
 def _context_before(text: str, idx: int) -> str:
-    """数字左侧的语境窗口；遇到句末标点即截断（不跨句借语境，不借冒号断）。"""
+    """数字左侧的语境窗口；遇到句末标点即截断（不跨句借语境，不借冒号断）。
+
+    **返回值去掉尾部空白**：调用方判的都是「紧邻数字的那个词」——
+    `before.endswith("第")` 这类。窗口原样带着空格时（`第 2 章` 的「第 」），
+    判定全部失效 ⇒ 读成「第两章」。空格是粘贴文本的常态，不能让它决定语境。
+    """
     seg = text[max(0, idx - CONTEXT_WINDOW):idx]
     for sep in "。！？；!?;\n":
         pos = seg.rfind(sep)
         if pos >= 0:
             seg = seg[pos + 1:]
-    return seg
+    return seg.rstrip(SPACE_CHARS)
 
 
 def _context_after(text: str, idx: int) -> str:
@@ -117,7 +130,8 @@ def _context_after(text: str, idx: int) -> str:
 
 def _is_number_context(text: str, start: int, end: int, matched: str) -> bool:
     """判定这个数字串是否为「号码」。否决优先于命中。"""
-    after = text[end:end + 2]
+    # 窗口取 6 个字：先剥空白再看单位，窗口太窄会把「空格 + 元」剥成空串
+    after = text[end:end + 6].lstrip(SPACE_CHARS)
     before = _context_before(text, start)
 
     # ① 否决：后跟单位/量词 → 数值
