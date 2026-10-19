@@ -169,18 +169,71 @@ npm run build
 > 不复用 `index.html`。只在 index.html 注入，落地页就没有统计——而落地页恰恰是流量入口。
 > 这个坑在本项目已经出现过一次（og:image 只改了 index.html）。
 
-### 6. 验证
+### 6. 验证：怎么确认「已经关联上了」
+
+分三层，**只有第三层能证明真的通了**。前两层只证明「代码里配了」。
+
+#### 第一层：构建产物里有标签（本地，10 秒）
 
 ```bash
-# 产物里有没有标签（两处都要有）
+cd webui-frontend
 grep -o 'data-website-id="[^"]*"' dist/index.html dist/landing.html
-
-# 线上（浏览器打开后，umami 后台「实时」应出现你自己）
-curl -s https://stats.lizigege.com/script.js | head -c 100     # 应返回 JS，不是 HTML
 ```
 
-在浏览器里访问 `voice.lizigege.com`，等 5–10 秒，umami 后台「实时」页应出现一条访问。
-如果没有：开 DevTools → Network 搜 `api/send`，看是 404（路径/反代问题）还是被拦（广告拦截器）。
+**两行都必须有输出。** 只有一行 ⇒ `prerender.mjs` 没复制到 `landing.html`，
+落地页就没统计（而它是流量入口）。两行都没有 ⇒ 构建时没读到 env，见下表。
+
+#### 第二层：线上 HTML 里有标签（部署后）
+
+```bash
+curl -s https://voice.lizigege.com/ | grep -o 'data-website-id="[^"]*"'
+curl -s https://voice.lizigege.com/dubbing | grep -o 'data-website-id="[^"]*"'
+curl -s https://stats.lizigege.com/script.js | head -c 80    # 必须是 JS，不能是 <!doctype html>
+```
+
+#### 第三层：浏览器实测（唯一可信的判据）
+
+打开 `https://voice.lizigege.com`，按顺序看四个地方：
+
+| 看哪里 | 期望 | 说明 |
+|---|---|---|
+| DevTools → Network → 过滤 `script.js` | 200，Type = script | 拿不到 tracker 就没下文 |
+| DevTools → Network → 过滤 `api/send` | POST，200/204 | **这一条出现才叫"上报成功"** |
+| Console 输入 `umami` 回车 | 返回对象（含 `track`） | 说明 tracker 已初始化 |
+| umami 后台 →「实时」 | 5–10 秒内出现你这条访问 | 带路径与来源 |
+
+#### 失败对照表（按现象查，别猜）
+
+| 现象 | 最可能的原因 | 怎么处理 |
+|---|---|---|
+| 产物里没有 script 标签 | 构建时没读到 env | 文件名必须是 `webui-frontend/.env.production.local`（**不是** `.env`、不是仓库根目录）；改完要 `npm run build`，重启容器无效 |
+| `script.js` 返回 `<!doctype html>` | 反代把请求回落成 SPA 了 | 统计必须用**独立子域**。挂在 `voice.lizigege.com/stats` 会被 `try_files ... /index.html` 吃掉 |
+| script 200，但**没有** `api/send` | `data-domains` 与当前访问域名不匹配 | 这是最容易误判的一条，见下 |
+| `api/send` 404 | 反代没转发 POST / 路径被改写 | 检查 `proxy_pass`，确认 `script.js` 与上报接口同源 |
+| 什么都没发生，Network 干净 | 广告拦截器 | 用无痕窗口、关扩展再试 |
+
+**`data-domains` 必读**：我们配的是 `VITE_UMAMI_DOMAINS=voice.lizigege.com`，
+tracker 会拿它比对 `window.location.hostname`，**不匹配就静默不上报**。
+
+所以：如果你 DNS 还没生效、先用 `media.lizigege.com` 或服务器 IP 打开页面测试，
+会看到「标签在、script 也加载了、就是没有数据」—— 这不是坏了，
+是域名没对上。验证时要么等 voice 生效，要么临时把测试域名补进去：
+
+```dotenv
+VITE_UMAMI_DOMAINS=voice.lizigege.com,media.lizigege.com
+```
+
+#### 验证来源归因（顺手做，1 分钟）
+
+访问带 UTM 的地址，然后去 umami 后台看「来源」是否显示成你填的值：
+
+```
+https://voice.lizigege.com/?utm_source=test&utm_medium=manual&utm_campaign=verify
+```
+
+显示 `test / manual / verify` ⇒ 归因链路通了。
+这一步现在不做，等推广开始后就没法回溯每篇内容的实际效果。
+
 
 ## 四、埋点规划（比装统计更重要）
 
