@@ -35,11 +35,12 @@ from app.range_norm import (  # noqa: E402
 PASS = FAIL = 0
 
 
-def check(name: str, actual, expected) -> None:
+def check(name: str, actual, expected, quiet: bool = False) -> None:
     global PASS, FAIL
     if actual == expected:
         PASS += 1
-        print(f"  [OK]   {name}")
+        if not quiet:
+            print(f"  [OK]   {name}")
     else:
         FAIL += 1
         print(f"  [FAIL] {name}\n         expect: {expected!r}\n         actual: {actual!r}")
@@ -68,6 +69,7 @@ CASES: list[tuple[str, str, str]] = [
     ("1,000~2,000元", "一千到两千元", "千分位"),
     ("20~30分钟", "二十到三十分钟", "常规区间"),
     ("第2~6章", "第二到六章", "序数语境 ⇒ 第二个 2 读「二」"),
+    ("第 2 ~ 6 章", "第 二到六章", "★「第」与数字之间有空格，语境仍要认出（前置空格留在 match 外）"),
     ("10~15年", "十到十五年", "★ 两位 + 年 = 时长，不是年份"),
     # —— 波浪号家族 ——
     ("10～15岁", "十到十五岁", "全角波浪号"),
@@ -84,6 +86,24 @@ CASES: list[tuple[str, str, str]] = [
     ("5%~10%", "百分之五到百分之十", "两端都带 %"),
     ("5 % ~ 10 %", "百分之五到百分之十", "带空格"),
     ("5%~10", "百分之五到百分之十", "只在左端写 % 也按百分数读"),
+    # —— 空白变体（2026-10-19 补：用户追问「中间有中文/英文空格怎么办」）——
+    # 半角空格：左侧有 / 右侧有 / 两侧都有，四种组合都要吃干净
+    ("1~ 2万", "一万到两万", "★ 波浪号右侧半角空格"),
+    ("1 ~2万", "一万到两万", "★ 波浪号左侧半角空格"),
+    ("1 ~ 2万", "一万到两万", "★ 两侧都有半角空格"),
+    ("1万 ~ 2万", "一万到两万", "量级在外、两侧空格"),
+    ("1 万 ~ 2 万", "一万到两万", "★ 数字与量级之间也有空格（原先只有右侧允许 ⇒ 落到兜底只剩「到」）"),
+    ("1  万  ~  2  万", "一万到两万", "连续空格"),
+    # 全角空格 U+3000：中文输入法全角模式敲空格就是它，从 Word/PDF/公众号粘贴常见
+    ("1~\u30002万", "一万到两万", "★ 全角空格（中文空格）在波浪号右侧"),
+    ("1\u3000~\u30002万", "一万到两万", "★ 全角空格在两侧"),
+    ("10\u3000~15\u3000岁", "十到十五岁", "★ 全角空格：原先主规则整段失配，`~` 依然不出声"),
+    ("5%\u3000~\u300010%", "百分之五到百分之十", "全角空格 + 百分号"),
+    ("1\u3000万\u3000~\u30002\u3000万", "一万到两万", "全角空格贯穿（数字/量级/波浪号之间）"),
+    # 不间断空格 / 零宽字符：网页排版留下的
+    ("10\xa0~\xa015岁", "十到十五岁", "不间断空格 U+00A0"),
+    ("10\u200b~\u200b15岁", "十到十五岁", "零宽空格 U+200B"),
+    ("10\ufeff~\ufeff15岁", "十到十五岁", "BOM / 零宽不换行空格 U+FEFF"),
     # —— 刻意不动：年份地盘（本层之前由 year_norm 处理）——
     ("1550～1850年间", "1550～1850年间", "★ 年份区间：正常顺序下 year_norm 已换成汉字"),
     ("2020年~2024年", "2020年~2024年", "两端带「年」"),
@@ -101,6 +121,15 @@ CASES: list[tuple[str, str, str]] = [
     # —— 刻意不动：连字符（另一个已知缺陷，见模块 docstring）——
     ("3-5天", "3-5天", "连字符不归本层"),
     ("400-123-4567", "400-123-4567", "分段号码"),
+    # —— 空白不该成为「放行通道」：原先拒绝的形态，加空格后仍要拒绝 ——
+    ("2020\u3000~\u30002024", "2020\u3000~\u30002024", "★ 裸四位对 + 全角空格，仍不猜"),
+    ("007\u3000~\u3000008", "007\u3000~\u3000008", "前导 0 + 全角空格"),
+    ("A1\u3000~\u30002", "A1\u3000~\u30002", "编号 + 全角空格"),
+    ("-5\u3000~\u30003", "-5\u3000~\u30003", "带符号 + 全角空格"),
+    ("1\u3000~\u30002\u3000~\u30003", "1\u3000~\u30002\u3000~\u30003", "三段 + 全角空格"),
+    ("1540\u3000~\u30001550年", "1540\u3000~\u30001550年", "年份地盘 + 全角空格"),
+    ("10~\n15", "10~\n15", "★ 跨行不许拼：`\\s` 会把换行算成空白，故 `_SPACE` 逐个列"),
+    ("10\u3000~\n15", "10\u3000~\n15", "全角空格 + 换行"),
     # —— 裸千/百 不当量级（与今天 TN 的结果一致，不是回归）——
     ("3~5千米", "三到五千米", "★ 千米 = km，不是 3000~5000"),
     ("3~5千克", "三到五千克", "千克 = kg"),
@@ -125,19 +154,62 @@ def _load_year_cases() -> list[tuple[str, str, str]]:
 
 
 def part1_text() -> None:
-    print("── 1/5 文本层 ──")
+    print("── 1. 文本层 ──")
     for src, want, why in CASES:
         check(f"{why}｜{src!r}", normalize_ranges(src), want)
 
 
 def part2_idempotent() -> None:
-    print("── 2/5 幂等：产出再跑一次不变 ──")
+    print("── 2. 幂等：产出再跑一次不变 ──")
     for _src, want, _why in CASES:
         check(f"幂等｜{want!r}", normalize_ranges(want), want)
 
 
+def part1b_whitespace_matrix() -> None:
+    """空白变体的**笛卡尔积**：单点用例只覆盖「想到的那几种」。
+
+    粘贴文本里的空白是组合出来的 —— 半角 / 全角 / 不间断 / 零宽 × 波浪号左右
+    × 量级前后。手写用例永远漏一格，故用乘积生成；只在失败时打印，通过数汇总。
+    """
+    print("── 1b. 空白变体矩阵（笛卡尔积）──")
+    pads = ["", " ", "\u3000", "\xa0", "\u200b"]
+    n = 0
+    for p1 in pads:
+        for p2 in pads:
+            check(f"10{p1}~{p2}15岁", normalize_ranges(f"10{p1}~{p2}15岁"),
+                  "十到十五岁", quiet=True)
+            check(f"1{p1}~{p2}2万", normalize_ranges(f"1{p1}~{p2}2万"),
+                  "一万到两万", quiet=True)
+            check(f"5%{p1}~{p2}10%", normalize_ranges(f"5%{p1}~{p2}10%"),
+                  "百分之五到百分之十", quiet=True)
+            n += 3
+    # 量级前后各有一处空白（4 个位置）：取值收缩到 3 种，避免 625 组噪音
+    pads4 = ["", " ", "\u3000"]
+    for p1 in pads4:
+        for p2 in pads4:
+            for p3 in pads4:
+                for p4 in pads4:
+                    src = f"1{p1}万{p2}~{p3}2{p4}万"
+                    check(src, normalize_ranges(src), "一万到两万", quiet=True)
+                    n += 1
+    print(f"     （{n} 组空白组合，通过 {PASS} 项累计；失败会逐条打印）")
+
+
+def part1c_no_whitespace_pass_through() -> None:
+    """加空白容忍 ≠ 放松否决：原先拒绝的形态，塞进全角/零宽空格后仍要拒绝。"""
+    print("── 1c. 空白不许成为放行通道 ──")
+    pad = ["\u3000", "\u200b", "\xa0"]
+    negatives = ["2020{}~{}2024", "007{}~{}008", "A1{}~{}2", "-5{}~{}3",
+                 "1540{}~{}1550年", "10{}~{}", "约{}~{}10"]
+    for p in pad:
+        for tpl in negatives:
+            src = tpl.format(p, p)
+            check(f"仍拒绝｜{src!r}", normalize_ranges(src), src, quiet=True)
+    print(f"     （{len(pad) * len(negatives)} 组，失败会逐条打印）")
+
+
 def part3_invariance() -> None:
-    print("── 3/5 不变性 ──")
+    print("── 3. 不变性 ──")
     lines = [{"text": "10~15岁", "speaker": "A"},
              "裸字符串行",
              {"text": "", "speaker": "B"},
@@ -162,7 +234,7 @@ def part3_invariance() -> None:
 
 
 def part4_year_untouched() -> None:
-    print("── 4/5 与 year_norm 的顺序耦合：年份输出必须一个字节都不变 ──")
+    print("── 4. 与 year_norm 的顺序耦合：年份输出必须一个字节都不变 ──")
     from app.year_norm import normalize_years
 
     year_cases = _load_year_cases()
@@ -183,7 +255,7 @@ def part4_year_untouched() -> None:
 
 
 def part5_with_tn() -> None:
-    print("── 5/5 与 TN 互操作 ──")
+    print("── 5. 与 TN 互操作 ──")
     try:
         import wetext
     except ImportError:
@@ -213,7 +285,7 @@ def part5_with_tn() -> None:
 
 
 def part6_descriptors() -> None:
-    print("── 自描述：常量与正则必须一致 ──")
+    print("── 6. 自描述：常量与正则必须一致 ──")
     # `/api/version` 的 range_norm_separator 直接取这个常量：取值域才可判版本
     check("RANGE_SEPARATOR", RANGE_SEPARATOR, "到")
     for ch in "~～〜∼˜⁓":
@@ -226,11 +298,18 @@ def part6_descriptors() -> None:
     for text, want in [("万", True), ("亿", True), ("百万", True), ("千万", True),
                        ("千", False), ("百", False), ("米", False)]:
         check(f"量级 {text!r}", bool(mult.fullmatch(text)), want)
+    # 空白码位表（部署自检断言 12288 = U+3000 在里面）：漏一个就等于「那种空格不支持」
+    for cp, name in [(0x20, "半角空格"), (0xA0, "不间断空格"), (0x3000, "全角空格"),
+                     (0x200B, "零宽空格")]:
+        check(f"空白码位含 {name} U+{cp:04X}", cp in range_norm.SPACE_CODEPOINTS, True)
+    check("空白不含换行（\\s 会含）", 0x0A in range_norm.SPACE_CODEPOINTS, False)
 
 
 def main() -> int:
     print(f"app/range_norm.py  RANGE_NORMALIZE 生效 = {ENABLED}\n")
     part1_text()
+    part1b_whitespace_matrix()
+    part1c_no_whitespace_pass_through()
     part2_idempotent()
     part3_invariance()
     part4_year_untouched()

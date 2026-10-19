@@ -211,6 +211,10 @@ def _text_switches() -> dict:
             # 只有布尔开关时，「收敛成『到』」与「收敛成『至』」两版都是 true。
             "range_normalize": range_norm.ENABLED,
             "range_norm_separator": range_norm.RANGE_SEPARATOR,
+            # 空白集合的码位（2026-10-19 补）：首版只收半角空格 / 制表 / 不间断空格，
+            # 全角空格（中文输入法全角模式下的空格）会让整段失配、`~` 依然不出声。
+            # 报码位而非原串 —— 零宽字符打印出来看不见、日志里没法核对。
+            "range_norm_space_codepoints": range_norm.SPACE_CODEPOINTS,
             # 数值读法（2026-09-29 新增）：单位/幅度词旁的阿拉伯数字换汉字。
             # 同上，报取值域而非只报开关：num_value_max_digits 是这一版规则的
             # 受理位数上限，部署自检断言它 >= 8。

@@ -38,6 +38,7 @@
 |---|---|
 | `10~15岁` | `十到十五岁` |
 | `10 ~15 岁` / `2 ~ 6 个月` | `十到十五岁` / `两到六个月`（顺手吃掉两端空格） |
+| `10　~15　岁` / `1 万 ~ 2 万` | `十到十五岁` / `一万到两万`（全角空格、数字与量级之间的空格） |
 | `1000~2000元` | `一千到两千元` |
 | `1.5~2.5岁` | `一点五到二点五岁` |
 | `1~2万` / `1万~2万` / `2~3百万` | `一万到两万` / `一万到两万` / `两百万到三百万` |
@@ -134,8 +135,19 @@ RANGE_SEPARATOR = "到"
 #   U+007E ~   U+FF5E ～   U+301C 〜   U+223C ∼   U+02DC ˜   U+2053 ⁓
 SEP_CHARS = "~～〜∼˜⁓"
 
-# 允许出现在数字两侧、且不改变语义的空白（含不间断空格 —— 从网页复制常见）。
-_SPACE = " \t\u00a0"
+# 允许出现在数字两侧、且不改变语义的空白。
+# 逐个列而不是用 `\s`：`\s` 在 Python 里把 `\n` 也算空白，那会让 `10~\n15`
+# 这种跨行形态被拼成「十到十五」，吃掉段落边界。
+#   U+0020 空格 / U+0009 制表 / U+00A0 不间断空格（网页复制）
+#   U+3000 全角空格 —— **中文输入法全角模式下敲空格就是它**，Word / PDF / 公众号
+#          排版里极常见；不收它，`10　~15　岁` 整段落在主规则之外、`~` 依然不出声
+#   U+200B/200C/200D/FEFF 零宽字符 —— 网页排版留下的隐形垃圾，肉眼看不出
+_SPACE = " \t\u00a0\u3000\u200b\u200c\u200d\ufeff"
+
+# 公开取值（供 `/api/version` 报版本）：空白集合的**码位**列表。
+# 报码位而不是原串：原串里的零宽字符与制表符打印出来看不见，日志里无法核对。
+# 部署自检断言 `12288 in …`（U+3000）—— 旧镜像里没有这个字段、也没有全角空格支持。
+SPACE_CODEPOINTS = [ord(ch) for ch in _SPACE]
 
 # 数量级后缀：只认 万/亿/百万/千万（见 docstring「数量级只认…」）。
 _MULT_VALUES = {"百": 100, "千": 1000, "万": 10000, "亿": 100000000}
@@ -151,7 +163,11 @@ _NUM_PATTERN = r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
 _RANGE_PATTERN = re.compile(
     rf"(?<![\dA-Za-z.,+\-−＋])"
     rf"(?P<l>{_NUM_PATTERN})"
-    rf"(?P<lmult>{_MULT_PATTERN})?"
+    # 数字与量级之间的空白**必须允许**：右侧一直允许（`pad3`），左侧原先不允许，
+    # 于是 `1 万 ~ 2 万` 主规则失配 ⇒ 落到兜底那道、只把 `~` 换成「到」，
+    # 两端阿拉伯数字还在（`1 万到2 万`，靠下一层数值读法补救才没出事）。
+    # 粘贴文本里 `1 万` 之间带空格很常见，补成与右侧对称。
+    rf"(?:[{_SPACE}]*(?P<lmult>{_MULT_PATTERN}))?"
     rf"(?P<pad1>[{_SPACE}]*)"
     rf"(?:(?P<lpct>[{_PERCENT_CHARS}])(?P<pad2>[{_SPACE}]*))?"
     rf"[{_SPACE}]*(?P<sep>[{SEP_CHARS}])[{_SPACE}]*"
@@ -241,11 +257,16 @@ def _year_territory(text: str, end: int, raw: str) -> bool:
 
 
 def _mult_value(raw: str | None) -> int:
-    """`None` → 1；`万` → 10000；`百万` → 1000000。"""
+    """`None` → 1；`万` → 10000；`百万` → 1000000。
+
+    `raw` 可能带前导空白（`1 万` 里的 ` lmult` 组是「 万」）⇒ 先剥掉。
+    """
     if not raw:
         return 1
     value = 1
     for ch in raw:
+        if ch in _SPACE:
+            continue
         value *= _MULT_VALUES[ch]
     return value
 
@@ -329,7 +350,11 @@ def _replace(match: re.Match) -> str:
         return match.group(0)
 
     after = text[match.end():match.end() + 6].lstrip(_SPACE)
-    left_er = _should_use_er(left, None, percent, _context_before(text, match.start("l")), "")
+    # 左语境要**先剥掉尾部空白**再交给 `_should_use_er`：它判的是
+    # `before.endswith("第")`，而 `_context_before` 原样返回「第 」这种带空格的窗口
+    # ⇒ `第 2 ~ 6 章` 会读成「第两到六章」。粘贴文本里「第 2 章」带空格很常见。
+    left_er = _should_use_er(
+        left, None, percent, _context_before(text, match.start("l")).rstrip(_SPACE), "")
     right_er = _should_use_er(right, None, percent, "", after)
 
     left_word = _scaled_word(left, left_mult, left_er)
