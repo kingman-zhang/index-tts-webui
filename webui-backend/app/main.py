@@ -56,11 +56,13 @@ async def on_startup():
     )
     logger.info(
         "[startup] 文本前处理：术语表 %s 条（合成展开 %s）"
-        " / 人名分隔号 %s(%s) / 年份读法 %s / 时间读法 %s / 数值读法 %s / 数字读法 %s",
+        " / 人名分隔号 %s(%s) / 年份读法 %s / 时间读法 %s / 区间读法 %s(%s)"
+        " / 数值读法 %s / 数字读法 %s",
         _tp.get("glossary_terms"), _tp.get("glossary_terms_for_synthesis"),
         "开" if _tp.get("name_punct_enabled") else "关", _tp.get("name_punct_target"),
         "开" if _tp.get("year_norm_enabled") else "关",
         "开" if _tp.get("time_norm_enabled") else "关",
+        "开" if _tp.get("range_normalize") else "关", _tp.get("range_norm_separator"),
         "开" if _tp.get("num_value_normalize") else "关",
         "开" if _tp.get("number_norm_enabled") else "关",
     )

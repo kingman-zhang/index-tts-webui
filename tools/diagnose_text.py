@@ -3,10 +3,10 @@
 """文本诊断：一句话为什么被读错 / 我配的词条为什么没生效。
 
 TTS 读错字的投诉里，绝大多数不是「模型不行」，而是**送进去的文本已经不是用户以为的那份**。
-这条链路有七道关，任何一道静默改变文本，用户都看不见：
+这条链路有八道关，任何一道静默改变文本，用户都看不见：
 
     原文 --[术语表 str.replace]--> --[人名分隔号归一化]--> --[年份读法]-->
-         --[时间读法]--> --[数值读法]--> --[数字读法（号码）]--> 发往引擎
+         --[时间读法]--> --[区间读法]--> --[数值读法]--> --[数字读法（号码）]--> 发往引擎
 
 （2026-09-29 补一道「年份读法」：它原先只存在于 tts-server 的本地引擎链路上，
 云引擎链路绕过它 ⇒「以前修好的年份读法又坏了」。详见 webui-backend/app/year_norm.py。
@@ -19,7 +19,12 @@ webui-backend/app/num_value_norm.py。
 2026-09-30 再补一道「时间读法」：`12:30` → 十二点三十分。又是「规则本来在
 tts-server、云引擎链路绕过它」的老故事。TN 对 `12:30` 大多读得对，但**带空格**的
 `12 : 30` 与**小时为 0** 的 `0:30` 会读成「十二比三十 / 零比三十」。详见
-webui-backend/app/time_norm.py。）
+webui-backend/app/time_norm.py。
+
+2026-10-19 再补一道「区间读法」：`10~15岁` → 十到十五岁。波浪号在 TN 手里经常
+**整个丢掉**（`10 ~15 岁` 实测读成「十到一五岁」，用户听到像漏字）。年份区间仍归
+上一道「年份」管，本道只接「两端都是普通数字」的形态。详见
+webui-backend/app/range_norm.py。）
 
 本工具把这条链路**逐步打印**出来，并把「看不见的字符」曝光：
 同一个视觉符号（中点、破折号、引号、空格）可能有多个 Unicode 码位，
@@ -75,7 +80,15 @@ sys.path.insert(0, str(BACKEND_ROOT))
 os.environ.setdefault("DATA_DIR", str(BACKEND_ROOT / "data"))
 
 from app import config as app_config  # noqa: E402  （读 --data-dir，必须在 stores 之前）
-from app import name_punct, num_value_norm, number_norm, stores, time_norm, year_norm  # noqa: E402
+from app import (  # noqa: E402
+    name_punct,
+    num_value_norm,
+    number_norm,
+    range_norm,
+    stores,
+    time_norm,
+    year_norm,
+)
 from app.stores import (  # noqa: E402
     apply_glossary,
     expand_separator_variants,
@@ -178,6 +191,9 @@ def show_env() -> dict:
     print(f"时间读法归一化    : {'开' if time_norm.ENABLED else '关'}"
           f"（受理段数 ≥ {time_norm.MAX_PARTS}，如 12:30 → 十二点三十分、"
           f"9:05 → 九点零五分；带空格的 12 : 30 也受理 —— TN 会把它读成「比」）")
+    print(f"区间读法归一化    : {'开' if range_norm.ENABLED else '关'}"
+          f"（分隔符 {range_norm.RANGE_SEPARATOR}，如 10~15岁 → 十到十五岁、"
+          f"1~2万 → 一万到两万；年份区间不归本道）")
     print(f"数值读法归一化    : {'开' if num_value_norm.ENABLED else '关'}"
           f"（受理位数 ≤ {num_value_norm.MAX_DIGITS}，如 230倍 → 两百三十倍、"
           f"110元 → 一百一十元、30% → 百分之三十）")
@@ -229,10 +245,15 @@ def run_chain(text: str, terms: list, member_id: str | None) -> dict:
     # 且在数值层之前 —— 先把 `12:30` 换成汉字，后面两层就看不到那串阿拉伯数字。
     after_time = (time_norm.apply_time_rules([{"text": after_year}])[0]["text"]
                   if time_norm.ENABLED else after_year)
+    # 区间层夹在时间层与数值层之间：年份区间早被上一道换成汉字，它看不到；
+    # 而数值层对「两侧都是数字的分隔符」是一律否决的 —— `10 ~15 岁` 里的 `10`
+    # 正是被那条否决留给了模型。详见 app/range_norm.py。
+    after_range = (range_norm.apply_range_rules([{"text": after_time}])[0]["text"]
+                   if range_norm.ENABLED else after_time)
     # 数值层先于号码层：前者只吃「有单位/幅度词/百分号」的数字，后者只吃「没有」的，
     # 命中集合不相交（见 tests/test_num_value_norm.py 第 5 部分）。
-    after_value = (num_value_norm.apply_value_rules([{"text": after_time}])[0]["text"]
-                   if num_value_norm.ENABLED else after_time)
+    after_value = (num_value_norm.apply_value_rules([{"text": after_range}])[0]["text"]
+                   if num_value_norm.ENABLED else after_range)
     after_number = (number_norm.apply_number_rules([{"text": after_value}])[0]["text"]
                     if number_norm.ENABLED else after_value)
     return {
@@ -242,6 +263,7 @@ def run_chain(text: str, terms: list, member_id: str | None) -> dict:
         "after_punct": after_punct,
         "after_year": after_year,
         "after_time": after_time,
+        "after_range": after_range,
         "after_value": after_value,
         "final": after_number,
         # 引擎侧清洗（本地 front.py 的 char_rep_map）：云端是否有同表未知
@@ -270,7 +292,11 @@ def show_chain(stage: dict, verbose: bool = False) -> None:
         print(f"时间   : {stage['after_time']}")
     elif verbose:
         print("时间   : （未改动）")
-    if stage["after_value"] != stage["after_time"]:
+    if stage["after_range"] != stage["after_time"]:
+        print(f"区间   : {stage['after_range']}")
+    elif verbose:
+        print("区间   : （未改动）")
+    if stage["after_value"] != stage["after_range"]:
         print(f"数值   : {stage['after_value']}")
     elif verbose:
         print("数值   : （未改动）")
@@ -469,7 +495,7 @@ def main() -> int:
         if not odd:
             print("（无：汉字、ASCII 与常见中文标点）")
 
-        print("\n-- 七道关 --")
+        print("\n-- 八道关 --")
         stage = run_chain(text, terms, None)
         show_chain(stage, verbose=args.verbose)
 

@@ -69,6 +69,9 @@ WATCHED = (
     "app/name_punct.py",
     "app/year_norm.py",
     "app/time_norm.py",
+    # 区间读法（2026-10-19 新增）：这个文件出现在 source_mtimes 里本身就证明
+    # 「区间读法」这一层已加载 —— 旧版本没有它，字段会是 null。
+    "app/range_norm.py",
     "app/num_value_norm.py",
     "app/number_norm.py",
     "app/stores.py",
@@ -169,7 +172,15 @@ def _data_dir() -> dict:
 def _text_switches() -> dict:
     """文本预处理各道关的开关与词表规模（延迟 import，保证 .env 已加载）。"""
     try:
-        from . import name_punct, num_value_norm, number_norm, stores, time_norm, year_norm
+        from . import (
+            name_punct,
+            num_value_norm,
+            number_norm,
+            range_norm,
+            stores,
+            time_norm,
+            year_norm,
+        )
 
         terms = stores.load_global_glossary()
         synth = stores.load_glossary_for_synthesis(None)
@@ -195,6 +206,11 @@ def _text_switches() -> dict:
             # 报取值域而非只报开关的理由同 year_norm_min_digits：只有布尔开关时，
             # 「只做时分」与「做时分秒」两版都是 true，端点上分辨不出来。
             "time_norm_max_parts": time_norm.MAX_PARTS,
+            # 区间读法（2026-10-19 新增）：`10~15岁` → 十到十五岁。波浪号在 TN
+            # 手里经常整个丢掉（`10 ~15 岁` 读成「十到一五岁」）。同理报**取值域**：
+            # 只有布尔开关时，「收敛成『到』」与「收敛成『至』」两版都是 true。
+            "range_normalize": range_norm.ENABLED,
+            "range_norm_separator": range_norm.RANGE_SEPARATOR,
             # 数值读法（2026-09-29 新增）：单位/幅度词旁的阿拉伯数字换汉字。
             # 同上，报取值域而非只报开关：num_value_max_digits 是这一版规则的
             # 受理位数上限，部署自检断言它 >= 8。

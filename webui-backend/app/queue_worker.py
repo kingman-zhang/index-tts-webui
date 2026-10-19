@@ -11,8 +11,9 @@ from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
 # import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / time_norm /
-# num_value_norm / number_norm 的开关是**模块级**读 os.environ 的。顺序反了会落到缺省值。
-from . import name_punct, num_value_norm, number_norm, time_norm, year_norm
+# range_norm / num_value_norm / number_norm 的开关是**模块级**读 os.environ 的。
+# 顺序反了会落到缺省值。
+from . import name_punct, num_value_norm, number_norm, range_norm, time_norm, year_norm
 from .stores import apply_glossary, load_glossary_for_synthesis
 from . import queue_state as qs
 from .membership import service as member_svc
@@ -214,6 +215,14 @@ async def _execute_task(task_id: str) -> None:
         # 看不到那串阿拉伯数字（num_value_norm 本来也把 `12:30` 列为否决）。
         if time_norm.ENABLED:
             synth_lines = time_norm.apply_time_rules(synth_lines)
+        # 区间读法：`10~15岁` → 十到十五岁。波浪号在 TN 手里经常整个丢掉
+        # （`10 ~15 岁` 实测读成「十到一五岁」），云引擎的 TN 又控制不了 ⇒ 本层
+        # 直接输出汉字。必须夹在 year_norm **之后**（年份区间先被它换成汉字，本层
+        # 看不到，这是「不影响年份逻辑」的结构性保证）、num_value_norm **之前**
+        # （数值层的 `_RUN_SEPS` 否决正是把 `10 ~15 岁` 的 `10` 留给模型的那条规则）。
+        # 详见 app/range_norm.py。
+        if range_norm.ENABLED:
+            synth_lines = range_norm.apply_range_rules(synth_lines)
         # 数值读法：单位/量词或幅度词旁边、以及带 % 的阿拉伯数字换汉字。
         # 阿拉伯数字在 IndexTTS 词表里不存在，进模型就是一个 unk（读法随机），
         # 而云端 TN 不可依赖 —— 详见 app/num_value_norm.py 顶部。

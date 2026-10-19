@@ -121,6 +121,7 @@ print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossar
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
 print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >=", tp.get("time_norm_max_parts"))
+print("  区间读法归一   :", tp.get("range_normalize"), "| 分隔符", tp.get("range_norm_separator"))
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
@@ -152,6 +153,10 @@ assert (tp.get("year_norm_min_digits") or 9) <= 3, (
 # 字段缺失 = 镜像里还没有这层（`230 倍` 会以阿拉伯数字进模型、读成「二三零」）。
 assert (tp.get("num_value_max_digits") or 0) >= 8, (
     "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 这类会原样进模型变 unk")
+# range_norm_separator 是 2026-10-19「区间读法」引入的新符号，同样报**取值**：
+# 字段缺失 = 镜像里还没有这层（`10~15岁` 的 `~` 会被 TN 整个丢掉，听感像漏字）。
+assert tp.get("range_norm_separator") == "到", (
+    "!! 区间读法这一层不在（字段缺失或分隔符不是「到」）—— 10~15岁 的波浪号会被 TN 吃掉")
 # num_value_ordinal_markers 是 2026-09-30「序数读二」引入的新符号（用户报 `第2章` 被读成
 # 「第两章」）。仍然报**取值域**：初版与修正版的 num_value_normalize 都是 true，
 # 只有把这张表列出来才知道进程跑的是哪一版。
@@ -350,6 +355,7 @@ print("  词表真源       :", v.get("glossary_path"), "存在" if v.get("gloss
 print("  人名分隔号归一 :", tp.get("name_punct_enabled"), "/ 目标", tp.get("name_punct_target"))
 print("  年份读法归一   :", tp.get("year_norm_enabled"), "| 逐位读位数 >=", tp.get("year_norm_min_digits"))
 print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >=", tp.get("time_norm_max_parts"))
+print("  区间读法归一   :", tp.get("range_normalize"), "| 分隔符", tp.get("range_norm_separator"))
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
 print("  数字读法归一   :", tp.get("number_norm_enabled"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
@@ -401,6 +407,9 @@ assert (tp.get("year_norm_min_digits") or 9) <= 3, (
 # 见 Docker 路径同名断言：数值读法这一层在不在，看取值域而不看开关。
 assert (tp.get("num_value_max_digits") or 0) >= 8, (
     "!! 数值读法这一层不在（字段缺失或上限偏小）—— 230 倍 / 110 元 会原样进模型变 unk")
+# 见 Docker 路径同名断言：区间读法在不在，看 range_norm_separator 这个取值。
+assert tp.get("range_norm_separator") == "到", (
+    "!! 区间读法这一层不在（字段缺失或分隔符不是「到」）—— 10~15岁 的波浪号会被 TN 吃掉")
 # time_norm_max_parts 是 2026-09-30「时间读法」引入的新符号。同样看取值域：
 # 字段缺失 = 镜像里还没有这层 —— 带空格的 `12 : 30` 与小时为 0 的 `0:30` 会被 TN
 # 读成「十二比三十 / 零比三十」（比例），`12:30` 也只是碰巧读对。
