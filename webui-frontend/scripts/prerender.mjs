@@ -103,6 +103,17 @@ const cssHref = indexHtml.match(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/)
 const jsSrc = indexHtml.match(/<script[^>]+type="module"[^>]+src="([^"]+)"/)?.[1];
 if (!cssHref) fail("没能从 dist/index.html 里取到样式表地址（vite 产物结构变了？）");
 
+// ─── 3b. 复用统计片段 ────────────────────────────────────────
+// 本文件的 head 是**手拼**的，不会自动继承 index.html 里的 <script>。
+// 而 `/` 是流量入口 —— 统计只在 index.html 生效、落地页却没有，
+// 等于丢掉了最大的一块数据，而且不会报任何错。所以这里按标记抽取同一段。
+// 抽不到 = 没开统计（正常，本地构建就是这样），静默跳过；
+// 抽到了却没有 website-id = 注入逻辑坏了，必须失败。
+const umamiBlock = indexHtml.match(/<!-- umami:start[\s\S]*?<!-- umami:end -->/)?.[0] ?? "";
+if (umamiBlock && !/data-website-id="[^"]+"/.test(umamiBlock)) {
+  fail("dist/index.html 里有 umami 标记，但没读到 data-website-id —— 统计注入可能坏了");
+}
+
 const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 // canonical 的域名只有一个来源：`src/lib/site.ts`（由 entry-server 转出），不在这里再写一遍
 const url = mod.SITE_URL + mod.LANDING_CANONICAL_PATH;
@@ -144,6 +155,7 @@ const html = `<!doctype html>
     <link rel="preload" as="image" href="/landing-assets/hero.webp" fetchpriority="high" />
     <link rel="stylesheet" href="${cssHref}" />
     ${jsonLd}
+    ${umamiBlock}
   </head>
   <body>
     <div id="root">${body}</div>
