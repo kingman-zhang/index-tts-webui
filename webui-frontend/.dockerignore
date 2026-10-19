@@ -2,3 +2,13 @@ node_modules/
 dist/
 *.local
 .DS_Store
+
+# ─── 例外：前端构建期配置必须进构建上下文 ───────────────────
+# `*.local` 本意是排除本地临时文件，但它会把 .env.production.local 一起挡掉。
+# 而 umami 的 VITE_UMAMI_SRC / VITE_UMAMI_ID 正是从那里读的：
+#   被排除 ⇒ npm run build 读不到 ⇒ 统计静默不注入（构建照样成功，最难查的那种）。
+# website-id 不是密钥（它会明文出现在产物 HTML 里），放行没有安全风险。
+#
+# ⚠️ 该文件在 .gitignore 里，git pull 不会带下来 ——
+#    服务器上必须手动创建它，否则照样读不到。
+!.env.production.local

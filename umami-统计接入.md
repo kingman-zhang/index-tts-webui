@@ -143,12 +143,19 @@ server {
 
 ### 5. 前端配置
 
-```bash
-cd podcast-webui/webui-frontend
-cp .env.example .env.production.local
-```
+配置文件是 `webui-frontend/.env.production.local`。
 
-编辑 `.env.production.local`：
+⚠️ **这个文件在 `.gitignore` 里，`git pull` 不会带下来**，所以：
+
+- 本地构建：自己 `cp .env.example .env.production.local` 再改；
+- **服务器部署：必须手动在服务器上创建一次**（否则镜像里读不到，统计静默不生效）。
+
+```bash
+# 服务器上（路径按你的仓库位置）
+cd /data/website/index-tts-webui/webui-frontend
+cp .env.example .env.production.local   # 首次创建
+vi .env.production.local                # 填 ID
+```
 
 ```dotenv
 VITE_UMAMI_SRC=https://stats.lizigege.com/script.js
@@ -156,10 +163,18 @@ VITE_UMAMI_ID=你在后台拿到的 UUID
 VITE_UMAMI_DOMAINS=voice.lizigege.com
 ```
 
+> **`.dockerignore` 已为此放行**：它原本有 `*.local`，会把这份文件挡在构建上下文外。
+> 已加 `!.env.production.local` 例外 —— 否则 `docker build` 里 `npm run build`
+> 读不到配置，统计静默不注入，而构建**照样成功**，属于最难查的一类。
+
 然后**重新构建**（这些是构建期变量，重启容器没用）：
 
 ```bash
-npm run build
+# 本地
+cd webui-frontend && npm run build
+
+# 服务器（前端有改动，不要加 --skip-frontend）
+bash tools/deploy_g1_autodl.sh
 ```
 
 `vite.config.ts` 的 `umamiPlugin` 会把它注入 `index.html`，
