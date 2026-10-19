@@ -38,3 +38,11 @@ webui-backend/.env
 
 # BreezeBlue 抓取原始音频（165MB，不入库；正式数据在 webui-backend/data/breezeblue/，随 data/ 忽略）
 tools/breezeblue/zh_audio/
+
+# vite 配置的编译产物：composite 项目跑 tsc -b 会把 vite.config.ts 编译到根目录的
+# vite.config.js，而 vite 优先加载 .js ⇒ 之后对 .ts 的修改全部静默失效。
+# 已从仓库移除，别再提交回来（真正的产物现在写到 node_modules/.tmp）。
+webui-frontend/vite.config.js
+webui-frontend/vite.config.d.ts
+# 前端构建期配置含 umami website-id，本地保留即可
+webui-frontend/.env.production.local

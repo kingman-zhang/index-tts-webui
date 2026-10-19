@@ -4,7 +4,13 @@
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    // ⚠️ 必须指定 outDir：本工程 `composite: true`，任何人跑一次 `tsc -b` 都会把
+    //    vite.config.ts 编译成**根目录的 vite.config.js**。而 vite 解析配置时
+    //    `.js` 优先于 `.ts` —— 之后所有对 vite.config.ts 的修改都会静默失效
+    //    （2026-10-19 实际踩到：加了插件、构建却毫无反应）。
+    //    指到 node_modules 下，产物就永远不会再和真源抢位置。
+    "outDir": "node_modules/.tmp/tsconfig-node"
   },
   "include": ["vite.config.ts"]
 }
