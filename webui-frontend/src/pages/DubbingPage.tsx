@@ -249,6 +249,9 @@ export default function DubbingPage() {
       kind: "mono",
       lines,
       voices: { A: monoVoice.voice_path },
+      // ⚠️ silence 对 kind=mono **不生效**：单人只有一个说话人，行间静音由后端
+      // MONO_SILENCE_BETWEEN_MS（默认 200ms）统一控制，改 defaultSilence() 不会
+      // 影响换行处的时长。这里传默认值只为满足协议形状（播客路径才读它）。
       silence: defaultSilence(),
       params,
       glossary_enabled: true,

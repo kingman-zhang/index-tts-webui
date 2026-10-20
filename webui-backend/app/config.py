@@ -297,6 +297,13 @@ PODCAST_DEFAULT_SILENCE = {
     "speaker_switch": PODCAST_SILENCE_SWITCH_MS,
 }
 
+# ─── 单人配音（kind=mono）换行后的行间静音 ───
+# 单人只有一个说话人，没有「说话人切换」语义，故只开一个旋钮；
+# 它加在**每行末尾**，与行内 [pause:N] 叠加（叠加后仍受 MAX_GAP_MS 钳制）。
+# 刻意不复用 PODCAST_SILENCE_BETWEEN_MS：播客默认 250 是既有听感校准值，
+# 两条路径各调各的，改一边不会悄悄改另一边。播客路径不读本项。
+MONO_SILENCE_BETWEEN_MS = max(0, int(os.environ.get("MONO_SILENCE_BETWEEN_MS", "200")))
+
 # 生成参数默认值：PODCAST_GEN_PARAMS 为 JSON 对象，可覆盖任意子集，例如：
 #   PODCAST_GEN_PARAMS={"temperature":0.5,"top_p":0.8,"repetition_penalty":4.0}
 # 未写的键用内置默认；写错键/解析失败会告警并忽略，不影响启动。

@@ -22,6 +22,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # 的干扰。真实环境变量优先于 .env，故在 import app.* 之前钉住即可。
 os.environ["TTS_CONCURRENCY"] = "3"
 
+# 「拼接保序」这一条是拿**成品音频的帧序列**验证顺序的：假引擎每段恰好 1 帧、
+# 采样值 = 段号 ⇒ 帧序列应严格是 [0..N-1]。行间静音（MONO_SILENCE_BETWEEN_MS）
+# 会在段之间插零帧，把这条断言变成「测静音长度」，所以这里钉成 0 ——
+# 静音本身由 tests/test_mono_line_gap.py 专门覆盖。
+os.environ["MONO_SILENCE_BETWEEN_MS"] = "0"
+
 from app import mono_runner  # noqa: E402
 from app.engines import EngineCapabilities, effective_concurrency  # noqa: E402
 from app.engines.base import SegmentRequest, VoiceRef  # noqa: E402

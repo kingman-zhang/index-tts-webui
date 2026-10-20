@@ -13,6 +13,9 @@
 分段规则（与前端配音画布所见即所得一致）：
   - 行内停顿 [pause:秒] / <#> 由 backend 的 split_by_pauses 切分并在拼接时
     插入精确静音，不依赖 tts-server 的行内停顿实现；
+  - 换行（视觉行）= 独立合成段，行尾插入 MONO_SILENCE_BETWEEN_MS（默认 200ms，
+    .env 可调）作为行间静音；与行内 [pause:N] **叠加**，末行不加。
+    行级 silence_after_ms 显式给出（含 0）时以它为准，便于按任务覆写；
   - 超过引擎单次上限的长文本先按上限切满片，再按停顿切子段
     （上限来自 engine.capabilities.max_input_chars，**不再按引擎名判断**：
     此前只有 art 被切，而 302.ai 上限 2000、SiliconFlow 上限 2048，
@@ -48,7 +51,7 @@ from pathlib import Path
 
 from . import queue_state as qs
 from . import seg_cache
-from .config import DATA_DIR, logger
+from .config import DATA_DIR, MONO_SILENCE_BETWEEN_MS, logger
 from .engines import (
     EMO_VECTOR_ORDER,
     EngineCapabilities,
@@ -151,12 +154,21 @@ class _TaskCancelled(Exception):
 _NO_RETRY_ERRORS: tuple[type[BaseException], ...] = (*NON_RETRYABLE_ERRORS, _TaskCancelled)
 
 
-def _flatten_segments(lines: list[dict], caps: EngineCapabilities) -> list[dict]:
+def _flatten_segments(
+    lines: list[dict], caps: EngineCapabilities, between_ms: int = 0
+) -> list[dict]:
     """把任务行扁平化为合成段列表（并发调度的最小单元）。
 
     每段：{text, emotion, gap_ms, line_idx}。行内停顿/backend 切分、
-    超长行按引擎单次上限切满片、行尾 silence_after_ms 并入本行最后一段的静音，
+    超长行按引擎单次上限切满片、行尾静音并入本行最后一段的静音，
     与旧串行版语义一致；顺序即拼接顺序（gather 保序）。
+
+    行尾静音取值顺序（前面的优先）：
+      1. 行显式 `silence_after_ms`（含显式 0 —— 0 是"这行后面不要静音"，不是缺省）；
+      2. 最后一个非空行 → 0（否则成品尾部会多挂一段静音）；
+      3. 其余行 → `between_ms`（换行后的行间静音，来自 MONO_SILENCE_BETWEEN_MS）。
+    `between_ms` 与行内 `[pause:N]` **叠加**：两者都落在同一段的 gap_ms 上，
+    相加后仍由 MAX_GAP_MS 钳制。
 
     切片依据是 `caps.max_input_chars`（引擎自己声明的能力），**不再是引擎名**。
     旧写法 `split_for_art(text) if engine_name == "indextts_art" else [text]`
@@ -165,6 +177,12 @@ def _flatten_segments(lines: list[dict], caps: EngineCapabilities) -> list[dict]
     """
     entries: list[dict] = []
     limit = caps.max_input_chars
+    # 行间静音只加在「后面还有内容」的行上。单独算最后一个**非空**行：
+    # 稿子末尾常有空行，按 index 判末行会让倒数第二行多吃一段静音。
+    last_nonempty: int | None = None
+    for i, ln in enumerate(lines):
+        if (ln.get("text") or "").strip():
+            last_nonempty = i
     for idx, line in enumerate(lines):
         text = (line.get("text") or "").strip()
         if not text:
@@ -177,7 +195,13 @@ def _flatten_segments(lines: list[dict], caps: EngineCapabilities) -> list[dict]
                 line_entries.append({"text": sub_text, "emotion": emotion_label, "gap_ms": gap_ms})
         if not line_entries:
             continue
-        gap_after = int(line.get("silence_after_ms") or 0)
+        raw_after = line.get("silence_after_ms")
+        if raw_after is not None:
+            gap_after = max(0, int(raw_after))
+        elif idx == last_nonempty:
+            gap_after = 0
+        else:
+            gap_after = max(0, int(between_ms or 0))
         if gap_after > 0:
             last = line_entries[-1]
             last["gap_ms"] = min(last["gap_ms"] + gap_after, MAX_GAP_MS)
@@ -397,7 +421,7 @@ async def run_mono_task(task: dict, lines: list | None = None) -> None:
         owner_id=task.get("member_id"),
     )
 
-    entries = _flatten_segments(lines, caps)
+    entries = _flatten_segments(lines, caps, MONO_SILENCE_BETWEEN_MS)
     if not entries:
         raise ValueError("所有文本段均为空")
     total = len(entries)
