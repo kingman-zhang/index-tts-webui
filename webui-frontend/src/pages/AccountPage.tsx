@@ -350,7 +350,9 @@ function ProfileCard({ showToast, onSaved }: { showToast: (m: string) => void; o
   );
 }
 
-function PointsCard({ showToast }: { showToast: (m: string) => void }) {
+/** 积分卡（导出以便交互探针 `src/__probe_feedback.tsx` 单独挂载取证：
+ *  「查看《产品使用文档》」必须是**新标签页**，这条只能靠真点击来证）。 */
+export function PointsCard({ showToast }: { showToast: (m: string) => void }) {
   const { user } = useAuth();
   const [checkinDone, setCheckinDone] = useState(false);
   const [checkinDays, setCheckinDays] = useState(0);
