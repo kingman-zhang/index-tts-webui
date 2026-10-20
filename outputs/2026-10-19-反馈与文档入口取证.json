@@ -1,0 +1,146 @@
+{
+  "viewport": {
+    "width": 1280,
+    "height": 900
+  },
+  "steps": [
+    {
+      "step": "①docs",
+      "beforeUrl": "http://localhost:6008/",
+      "openedUrl": "pending"
+    },
+    {
+      "step": "①docs-result",
+      "docsUrl": "http://localhost:6008/docs",
+      "currentUrl": "http://localhost:6008/"
+    }
+  ],
+  "results": [
+    {
+      "label": "① 点《产品使用文档》开出了新标签页",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "① 新标签页落在 /docs",
+      "ok": true,
+      "extra": "http://localhost:6008/docs"
+    },
+    {
+      "label": "① 当前页 URL 没有跳走（仍在原页面）",
+      "ok": true,
+      "extra": "http://localhost:6008/ → http://localhost:6008/"
+    },
+    {
+      "label": "① 当前页仍是探针页（内容没被 /docs 顶掉）",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "② 菜单里有「使用文档」与「举报与反馈」",
+      "ok": true,
+      "extra": "{\"hasDocs\":true,\"hasFb\":true,\"fbAfterDocs\":true}"
+    },
+    {
+      "label": "②「举报与反馈」排在「使用文档」下方",
+      "ok": true,
+      "extra": "{\"hasDocs\":true,\"hasFb\":true,\"fbAfterDocs\":true}"
+    },
+    {
+      "label": "③ 弹窗打开（模态）",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "③ 6 个反馈类型 chip 齐全",
+      "ok": true,
+      "extra": "举报与反馈用了哪里不对劲、哪条音色有问题、想让我们加什么功能，都可以写在这里。 会一并记录你的账号与当前页面地址，方便我们复现。反馈类型功能异常音色与音质积分与"
+    },
+    {
+      "label": "③ 有「详细描述」必填标记与字数计数",
+      "ok": true,
+      "extra": "举报与反馈用了哪里不对劲、哪条音色有问题、想让我们加什么功能，都可以写在这里。 会一并记录你的账号与当前页面地址，方便我们复现。反馈类型功能异常音色与音质积分与订单内容问题功能建议其他详细描述 *0/1000联系方式 （选填）取消提交反馈"
+    },
+    {
+      "label": "③ 联系方式标为选填",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "③ 说明了会记录账号与页面地址",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "③ 未填内容时「提交反馈」禁用",
+      "ok": true,
+      "extra": "true"
+    },
+    {
+      "label": "④ 少于 5 个字仍禁用（前端先挡一次）",
+      "ok": true,
+      "extra": "true"
+    },
+    {
+      "label": "④ 内容够了就可以提交",
+      "ok": true,
+      "extra": "false"
+    },
+    {
+      "label": "④ 只打了一次 POST /api/feedback",
+      "ok": true,
+      "extra": "[\"/api/feedback\"]"
+    },
+    {
+      "label": "④ 提交的类型是 chip 选中的 key（voice）",
+      "ok": true,
+      "extra": "\"voice\""
+    },
+    {
+      "label": "④ 描述取用户输入（已 strip）",
+      "ok": true,
+      "extra": "\"点了段音色发闷，像隔着被子\""
+    },
+    {
+      "label": "④ 联系方式一并提交",
+      "ok": true,
+      "extra": "\"me@example.com\""
+    },
+    {
+      "label": "④ 自动带上当前页面地址",
+      "ok": true,
+      "extra": "http://localhost:6008/"
+    },
+    {
+      "label": "④ 自动带上 UA",
+      "ok": true,
+      "extra": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/134.0.0.0 Safari/537.36"
+    },
+    {
+      "label": "④ 成功态显示回执编号（用户能确认发出去了）",
+      "ok": true,
+      "extra": "已收到你的反馈我们会尽快处理。如果留了联系方式，需要时会主动联系你。回执编号 fb_probe000001关闭"
+    },
+    {
+      "label": "⑤ 503 的原因原样显示（不吞成\"提交失败\"）",
+      "ok": true,
+      "extra": "反馈类型功能异常音色与音质积分与订单内容问题功能建议其他详细描述 *11/1000再试一次：音色还是发闷联系方式 （选填）反馈通道暂时不可用（数据库未就绪），请稍后再试取消提交反馈"
+    },
+    {
+      "label": "⑤ 失败后仍停在表单（可重试，不回退到成功态）",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "⑥ Esc 可关闭弹窗",
+      "ok": true,
+      "extra": ""
+    },
+    {
+      "label": "⑥ 全程未出现原生 dialog",
+      "ok": true,
+      "extra": "0"
+    }
+  ],
+  "failed": 0
+}

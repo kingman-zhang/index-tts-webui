@@ -1,11 +1,12 @@
 /** 顶栏用户菜单：未登录显示「登录」，登录后显示昵称+积分下拉（两个工作页共用）。 */
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, ChevronDown, Coins, LogOut, UserRound } from "lucide-react";
+import { BookOpen, ChevronDown, Coins, LogOut, MessageSquareWarning, UserRound } from "lucide-react";
 import { Button } from "./ui";
 import { clearSession, initAuth, navigate, refreshUser, useAuth } from "@/lib/auth";
 import { memberApi } from "@/api/members";
 import { cn } from "@/lib/utils";
 import { openDocs } from "@/lib/docs";
+import { FeedbackDialog } from "./FeedbackDialog";
 
 let inited = false;
 
@@ -13,6 +14,8 @@ export function UserMenu() {
   const { ready, token, user } = useAuth();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** 举报与反馈弹窗（与菜单分开：菜单是"下拉"，弹窗是"模态"，同时开着会互相干扰） */
+  const [feedback, setFeedback] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -102,6 +105,15 @@ export function UserMenu() {
           >
             <BookOpen className="w-3.5 h-3.5" /> 使用文档
           </button>
+          {/* 举报与反馈：放在「使用文档」下方 —— 用户先想到看说明书，看不明白才会来提。
+              只做弹窗，不跳页：填完就关，不打断正在干的活。 */}
+          <button
+            type="button"
+            onClick={() => { setOpen(false); setFeedback(true); }}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-gray-600 hover:bg-indigo-50/60 hover:text-indigo-700 transition-colors"
+          >
+            <MessageSquareWarning className="w-3.5 h-3.5" /> 举报与反馈
+          </button>
           <button
             type="button"
             onClick={handleLogout}
@@ -112,6 +124,8 @@ export function UserMenu() {
           </button>
         </div>
       )}
+
+      {feedback && <FeedbackDialog onClose={() => setFeedback(false)} />}
     </div>
   );
 }

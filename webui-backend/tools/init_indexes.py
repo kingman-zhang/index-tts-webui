@@ -22,6 +22,8 @@
 | `queue_tasks` | `status,deleted_at` | — | 统计「在跑多少」（排除软删除）|
 | `queue_tasks` | `member_id,created_at` | — | 队列列表（某用户 + 时间倒序）|
 | `queue_tasks` | `created_ts` | — | 「近一周任务量」等按时间范围 / 分天聚合的统计 |
+| `feedback` | `created_ts` | — | 反馈收件箱按时间倒序翻页 |
+| `feedback` | `user_id,created_ts` | — | 某位用户提交过哪些反馈 |
 
 ⚠️ `projects` 索引只在 `CONTENT_STORE=mongo` 时才纳入检查/创建（见 `active_indexes()`）——
    file 模式下 projects 集合根本不存在，硬要求它会让 `--check` 误报。
@@ -111,6 +113,19 @@ QUEUE_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
 )
 
 
+# 反馈收件箱（`app/routes/feedback.py`）。**总是要求存在**：反馈只写 Mongo，
+# 不随 `MEMBER_STORE` / `CONTENT_STORE` 的开关变化。
+#   - by_created_ts：运营按时间倒序翻「最近的反馈」
+#     （`db.feedback.find().sort({created_ts:-1})`）
+#   - by_user_recent：某位用户提交过什么（排查「他说的那个问题」时先看这里）
+FEEDBACK_INDEXES: tuple[tuple[str, list[tuple[str, int]], dict], ...] = (
+    ("feedback", [("created_ts", -1)],
+     {"name": "by_created_ts"}),
+    ("feedback", [("user_id", 1), ("created_ts", -1)],
+     {"name": "by_user_recent"}),
+)
+
+
 def active_indexes() -> tuple:
     """当前配置下**应当存在**的索引集合。
 
@@ -122,7 +137,7 @@ def active_indexes() -> tuple:
         extra += CONTENT_INDEXES
     if QUEUE_STORE == "mongo":
         extra += QUEUE_INDEXES
-    return MEMBER_INDEXES + extra
+    return MEMBER_INDEXES + extra + FEEDBACK_INDEXES
 
 
 def _describe(keys: list, opts: dict) -> str:

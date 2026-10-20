@@ -249,4 +249,19 @@ export const memberApi = {
     return fetchJSON<{ order: PointsOrder; added: number; balance: number; already_paid: boolean }>(
       `/api/points/orders/${orderId}/mock-pay`, { method: "POST" });
   },
+
+  /**
+   * 举报与反馈（需登录）。落 `db.feedback`，站长直接查库处理，前端不提供工单列表。
+   * `page_url` / `user_agent` 由调用方自动带上 —— 用户说不清"哪个页面"时这是唯一线索。
+   */
+  async submitFeedback(body: {
+    category: string;
+    content: string;
+    contact?: string;
+    page_url?: string;
+    user_agent?: string;
+  }) {
+    return fetchJSON<{ ok: boolean; id: string; message: string }>("/api/feedback",
+      jsonInit("POST", body));
+  },
 };
