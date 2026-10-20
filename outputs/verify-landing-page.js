@@ -168,7 +168,7 @@ function check(name, ok, detail = "") {
           registerCta: btns.filter(b => /免费做第一条音频|免费注册，开始第一条/.test(b.textContent)).length,
           docsBtn: text("查看使用文档").length,
           loginBtn: text("我已有账号，去登录").length,
-          // ⚠️ 必须**限定在 Hero 节内**查：定价区的「白拿」卡本来就有「注册即送 500 积分」，
+          // ⚠️ 必须**限定在 Hero 节内**查：定价区的「白拿」卡本来就有「注册即送 200 积分」，
           //    用全文匹配会把那条算进来（第一版就是这么误报的）。
           heroRegTags: (document.querySelector("#top")?.innerText || "").includes("注册即送"),
           footnote: body.includes("已有账号登录后直接进工作台"),
@@ -267,7 +267,7 @@ function check(name, ok, detail = "") {
     // ── 2. 关键内容在位 ────────────────────────────────────
     const bodyText = await page.evaluate(() => document.body.innerText);
     for (const kw of ["AI 配音工具", "375 条音色", "最佳实践", "案例 A", "案例 B", "案例 C",
-                      "注册即送 500 积分", "常见问题", "9 种情绪"]) {
+                      "注册即送 200 积分", "常见问题", "9 种情绪"]) {
       check(`页面可见「${kw}」`, bodyText.includes(kw));
     }
     check("页脚/正文未出现模板残留（如 未命名、TODO、Lorem）",

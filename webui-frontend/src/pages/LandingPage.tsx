@@ -36,7 +36,8 @@ import { usePageSeo } from "@/lib/seo";
 import {
   CHECKIN_BONUS_POINTS, EMOTION_LABELS, FAQ_ITEMS, GLOSSARY_BUILTIN_COUNT, LANDING_CANONICAL_PATH,
   LANDING_DESCRIPTION, LANDING_KEYWORDS, LANDING_OG_IMAGE, LANDING_TITLE, MIN_CHARGE_POINTS,
-  POINTS_PACKS, POINTS_PER_1000_CHARS, PRACTICE_CASES, REG_BONUS_POINTS, VOICE_BREEZEBLUE_COUNT,
+  POINTS_PACKS, POINTS_PER_1000_CHARS, PRACTICE_CASES, REG_BONUS_CHARS, REG_BONUS_POINTS,
+  VOICE_BREEZEBLUE_COUNT,
   VOICE_PRESET_COUNT, VOICE_SAMPLES, VOICE_TOTAL_COUNT, YUAN_PER_POINT, caseCost,
 } from "@/landing/content";
 import { landingJsonLd } from "@/landing/jsonld";
@@ -463,7 +464,7 @@ function Hero() {
                 <Gift className="h-3.5 w-3.5 text-emerald-400" /> 注册即送 {REG_BONUS_POINTS} 积分
               </span>
               <span className="inline-flex items-center gap-1.5">
-                <Zap className="h-3.5 w-3.5 text-amber-400" /> 约可免费合成 1 万字
+                <Zap className="h-3.5 w-3.5 text-amber-400" /> 约可免费合成 {formatChars(REG_BONUS_CHARS)}
               </span>
               <span className="inline-flex items-center gap-1.5">
                 <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" /> 邮箱注册，开箱即用
@@ -929,7 +930,7 @@ function Pricing() {
           <Gift className="h-6 w-6 text-emerald-300" />
           <h3 className="mt-4 text-[1.125rem] font-bold text-white">白拿的部分</h3>
           <ul className="mt-4 space-y-3 text-[0.9375rem] leading-7 text-emerald-100/85">
-            <li>· 注册即送 <strong className="text-white">{REG_BONUS_POINTS} 积分</strong>，约可合成 1 万字</li>
+            <li>· 注册即送 <strong className="text-white">{REG_BONUS_POINTS} 积分</strong>，约可合成 {formatChars(REG_BONUS_CHARS)}</li>
             <li>· 每日签到 +{CHECKIN_BONUS_POINTS} 积分</li>
             <li>· 兑换码按面额入账</li>
           </ul>

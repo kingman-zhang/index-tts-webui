@@ -48,8 +48,16 @@ export const POINTS_PER_1000_CHARS = 50;
 export const MIN_CHARGE_POINTS = 5;
 /** 1 积分 = ¥0.01（与 `packs.py` 的定价锚点一致）。 */
 export const YUAN_PER_POINT = 0.01;
-/** 注册赠送。 */
-export const REG_BONUS_POINTS = 500;
+/**
+ * 注册赠送积分。
+ * ⚠️ 改这个数必须同步三处：后端 `MEMBER_REG_BONUS`（`app/membership/service.py` 默认值
+ * + `docker-compose.yml` 透传值 + 服务器 `.env`）。前端这一份只负责**文案口径**，
+ * 它不参与任何入账 —— 数字与后端不一致时，用户会看到「说送 200、实际到账 500」这类
+ * 自相矛盾的页面，所以 `outputs/verify-landing-numbers.js` 会拿它跟文案交叉校验。
+ */
+export const REG_BONUS_POINTS = 200;
+/** 注册赠送能免费合成的字数（按单价折算；文案里出现的"约 N 字"都由它推出来）。 */
+export const REG_BONUS_CHARS = Math.round(REG_BONUS_POINTS / POINTS_PER_1000_CHARS * 1000);
 /** 每日签到。 */
 export const CHECKIN_BONUS_POINTS = 20;
 /** 音色库规模。 */
@@ -280,7 +288,7 @@ export const FAQ_ITEMS: { q: string; a: string }[] = [
   },
   {
     q: "要花钱吗？免费能做出多少？",
-    a: "注册即送 500 积分，按 50 积分/千字的单价，够免费生成约 1 万字（约 33 分钟音频），把整条流程完整跑通。之后可以每天签到领 20 积分、用兑换码，或者按需购买积分包（¥10 起）。合成失败或被取消，预扣的积分会自动退回。",
+    a: `注册即送 ${REG_BONUS_POINTS} 积分，按 ${POINTS_PER_1000_CHARS} 积分/千字的单价，够免费生成约 ${REG_BONUS_CHARS} 字（约 13 分钟音频），把整条流程完整跑通。之后可以每天签到领 ${CHECKIN_BONUS_POINTS} 积分、用兑换码，或者按需购买积分包（¥10 起）。合成失败或被取消，预扣的积分会自动退回。`,
   },
   {
     q: "一条音频多久能生成出来？",
@@ -315,7 +323,7 @@ export const FAQ_ITEMS: { q: string; a: string }[] = [
 /** 页面级 SEO 文案（构建期静态产物与运行时 head 都用这一份）。 */
 export const LANDING_TITLE = "AI 配音工具 - 文字转语音在线生成，375 条音色｜播客工坊";
 export const LANDING_DESCRIPTION =
-  "浏览器里的 AI 配音工具：粘贴文稿、挑选音色、一键生成可下载音频。375 条音色、9 种情绪、整本书按章连载，双人播客与单人配音两套工作台。注册即送 500 积分，可免费生成约 1 万字。";
+  `浏览器里的 AI 配音工具：粘贴文稿、挑选音色、一键生成可下载音频。375 条音色、9 种情绪、整本书按章连载，双人播客与单人配音两套工作台。注册即送 ${REG_BONUS_POINTS} 积分，可免费生成约 ${REG_BONUS_CHARS} 字。`;
 export const LANDING_KEYWORDS = [
   "AI配音", "AI配音工具", "文字转语音", "文字转语音在线", "在线配音", "配音软件",
   "有声书制作", "小说配音", "播客生成器", "AI播客", "双人播客", "声音克隆",

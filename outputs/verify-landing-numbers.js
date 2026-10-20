@@ -135,10 +135,15 @@ for (const c of C.PRACTICE_CASES) {
 // ─── 2. 计费常量与文本口径 ────────────────────────────────────────────────
 console.log("\n== 计费常量与文本口径 ==");
 const freeChars = C.REG_BONUS_POINTS / C.POINTS_PER_1000_CHARS * 1000;
+// description 里的"约 N 字"可以直接写字数，也可以写成"N 万字" —— 两种口径都接受，
+// 只要能由 REG_BONUS_POINTS 推出来（2026-10-19 礼包 500→200 后，200 积分 = 4000 字，
+// 写成"约 0.4 万字"绕口，所以改用字数表述）。
 check(
   `注册赠送可合成字数与 description 一致`,
-  C.LANDING_DESCRIPTION.includes(`约 ${freeChars / 10000} 万字`),
-  `${C.REG_BONUS_POINTS} 积分 / ${C.POINTS_PER_1000_CHARS} 积分每千字 = ${freeChars} 字；description 里写的需含「约 ${freeChars / 10000} 万字」`
+  C.LANDING_DESCRIPTION.includes(`约 ${freeChars} 字`) ||
+    C.LANDING_DESCRIPTION.includes(`约 ${freeChars / 10000} 万字`),
+  `${C.REG_BONUS_POINTS} 积分 / ${C.POINTS_PER_1000_CHARS} 积分每千字 = ${freeChars} 字；`
+  + `description 里写的需含「约 ${freeChars} 字」或「约 ${freeChars / 10000} 万字」`
 );
 check("最低收费小于一个 300 字稿子的花费", C.MIN_CHARGE_POINTS <= 300 * C.POINTS_PER_1000_CHARS / 1000, `最低 ${C.MIN_CHARGE_POINTS} 积分`);
 check("定位锚点 1 积分 = ¥0.01", Math.abs(C.YUAN_PER_POINT - 0.01) < 1e-9, `¥${C.YUAN_PER_POINT}`);

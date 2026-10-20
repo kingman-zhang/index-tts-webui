@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 TMP = tempfile.mkdtemp(prefix="wb-purchase-test-")
 os.environ["DATA_DIR"] = TMP
-os.environ["MEMBER_REG_BONUS"] = "500"
+os.environ["MEMBER_REG_BONUS"] = "200"
 os.environ["MEMBER_CHECKIN_BONUS"] = "0"
 os.environ["MEMBER_POINTS_PER_1000_CHARS"] = "50"
 os.environ["MEMBER_MOCK_PAY"] = "1"
@@ -70,13 +70,13 @@ def balance(token: str) -> int:
     return client.get("/api/points/balance", headers=auth(token)).json()["points"]
 
 
-print("[1] 注册礼包 500")
+print("[1] 注册礼包 200")
 r1 = service.register("alice", "secret123")
 r2 = service.register("bob", "secret123")
 t1, u1 = r1["token"], r1["user"]
 t2 = r2["token"]
-check("注册即到账 500 积分", u1["points"] == 500, str(u1))
-check("第二个用户同样是 500", r2["user"]["points"] == 500, str(r2["user"]))
+check("注册即到账 200 积分", u1["points"] == 200, str(u1))
+check("第二个用户同样是 200", r2["user"]["points"] == 200, str(r2["user"]))
 
 print("[2] 套餐清单（无需登录）")
 resp = client.get("/api/points/packs")
@@ -110,12 +110,12 @@ check("未知套餐 404", client.post("/api/points/orders", json={"pack_id": "no
 print("[4] 模拟支付入账 + 幂等")
 pay1 = client.post(f"/api/points/orders/{order['order_id']}/mock-pay", headers=auth(t1)).json()
 check("首次入账 +5750", pay1["added"] == 5750, str(pay1))
-check("余额 500 + 5750 = 6250", pay1["balance"] == 6250, str(pay1))
+check("余额 200 + 5750 = 5950", pay1["balance"] == 5950, str(pay1))
 check("首次入账 already_paid=False", pay1["already_paid"] is False, str(pay1))
 pay2 = client.post(f"/api/points/orders/{order['order_id']}/mock-pay", headers=auth(t1)).json()
 check("★重复支付不再发积分", pay2["added"] == 0, str(pay2))
 check("★重复支付标记 already_paid=True", pay2["already_paid"] is True, str(pay2))
-check("★重复支付余额不变", pay2["balance"] == 6250 and balance(t1) == 6250, str(pay2["balance"]))
+check("★重复支付余额不变", pay2["balance"] == 5950 and balance(t1) == 5950, str(pay2["balance"]))
 
 print("[5] 流水与订单归属")
 logs = client.get("/api/points/logs?limit=50", headers=auth(t1)).json()["logs"]
@@ -148,7 +148,7 @@ check("★验签失败 401", client.post("/api/pay/notify/agg", json=bad).status
 good = {"out_trade_no": o3["order_id"], "amount_fen": 1000, "trade_status": "paid"}
 good["sign"] = pay.sign_params(good, "s3cret")
 resp = client.post("/api/pay/notify/agg", json=good)
-check("验签通过并入账", resp.status_code == 200 and resp.json()["balance"] == 7250, str(resp.json()))
+check("验签通过并入账", resp.status_code == 200 and resp.json()["balance"] == 6950, str(resp.json()))
 resp2 = client.post("/api/pay/notify/agg", json=good)
 check("★回调重复推送幂等", resp2.status_code == 200 and resp2.json()["already_paid"] is True, str(resp2.json()))
 o4 = service.create_order(store.load_users()[u1["user_id"]], "p1000")
@@ -156,7 +156,7 @@ closed = {"out_trade_no": o4["order_id"], "amount_fen": 1000, "trade_status": "c
 closed["sign"] = pay.sign_params(closed, "s3cret")
 rc = client.post("/api/pay/notify/agg", json=closed)
 check("非成功状态确认收到但不入账", rc.status_code == 200 and rc.json().get("message") == "ignored", str(rc.json()))
-check("非成功状态不改余额", balance(t1) == 7250, str(balance(t1)))
+check("非成功状态不改余额", balance(t1) == 6950, str(balance(t1)))
 check("回调金额与订单不符被拒 400",
       client.post("/api/pay/notify/agg", json={**{k: v for k, v in good.items() if k != "sign"},
                   "amount_fen": 999, "sign": pay.sign_params({**{k: v for k, v in good.items() if k != "sign"}, "amount_fen": 999}, "s3cret")}).status_code == 400)

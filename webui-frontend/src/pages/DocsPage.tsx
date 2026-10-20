@@ -19,6 +19,9 @@ import { Header } from "@/components/Header";
 import { navigate } from "@/lib/auth";
 import { usePageSeo } from "@/lib/seo";
 import { cn } from "@/lib/utils";
+// 赠送积分的**唯一口径**在 landing/content.ts（PR 内改值时只改那一处，
+// 否则文档页与落地页会各说一个数字）。这里只取来渲染。
+import { REG_BONUS_CHARS, REG_BONUS_POINTS } from "@/landing/content";
 
 /** 本页 head（模块级常量：引用稳定）。文档页是**免登录**的长尾内容页，
  *  「AI配音教程 / 怎么用」这类词的落点就在这，所以给它独立的 title 与 canonical，
@@ -330,7 +333,8 @@ export default function DocsPage() {
               1000 积分大约能做 2 万字，也就是约 1 小时的音频。
             </P>
             <Callout tone="good" title="先别急着充值">
-              新用户注册就送 500 积分，够你把整条流程跑通、做出前几条音频。
+              新用户注册就送 {REG_BONUS_POINTS} 积分（约 {REG_BONUS_CHARS} 字、十几分钟音频），
+              够你把整条流程完整跑通一遍。
               日常再用「每日签到」和兑换码慢慢攒。
             </Callout>
 
@@ -345,7 +349,7 @@ export default function DocsPage() {
                 <li>② 设一个至少 6 位的密码（昵称不填也行）</li>
                 <li>③ 点 <K>注册（赠送积分）</K>，成功后自动进入单人配音工作台</li>
               </ul>
-              <Shot src={`${IMG}/02-register.webp`} caption="注册页：邮箱 + 验证码 + 密码，三格填完即可。注册成功自动送 500 积分。" />
+              <Shot src={`${IMG}/02-register.webp`} caption={`注册页：邮箱 + 验证码 + 密码，三格填完即可。注册成功自动送 ${REG_BONUS_POINTS} 积分。`} />
             </Step>
 
             <Step n={2} title="看一眼你的积分">
@@ -835,7 +839,7 @@ A:今天咱们聊一个很现实的话题。`}</Code>
 
             <div className="mt-12 rounded-2xl border border-gray-200 bg-white p-5 text-center shadow-sm">
               <p className="text-sm font-medium text-gray-800">看完了，去做出你的第一条音频吧</p>
-              <p className="mt-1 text-xs text-gray-500">注册即送 500 积分，够跑通整条流程。</p>
+              <p className="mt-1 text-xs text-gray-500">注册即送 {REG_BONUS_POINTS} 积分，够跑通整条流程。</p>
               <div className="mt-3 flex items-center justify-center gap-2">
                 <button
                   type="button"

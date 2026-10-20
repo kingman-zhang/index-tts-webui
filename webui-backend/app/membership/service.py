@@ -1,7 +1,7 @@
 """会员模块业务层：注册/登录、资料、积分、优惠码、签到、购买订单、扣费钩子。
 
 配置（环境变量或 .env，均可缺省）：
-  MEMBER_REG_BONUS              注册赠送积分，默认 500；0 表示关闭
+  MEMBER_REG_BONUS              注册赠送积分，默认 200；0 表示关闭
   MEMBER_CHECKIN_BONUS          每日签到积分，默认 20；0 表示关闭
   MEMBER_POINTS_PER_1000_CHARS  合成扣费单价：每 1000 字符扣积分，默认 10；0 = 关闭按量扣费
   MEMBER_MIN_CHARGE             单次合成最低收费（积分），默认 5；0 = 不设地板
@@ -53,7 +53,10 @@ MEMBERSHIP_SCHEMA_VERSION = 2
 
 # ─── 配置 ───────────────────────────────────────────────────
 
-REG_BONUS = int(os.environ.get("MEMBER_REG_BONUS", "500"))
+# 注册礼包：2026-10-19 由 500 调为 200（= ¥2 ≈ 4000 字）。
+# ⚠️ 这是**默认值**，部署环境可用 MEMBER_REG_BONUS 覆盖；compose 里也有同值透传
+#    （旧 .env 里的 500/100 会顶掉代码默认值，改值时三处要一起看）。
+REG_BONUS = int(os.environ.get("MEMBER_REG_BONUS", "200"))
 CHECKIN_BONUS = int(os.environ.get("MEMBER_CHECKIN_BONUS", "20"))
 POINTS_PER_1000_CHARS = int(os.environ.get("MEMBER_POINTS_PER_1000_CHARS", "10"))
 MIN_CHARGE = int(os.environ.get("MEMBER_MIN_CHARGE", "5"))
