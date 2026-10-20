@@ -21,7 +21,7 @@ import { usePageSeo } from "@/lib/seo";
 import { cn } from "@/lib/utils";
 // 赠送积分的**唯一口径**在 landing/content.ts（PR 内改值时只改那一处，
 // 否则文档页与落地页会各说一个数字）。这里只取来渲染。
-import { REG_BONUS_CHARS, REG_BONUS_POINTS } from "@/landing/content";
+import { CHECKIN_BONUS_POINTS, REG_BONUS_CHARS, REG_BONUS_POINTS } from "@/landing/content";
 
 /** 本页 head（模块级常量：引用稳定）。文档页是**免登录**的长尾内容页，
  *  「AI配音教程 / 怎么用」这类词的落点就在这，所以给它独立的 title 与 canonical，
@@ -629,8 +629,8 @@ A:今天咱们聊一个很现实的话题。`}</Code>
             <Table
               head={["途径", "多少", "说明"]}
               rows={[
-                ["注册赠送", "+500", "注册成功自动到账"],
-                ["每日签到", "+20", "个人中心 → 积分 → 每日签到，每天一次"],
+                [`注册赠送`, `+${REG_BONUS_POINTS}`, "注册成功自动到账"],
+                [`每日签到`, `+${CHECKIN_BONUS_POINTS}`, "个人中心 → 积分 → 每日签到，每天一次"],
                 ["兑换码", "看码面额", "个人中心 → 积分 → 优惠码兑换"],
               ]}
             />

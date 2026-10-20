@@ -17,7 +17,7 @@
  * 退出码：全部通过 0，有不一致 1。
  */
 const { join, resolve } = require("path");
-const { mkdirSync, rmSync, writeFileSync } = require("fs");
+const { mkdirSync, readFileSync, rmSync, writeFileSync } = require("fs");
 
 const HERE = __dirname;
 const ROOT = resolve(HERE, "..");
@@ -146,6 +146,24 @@ check(
   + `description 里写的需含「约 ${freeChars} 字」或「约 ${freeChars / 10000} 万字」`
 );
 check("最低收费小于一个 300 字稿子的花费", C.MIN_CHARGE_POINTS <= 300 * C.POINTS_PER_1000_CHARS / 1000, `最低 ${C.MIN_CHARGE_POINTS} 积分`);
+
+// 文档页（/docs）9.2「免费拿积分」表里的金额也必须插值，不许写死。
+// 2026-10-20 踩到：礼包 500→200 时改完落地页，文档页那张表的「+500」被漏掉，
+// 构建、类型检查、47 项端到端断言**全都没报**，是用户截图才发现的。
+// 判据：DocsPage 里出现 `"+<数字>"` 这种字面量就说明又写死了（全页只有这张表用这个格式）。
+const DOCS_SRC = readFileSync(join(FRONTEND, "src/pages/DocsPage.tsx"), "utf8");
+const hardcodedPlus = [...DOCS_SRC.matchAll(/"\+(\d+)"/g)].map(m => m[1]);
+check(
+  "文档页不写死赠送金额（用常量插值）",
+  hardcodedPlus.length === 0,
+  hardcodedPlus.length ? `发现的字面量：${hardcodedPlus.map(n => `+${n}`).join(", ")}` : ""
+);
+const docsUsesConst = DOCS_SRC.includes("${REG_BONUS_POINTS}");
+check(
+  "文档页「注册赠送」用的是 REG_BONUS_POINTS",
+  docsUsesConst,
+  docsUsesConst ? "" : "DocsPage.tsx 里没找到 ${REG_BONUS_POINTS}"
+);
 check("定位锚点 1 积分 = ¥0.01", Math.abs(C.YUAN_PER_POINT - 0.01) < 1e-9, `¥${C.YUAN_PER_POINT}`);
 
 // 套餐：价格递增、积分递增、每积分价格不升、bonus 与 points/price 自洽
