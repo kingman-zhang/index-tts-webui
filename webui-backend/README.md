@@ -26,7 +26,8 @@ python server.py --host 0.0.0.0 --port 3001
 合成走「资源池」，池里每条资源都是同一件事：自建 tts-server（`provider=local`）、
 302.ai、SiliconFlow、autodl.art。**加/减一台服务器 = 加/删一条资源**。
 
-推荐用 YAML 文件（改完不用重启，热加载；**能写注释** ⇒ 想停用一台就整条 `#` 掉）：
+推荐用 YAML 文件（改完不用重启，热加载；**能写注释** ⇒ 想停用一台就整条 `#` 掉，
+或者在它那一条上加 `enable: false` —— 后者保留地址、改回 `true` 即恢复）：
 
 ```bash
 cp tts-resources.example.yaml data/config/tts-resources.yaml   # 按需增删条目

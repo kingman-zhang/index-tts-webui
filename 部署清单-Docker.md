@@ -27,7 +27,7 @@ vim webui-backend/.env
 | 项 | 要求 |
 |---|---|
 | `MEMBER_ADMIN_TOKEN` | **必须换强随机**（本地是 local-admin-token，绝不能上生产） |
-| `TTS_RESOURCES` / `TTS_RESOURCES_FILE` | 池里有谁（local + 云端）。**推荐文件形态**：加减服务器改 YAML 即可（能写注释 ⇒ 停用一台就整条 `#` 掉），不用重启；别再用已失效的 `TTS_ENGINE_PREFERRED`（有该行可直接删） |
+| `TTS_RESOURCES` / `TTS_RESOURCES_FILE` | 池里有谁（local + 云端）。**推荐文件形态**：加减服务器改 YAML 即可（能写注释 ⇒ 停用一台就整条 `#` 掉，或加 `enable: false` 保留地址），不用重启；别再用已失效的 `TTS_ENGINE_PREFERRED`（有该行可直接删） |
 | `TTS_URL` | 一般**不用填**：缺省取池里第一个 local。它只服务音色管理面与旧播客端点，合成不读 |
 | `TTS_STATUS_POLL` | `0`（服务器无本地 TTS，探测无意义） |
 | `MEMBER_ENFORCE` / `MEMBER_REQUIRE_LOGIN` | 生产按商业化开关决定 |

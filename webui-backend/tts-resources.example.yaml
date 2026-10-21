@@ -6,6 +6,10 @@
 # 为什么是 YAML 而不是 JSON：**能写注释**。想先停用某台服务器、要用了再放开，
 # 把那一整条每行前面加 `#` 即可，不用删掉再凭记忆写回来（2026-10-08 由 JSON 切换）。
 #
+# 停用一条更推荐写 `enable: false`（2026-10-21）：整条留在文件里、地址不用记，
+# 改回 true 即生效（文件形态下**不用重启**）。停用的条目**不校验凭据**，
+# 所以「留着备用但暂时不配 key」是允许的；字段拼错仍然会报错。
+#
 # ⚠️ 凭据只填**环境变量名**，密钥的值写在 backend 的 .env 里 —— 别把密钥写进本文件。
 # ⚠️ 文件扩展名必须是 .yaml / .yml（一个叫 .json 的文件里写着注释，两边工具都不认）。
 # ⚠️ 别用 Tab 缩进，YAML 只允许空格。
@@ -27,3 +31,9 @@
 - id: siliconflow
   provider: siliconflow
   api_key_env: SILICONFLOW_API_KEY
+
+# 想长期留一条「停用」的备用机，就保留整条、只把 enable 写成 false（下面这段取消注释即可）：
+# - id: gpu-backup
+#   provider: local
+#   base_url: http://127.0.0.1:8002
+#   enable: false
