@@ -88,10 +88,22 @@ class ResourceConfig:
     max_concurrency: int = 1
     weight: float = 1.0
     tier: str = "cloud"
+    # 是否让这一条参与调度（默认 true）。false = **整条不生效**，但仍留在配置里：
+    # 停用一台服务器就不必再把它注释掉/删掉、要用时凭记忆写回来（2026-10-21）。
+    # ⚠️ 只判断这一个字段，**不删配置**：池重建后 `/api/version` 的
+    # `disabled_resources` 仍会列出它，避免「以为停用了其实没停」。
+    enable: bool = True
 
     def __post_init__(self):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.id):
             raise ValueError("资源 id 必须为安全的字母数字下划线或短横线")
+        if not isinstance(self.enable, bool):
+            # `enable: "false"` / `enable: 0` 都不能含糊过去：前者在判定里恒为真
+            # （非空字符串），后者是 int —— 两种写法的结果都和作者的意图相反。
+            raise ValueError(
+                f"资源 {self.id} 的 enable 必须是布尔值 true / false，收到 "
+                f"{type(self.enable).__name__}（{self.enable!r}）"
+                f"—— 别加引号：YAML 里 `enable: \"false\"` 是字符串，恒判为真")
         if self.tier not in ("local", "cloud") or self.max_concurrency < 1 or not math.isfinite(self.weight) or self.weight <= 0:
             raise ValueError("资源 tier、并发或 weight 无效")
         if self.provider == "local":

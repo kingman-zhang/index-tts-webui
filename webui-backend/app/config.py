@@ -171,7 +171,13 @@ def _pool_first_local_url() -> str | None:
     if not isinstance(items, list):
         return None
     for item in items:
-        if isinstance(item, dict) and item.get("provider") == "local" and item.get("base_url"):
+        # `enable: false` 的那台不算「池里的第一个 local」—— 否则把它停用之后，
+        # 音色管理面（`TTS_URL`）仍旧指向那台死地址，症状是「停用了却还在报它的错」。
+        # 这里只认明确的 `false`：本函数是**宽容**路径（解析失败就退默认），
+        # 严格校验与类型报错由 factory._make_spec 负责。
+        if not isinstance(item, dict) or item.get("enable") is False:
+            continue
+        if item.get("provider") == "local" and item.get("base_url"):
             return str(item["base_url"])
     return None
 

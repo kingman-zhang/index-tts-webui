@@ -528,6 +528,90 @@ class ConfigTests(unittest.TestCase):
             pool = factory.build_registry(force=True).engines[0]
             self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
 
+    # ─── `enable: false`（2026-10-21）：停用一台不用再注释掉整条 ───
+
+    def test_disabled_resource_is_skipped_and_reported(self):
+        """`enable: false` 的条目留在文件里，但不进池；且必须**看得见**它被停用了。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.yaml'
+            path.write_text(
+                '- {id: l1, provider: local, base_url: "http://a:8000"}\n'
+                '- {id: l2, provider: local, base_url: "http://b:8000", enable: false}\n')
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
+                pool = factory.build_registry(force=True).engines[0]
+                self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1'])
+                summary = factory.engine_summary()[0]
+                self.assertEqual(summary['disabled_resources'], ['l2'])
+                self.assertEqual([r['id'] for r in summary['resources']], ['l1'])
+                # 停用的那台不能被选成「池里第一个 local」——否则音色管理面仍旧指向它的死地址
+                from app import config
+                self.assertEqual(config._pool_first_local_url(), 'http://a:8000')
+                # 改回 true：下一次取池就自动重建（热加载，不用重启）
+                path.write_text(
+                    '- {id: l1, provider: local, base_url: "http://a:8000"}\n'
+                    '- {id: l2, provider: local, base_url: "http://b:8000"}\n')
+                pool = factory.build_registry().engines[0]
+                self.assertEqual([cfg.id for cfg, _ in pool.resources], ['l1', 'l2'])
+                self.assertEqual(factory.engine_summary()[0]['disabled_resources'], [])
+
+    def test_failed_reload_keeps_display_state_consistent(self):
+        """重建失败沿用旧池时，`disabled_resources` 也必须跟着旧池 —— 否则自相矛盾。
+
+        「新配置把所有资源都停用」会失败；如果失败路径先改了展示列表，
+        `/api/version` 就会出现「resources 里有 l1、disabled_resources 里也有 l1」。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'resources.yaml'
+            path.write_text(
+                '- {id: l1, provider: local, base_url: "http://a:8000"}\n'
+                '- {id: l2, provider: local, base_url: "http://b:8000", enable: false}\n')
+            with patch.dict(os.environ, {'TTS_RESOURCES_FILE': str(path)}, clear=True):
+                pool = factory.build_registry(force=True).engines[0]
+                path.write_text(
+                    '- {id: l1, provider: local, base_url: "http://a:8000", enable: false}\n'
+                    '- {id: l2, provider: local, base_url: "http://b:8000", enable: false}\n')
+                self.assertIs(factory.build_registry().engines[0], pool)
+                summary = factory.engine_summary()[0]
+                self.assertEqual([r['id'] for r in summary['resources']], ['l1'])
+                self.assertEqual(summary['disabled_resources'], ['l2'])
+
+    def test_disabled_resource_needs_no_credential(self):
+        """停用的云账号不必配 key —— 否则「想留着备用」就得往 .env 里塞没用的凭据。"""
+        text = ('- {id: c1, provider: 302ai, api_key_env: A}\n'
+                '- {id: c2, provider: 302ai, api_key_env: B, enable: false}\n')
+        with patch.dict(os.environ, {'TTS_RESOURCES': text, 'A': 'fake'}, clear=True):
+            pool = factory.build_registry(force=True).engines[0]
+            self.assertEqual([cfg.id for cfg, _ in pool.resources], ['c1'])
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            with self.assertRaises(ValueError) as ctx:   # 启用的那条仍然要 key
+                factory.build_registry(force=True)
+            self.assertIn('A', str(ctx.exception))
+
+    def test_enable_must_be_a_real_bool(self):
+        """`enable: "false"` 是字符串、恒为真 —— 必须报错，不能「看着写了 false 其实开着」。"""
+        base = '- {{id: l1, provider: local, base_url: "http://a:8000", enable: {}}}'
+        for value, hint in [('"false"', '布尔'), ('0', '布尔'), ('"no"', '布尔')]:
+            with patch.dict(os.environ, {'TTS_RESOURCES': base.format(value)}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    factory.build_registry(force=True)
+                self.assertIn(hint, str(ctx.exception))
+                self.assertIn('enable', str(ctx.exception))
+        for value in ('false', 'False', 'no'):
+            with patch.dict(os.environ, {'TTS_RESOURCES': base.format(value)}, clear=True):
+                with self.assertRaises(ValueError) as ctx:   # 全部停用 ⇒ 池空 ⇒ 明确报错
+                    factory.build_registry(force=True)
+                self.assertIn('没有一条启用', str(ctx.exception))
+
+    def test_disabled_entries_are_still_validated(self):
+        """停用的条目也要过字段校验 —— 否则它就是个永远藏着 typo 的黑洞。"""
+        text = ('- {id: l1, provider: local, base_url: "http://a:8000"}\n'
+                '- {id: l2, provider: local, base_url: "http://b:8000", '
+                'enable: false, base_ur: oops}\n')
+        with patch.dict(os.environ, {'TTS_RESOURCES': text}, clear=True):
+            with self.assertRaises(ValueError) as ctx:
+                factory.build_registry(force=True)
+            self.assertIn('base_ur', str(ctx.exception))
+
     def test_c_style_comment_is_rejected_with_line_hint(self):
         """`//` 与 `/* */` 都不是 YAML 注释符 —— 报错必须**点名到行**。
 

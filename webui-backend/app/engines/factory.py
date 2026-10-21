@@ -7,6 +7,8 @@
 就是增删一条，不需要记第二套变量名、不需要改代码。
 
 配置是 **YAML**：支持注释 ⇒ 「先停用一台、要用了再放开」把整条用 `#` 注释掉即可。
+**要长期停用某一条，更推荐 `enable: false`**（2026-10-21）：整条留在文件里、地址不用记，
+改回 `true` 即生效。两者都行，区别只是「停用后还想不想看见那几行」。
 JSON 写法照样能读（JSON 是 YAML 子集），但**文件扩展名必须是 `.yaml`/`.yml`**。
 
 三种来源（`config.resources_source()`，优先级即此顺序）：
@@ -45,6 +47,8 @@ logger = logging.getLogger(__name__)
 _REGISTRY = None
 _SOURCE_SIG = None
 _LOCK = threading.Lock()
+# 被 `enable: false` 跳过的资源 id（只做展示，不参与调度）
+_DISABLED_IDS: list[str] = []
 
 _ALLOWED_FIELDS = frozenset(f.name for f in fields(ResourceConfig))
 
@@ -90,7 +94,8 @@ def _diagnose_config_failure(raw: str, exc: yaml.YAMLError) -> str:
         stripped = line.lstrip()
         if stripped.startswith(("//", "/*")):
             return (f"{head}。第 {lineno} 行是 C 风格注释 —— YAML 的注释符是 `#`"
-                    f"（想停用某台服务器，把那一整条前面逐行加 `#` 即可）")
+                    f"（想停用某台服务器，在那一条上加 `enable: false` 即可，"
+                    f"或者把那一整条逐行加 `#`）")
         if "\t" in line[:len(line) - len(stripped)]:
             return (f"{head}。第 {lineno} 行的**缩进**里用了 Tab —— YAML 只允许空格缩进"
                     f"（把 Tab 换成等宽空格）")
@@ -151,7 +156,26 @@ def _make_spec(item) -> ResourceConfig:
         raise ValueError(f"资源字段不合法：{exc}") from None
 
 
-def _resource_specs() -> list[ResourceConfig]:
+def _remember_disabled(specs) -> None:
+    """记下被 `enable: false` 跳过的 id，只用于 `/api/version` 与热加载日志。
+
+    为什么要有这个：`enable: false` 与「注释掉」的区别必须是**可观测**的。否则
+    「以为停用了、其实漏了那个字段」时，池里照样有它、日志也照样只有启用列表，
+    排障时无从下手。
+
+    ⚠️ 只在**池构建成功之后**调用（见 `_create_registry`）：热加载失败会沿用旧池，
+    那时若提前改了这份展示列表，`/api/version` 就会出现「resources 里有它、
+    disabled_resources 里也有它」的自相矛盾。
+    """
+    global _DISABLED_IDS
+    _DISABLED_IDS = [s.id for s in specs if not s.enable]
+
+
+def _resource_specs() -> tuple[list[ResourceConfig], list[ResourceConfig]]:
+    """返回 `(启用的资源, 被 enable: false 跳过的资源)`。
+
+    第二个返回值只用于展示（`disabled_resources`），不参与调度。
+    """
     raw = read_resources_text()   # 文件形态下文件缺失/扩展名不对会在这里明确报错
     if raw is not None:
         try:
@@ -172,9 +196,18 @@ def _resource_specs() -> list[ResourceConfig]:
             got = "空列表" if isinstance(items, list) else type(items).__name__
             raise ValueError(f"资源列表必须是非空列表（顶层每行以 `- ` 开头），收到{got}")
         specs = [_make_spec(item) for item in items]
-        if len({s.id for s in specs}) != len(specs):
+        # `enable: false` 的条目**照样要解析**（字段拼错必须报出来，否则停用的那条会
+        # 一直藏着错），但**不进池**。id 唯一性只在**启用**的条目之间检查：停用的那条
+        # 常常是「同 id 的旧地址，留着当备份」，那是合理用法。
+        enabled = [s for s in specs if s.enable]
+        disabled = [s for s in specs if not s.enable]
+        if not enabled:
+            raise ValueError(
+                "资源池里没有一条启用的资源（全部 enable: false）—— 至少要留一条启用："
+                "把 `enable: true` 写上，或者干脆删掉这一行（默认就是启用）")
+        if len({s.id for s in enabled}) != len(enabled):
             raise ValueError("资源 id 重复")
-        return specs
+        return enabled, disabled
 
     # legacy：把旧式分散环境变量转译成同一个池（老 .env 继续可用）
     concurrency = effective_concurrency(EngineCapabilities("旧配置"))
@@ -188,7 +221,7 @@ def _resource_specs() -> list[ResourceConfig]:
             specs.append(ResourceConfig("indextts_" + provider, provider, env, url, concurrency))
     if os.environ.get("TTS_ENGINE_PREFERRED"):
         logger.warning("TTS_ENGINE_PREFERRED 已失效（2026-09-29）；资源池始终本地优先、云端公平分配，该行可直接删除")
-    return specs
+    return specs, []   # legacy 形态没有「停用」的概念
 
 
 def _create_provider(spec):
@@ -219,7 +252,7 @@ def _create_provider(spec):
 
 
 def _create_registry():
-    specs = _resource_specs()
+    specs, disabled = _resource_specs()
     # 凭据问题**一次性列全**：配了三家云、只报第一家，等于让人来回重启三次
     # （2026-09-30 实际发生）。这里不静默跳过缺凭据的资源 —— 与「配置错误直接
     # 失败，不悄悄换一套账号去合成」的原则一致。
@@ -230,6 +263,7 @@ def _create_registry():
         raise ValueError("资源池凭据不完整：\n  - " + "\n  - ".join(problems))
     registry = EngineRegistry()
     registry.register_pool([(s, _create_provider(s)) for s in specs])
+    _remember_disabled(disabled)   # 构建成功才更新展示状态（热加载失败时保留上一次的）
     return registry
 
 
@@ -280,15 +314,17 @@ def build_registry(force: bool = False):
             pool = registry.engines[0] if registry.engines else None
             current = ([cfg.id for cfg, _ in pool.resources]
                        if isinstance(pool, EnginePoolFacade) else [])
-            logger.info("[engine] 资源池配置已热加载，当前资源：%s", current)
+            logger.info("[engine] 资源池配置已热加载，当前资源：%s%s", current,
+                        f"；已停用（enable: false）：{_DISABLED_IDS}" if _DISABLED_IDS else "")
         return _REGISTRY
 
 
 def reset_registry():
-    global _REGISTRY, _SOURCE_SIG
+    global _REGISTRY, _SOURCE_SIG, _DISABLED_IDS
     with _LOCK:
         _REGISTRY = None
         _SOURCE_SIG = None
+        _DISABLED_IDS = []
 
 
 def config_source() -> str:
@@ -306,6 +342,9 @@ def engine_summary():
     source = config_source()
     return [{"name": e.name, "pool_schema_version": 3, "config_source": source,
              "resources": e.resource_snapshot(),
+             # 配了 `enable: false` 的 id：`resources` 里**不会**出现它们，
+             # 所以单独列一份 —— 「以为停用了、其实没停」只能靠这两个列表对照看。
+             "disabled_resources": list(_DISABLED_IDS),
              "display_name": e.capabilities.display_name,
              "max_input_chars": e.capabilities.max_input_chars,
              "max_concurrency": e.capabilities.max_concurrency,
