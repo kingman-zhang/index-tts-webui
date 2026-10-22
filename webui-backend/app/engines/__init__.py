@@ -24,6 +24,7 @@ from .indextts_302ai import Indextts302aiEngine
 from .indextts_art import IndexttsArtEngine
 from .indextts_local import IndexttsLocalEngine
 from .indextts_siliconflow import IndexttsSiliconflowEngine
+from .modelverse import ModelverseEngine
 from .selector import mark_engine_failed, select_engine
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "IndexttsArtEngine",
     "IndexttsLocalEngine",
     "IndexttsSiliconflowEngine",
+    "ModelverseEngine",
     "SegmentRequest",
     "SynthesisCancelled",
     "TTSEngine",

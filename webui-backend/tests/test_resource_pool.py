@@ -771,7 +771,7 @@ class ConfigTests(unittest.TestCase):
         path = Path(__file__).resolve().parents[1] / 'tts-resources.example.yaml'
         items = yaml.safe_load(path.read_text(encoding='utf-8'))
         self.assertEqual([i['id'] for i in items],
-                         ['gpu-a', 'gpu-b', 'art', 'ai302', 'siliconflow'])
+                         ['gpu-a', 'gpu-b', 'art', 'ai302', 'siliconflow', 'modelverse'])
         self.assertTrue(all(i.get('provider') for i in items))
 
 

@@ -31,6 +31,13 @@
 - id: siliconflow
   provider: siliconflow
   api_key_env: SILICONFLOW_API_KEY
+- id: modelverse
+  provider: modelverse
+  api_key_env: MODELVERSE_API_KEY
+  max_concurrency: 3
+  # ⚠️ 只填 api.modelverse.cn 那套 Key（sk-…）。cp.compshare.cn/audio/v1 是另一个
+  # 入口、另一把 Key（sk-ml-…），两者互不相通，配错＝401 invalid api key。
+  # 单价 ¥0.40/万字（art 是 ¥1.84），单次上限 600 字符，见 ENGINES.md。
 
 # 想长期留一条「停用」的备用机，就保留整条、只把 enable 写成 false（下面这段取消注释即可）：
 # - id: gpu-backup

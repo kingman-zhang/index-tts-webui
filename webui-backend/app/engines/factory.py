@@ -2,9 +2,9 @@
 
 ## 配置：三类服务，一种写法（2026-09-30 收敛；2026-10-08 切 YAML）
 
-自建 tts-server、302.ai、SiliconFlow、autodl.art 在池里都是**同一条资源**，
-所以只有一种写法 —— 一个列表，`provider` 决定它是什么。增减一台服务器
-就是增删一条，不需要记第二套变量名、不需要改代码。
+自建 tts-server、302.ai、SiliconFlow、autodl.art、Modelverse（Compshare）在池里
+都是**同一条资源**，所以只有一种写法 —— 一个列表，`provider` 决定它是什么。
+增减一台服务器就是增删一条，不需要记第二套变量名、不需要改代码。
 
 配置是 **YAML**：支持注释 ⇒ 「先停用一台、要用了再放开」把整条用 `#` 注释掉即可。
 **要长期停用某一条，更推荐 `enable: false`**（2026-10-21）：整条留在文件里、地址不用记，
@@ -42,6 +42,7 @@ from .indextts_302ai import Indextts302aiEngine, DEFAULT_BASE_URL as AI302_URL
 from .indextts_art import IndexttsArtEngine
 from .indextts_local import IndexttsLocalEngine
 from .indextts_siliconflow import IndexttsSiliconflowEngine, DEFAULT_BASE_URL as SF_URL
+from .modelverse import ModelverseEngine, DEFAULT_BASE_URL as MV_URL
 
 logger = logging.getLogger(__name__)
 _REGISTRY = None
@@ -64,6 +65,7 @@ _DEFAULT_KEY_ENV = {
     "302ai": "INDEXTTS302_API_KEY",
     "siliconflow": "SILICONFLOW_API_KEY",
     "art": "AUTODL_API_TOKEN",
+    "modelverse": "MODELVERSE_API_KEY",
 }
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -216,6 +218,7 @@ def _resource_specs() -> tuple[list[ResourceConfig], list[ResourceConfig]]:
         ("302ai", "INDEXTTS302_API_KEY", os.environ.get("INDEXTTS302_BASE_URL") or AI302_URL),
         ("siliconflow", "SILICONFLOW_API_KEY", os.environ.get("SILICONFLOW_BASE_URL") or SF_URL),
         ("art", "AUTODL_API_TOKEN", None),
+        ("modelverse", "MODELVERSE_API_KEY", os.environ.get("MODELVERSE_BASE_URL") or MV_URL),
     ]:
         if os.environ.get(env):
             specs.append(ResourceConfig("indextts_" + provider, provider, env, url, concurrency))
@@ -248,7 +251,12 @@ def _create_provider(spec):
             kwargs = {"submit_url": root + "/api/v1/comfyui/comfyui_workflow/indextts2-v1",
                       "result_url": root + "/api/v1/comfyui/comfyui_workflow/result/{task_id}"}
         return IndexttsArtEngine(token=key, client=http_client, **kwargs)
-    raise ValueError(f"资源 {spec.id} 的 provider 未知：{spec.provider}（可用：local/302ai/siliconflow/art）")
+    if spec.provider == "modelverse":
+        # 参考音频每段随请求带走，**不需要**上传缓存（cache 只有 302.ai 用）
+        return ModelverseEngine(api_key=key, base_url=spec.base_url or MV_URL, client=http_client)
+    raise ValueError(
+        f"资源 {spec.id} 的 provider 未知：{spec.provider}"
+        f"（可用：{'/'.join(sorted({*_DEFAULT_KEY_ENV, 'local'}))}）")
 
 
 def _create_registry():

@@ -5,6 +5,8 @@
   python tools/engine_smoke.py --engine local  --voice /path/ref.mp3 --text "你好"
   python tools/engine_smoke.py --engine art    --voice /path/ref.mp3 --text "你好" \
       [--token $AUTODL_API_TOKEN] [--emotion happy]
+  python tools/engine_smoke.py --engine modelverse --voice /path/ref.mp3 --text "你好" \
+      [--token $MODELVERSE_API_KEY] [--emotion happy]
   python tools/engine_smoke.py --engine auto   ...   # 主引擎不可用自动切换
 
 依赖后端环境（fastapi/httpx 已装）。不修改任何现有服务，仅验证适配层。
@@ -26,6 +28,7 @@ from app.engines import (  # noqa: E402
     EngineRegistry,
     IndexttsArtEngine,
     IndexttsLocalEngine,
+    ModelverseEngine,
     SegmentRequest,
     VoiceRef,
 )
@@ -33,12 +36,14 @@ from app.engines import (  # noqa: E402
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description="引擎适配层冒烟测试")
-    parser.add_argument("--engine", choices=["local", "art", "auto"], default="auto")
+    parser.add_argument("--engine", choices=["local", "art", "modelverse", "auto"], default="auto")
     parser.add_argument("--voice", required=True, help="参考音频本地路径")
     parser.add_argument("--text", default="哈喽，大家好，欢迎收听我们的播客。")
     parser.add_argument("--emotion", default=None, choices=["happy", "sad", "angry", "afraid", "disgusted", "surprised", "calm", "neutral"])
     parser.add_argument("--tts-url", default="http://localhost:8000")
-    parser.add_argument("--token", default=None, help="autodl.art Token，也可用 AUTODL_API_TOKEN")
+    parser.add_argument("--token", default=None,
+                        help="云端凭据：art 的 AUTODL_API_TOKEN / modelverse 的 MODELVERSE_API_KEY"
+                             "（不填则读各自环境变量）")
     parser.add_argument("--output", default="engine_smoke.wav")
     args = parser.parse_args()
 
@@ -48,6 +53,9 @@ async def main() -> int:
         registry.register(IndexttsLocalEngine(args.tts_url, client))
     if args.engine in ("art", "auto"):
         registry.register(IndexttsArtEngine(token=args.token))
+    if args.engine == "modelverse":
+        # 只显式指定时注册：auto 里不放它，免得一次冒烟就花掉一笔真实合成费用
+        registry.register(ModelverseEngine(api_key=args.token))
 
     req = SegmentRequest(
         text=args.text,

@@ -8,15 +8,15 @@
 
 ### 三类服务，一种写法（2026-09-30 收敛）
 
-自建 tts-server、302.ai、SiliconFlow、autodl.art 在池里是**同一条资源**，差别只在
-`provider` 一个字段 —— 没有第二套变量名要记，也没有「这个平台用哪组变量」要背。
+自建 tts-server、302.ai、SiliconFlow、autodl.art、Modelverse（Compshare）在池里是**同一条资源**，
+差别只在 `provider` 一个字段 —— 没有第二套变量名要记，也没有「这个平台用哪组变量」要背。
 字段全表：
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `id` | ✅ | 资源唯一名；字母数字下划线短横线（进缓存路径，别改来改去） |
-| `provider` | ✅ | `local` / `302ai` / `siliconflow` / `art` |
-| `base_url` | local 必填 | 那一台的地址；`art` 填服务根地址；两个云平台可省（走官方） |
+| `provider` | ✅ | `local` / `302ai` / `siliconflow` / `art` / `modelverse` |
+| `base_url` | local 必填 | 那一台的地址；`art` 填服务根地址；云平台可省（走官方） |
 | `api_key_env` | 云端必填 | **环境变量名**，值写在 `.env`；本地资源不填 |
 | `max_concurrency` | — | 仅云端；缺省读 `TTS_CONCURRENCY`。local 恒为 1 |
 | `weight` | — | 分流倾斜（默认 1.0） |
@@ -116,11 +116,15 @@ expected <block end>, but found '?'。第 2 行是 C 风格注释 —— YAML �
   provider: siliconflow
   api_key_env: SILICONFLOW_API_KEY
   weight: 2
+- id: modelverse
+  provider: modelverse
+  api_key_env: MODELVERSE_API_KEY
+  max_concurrency: 3
 ```
 
 模板：`webui-backend/tts-resources.example.yaml`。
 
-provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划线、短横线。云端 tier=cloud，本地强制 tier=local、max_concurrency=1。base_url 不允许内嵌凭据或查询参数。art 的 base_url 指服务根地址。
+provider 支持 local/302ai/siliconflow/art/modelverse；id 仅允许字母数字、下划线、短横线。云端 tier=cloud，本地强制 tier=local、max_concurrency=1。base_url 不允许内嵌凭据或查询参数。art 的 base_url 指服务根地址；modelverse 的 base_url 指 `https://api.modelverse.cn`（**不是** `cp.compshare.cn`，两者 Key 不通用，见下文 Modelverse 一节）。
 
 ### 配置放哪里：三种来源与「改完要不要重启」
 
@@ -142,7 +146,7 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 
 排障看 `/api/version` 的 `engines.registered[].config_source`：它直接写明池是按哪份配置起的。
 
-未配置资源列表时，`TTS_URL`、`INDEXTTS302_API_KEY`、`SILICONFLOW_API_KEY`、`AUTODL_API_TOKEN`、原 base URL/model 变量转译为同一个池；无凭据云端不注册。旧 `TTS_CONCURRENCY` 是每个云资源默认容量（1–8）。`TTS_ENGINE_PREFERRED` 已**失效**（填了只打一条 warning，可直接删除该行），不允许优先级破坏本地利用和公平性。
+未配置资源列表时，`TTS_URL`、`INDEXTTS302_API_KEY`、`SILICONFLOW_API_KEY`、`AUTODL_API_TOKEN`、`MODELVERSE_API_KEY`、原 base URL/model 变量转译为同一个池；无凭据云端不注册。旧 `TTS_CONCURRENCY` 是每个云资源默认容量（1–8）。`TTS_ENGINE_PREFERRED` 已**失效**（填了只打一条 warning，可直接删除该行），不允许优先级破坏本地利用和公平性。
 
 缓存按资源 id + provider/endpoint/凭据指纹隔离，凭据轮换也不复用旧音色 URI；不自动迁移旧共享缓存，首次上传可能产生原有平台上传费用。不要把同一账号或同一物理 GPU 用多个 id 重复声明，否则无法识别隐藏的共享配额。
 
@@ -151,7 +155,7 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 - 本地有空闲可用槽位优先；满载后云端溢出。
 - 云端排序：inflight / capacity / weight；同负载时以累计段数 / weight 打破平局，顺序小任务不会永远命中首账号。
 - 普通满载只等待 condition，不计失败、不熔断；池 health 不把忙当离线。
-- 本地 health、302.ai 查询任务和 SiliconFlow 音色列表使用现有只读非合成端点。池 TTL 默认 15 秒、单资源探测任务共享，探测超时上限 12 秒。只读探测证明连通/鉴权，不证明余额足够或模型一定可用。
+- 本地 health、302.ai 查询任务、SiliconFlow 音色列表、Modelverse 价目表（`GET /v1/models/{model}`）使用现有只读非合成端点。池 TTL 默认 15 秒、单资源探测任务共享，探测超时上限 12 秒。只读探测证明连通/鉴权，不证明余额足够或模型一定可用。
 - art 无已确认的免费 probe，health() 返回 False；池将有 token 的资源标为 unverified，允许真实业务请求验证，不伪称健康、不额外付费试音。
 - 探测失败或真实请求失败隔离该资源 120 秒；到期后下一次业务请求重新探测。没有后台探活和付费 probe。全部隔离立即报错，不忽略冷却强冲。
 - 取消释放客户端租约；HTTP 取消不等于远端任务终止，所以取消中的资源也暂时隔离。远端是否真正停止依赖平台协议，不能保证。
@@ -172,6 +176,61 @@ provider 支持 local/302ai/siliconflow/art；id 仅允许字母数字、下划�
 修掉的真 bug：播客链路曾对**原生支持语速**的引擎再套一层 atempo，实际语速 ≈ speed²（调到 1.5 听起来约 2.25 倍）。mono 路径此前对不支持原生变速的资源静默丢掉语速，现由池补齐，并在两者都不成立时打 warning。
 
 统一容器格式不保证不同模型的音色、响度、情绪相同；语速请求值一致，但原生参数与 ffmpeg atempo 的音色细节仍有差异，跨资源混用需听感验收。
+
+## Modelverse（Compshare）接入要点（2026-10-22）
+
+实现：`app/engines/modelverse.py`；实测脚本：`tools/test_compshare_live.py`（命令见 `命令大全.md` §5）。
+
+### 🔴 Compshare 上有**两个互不相通**的音频入口，同一把 Key 只能进其中一个
+
+| | **api.modelverse.cn**（本适配器） | cp.compshare.cn/audio/v1 |
+| --- | --- | --- |
+| 模型 | IndexTTS-**2** | IndexTTS-**2.5** |
+| 音色 | `spk_audio_file` 每段直接带参考音频 | 需先建自定义音色 |
+| 预上传 | **不需要** ⇒ 没有 7 天过期 | 需要，7 天清理 |
+| 单次上限 | 600 字符 | 2000 字符 |
+| 计费 | 40 元/百万 token | 积分/计费字符 |
+| 凭据 | `sk-…` | `sk-ml-…` |
+
+判据：拿 modelverse 的 Key 打 `cp.compshare.cn/audio/v1/pricing` 会得到
+`401 {"error":"invalid api key"}`，而打 `api.modelverse.cn/v1/models` 是 200 —— **不是 Key 错了，
+是打错了入口**。同理，`/v1/audio/speech`（JSON + `voice`）要预上传音色并 7 天过期，
+`/v1/audio/infer`（multipart + `spk_audio_file`）不用 —— 池里接的是后者。
+
+### 实测结论（都进了适配器）
+
+| 项 | 实测 | 代码里的落点 |
+| --- | --- | --- |
+| 计费口径 | 控制台日志 56 字 → 56 tokens、365 字 → 365 ⇒ **1 token = 1 字符**（标点也算） | 与 `count_billable_chars` 同口径，不需要二次换算 |
+| 单价 | 官方 `Unit` 字段 40 CNY/百万 token ⇒ **¥0.40/万字**、**¥0.69–0.86/音频小时** | art 是 ¥1.84/万字 ⇒ **便宜 4.6 倍**；按售价 ¥5/万字毛利 92% |
+| 语速 | `speed=1.5` 时输出时长 **0.59–0.62×**（不是 0.667×，平台侧映射非线性） | `supports_speed=True` ⇒ 池门面**不再**套 atempo。判据：若被套两层应是 **0.44×** |
+| 采样率 | 请求 `sample_rate=24000` 时返回**就是 24kHz** | 与 `NORM_RATE` 一致 ⇒ `normalize_pcm` 零转换直通，省掉每段一次 ffmpeg |
+| 响应头 | 返回 RIFF/WAV，`Content-Type` 却谎报 `audio/mpeg` | 只认字节不认头 |
+| 参考音频 | 文档写 5–30s，**实测 3.2s 也过** | `preset-voices` 52 个样本全可用，不必补录 |
+| 情感 | `emo_control_method=2` + `emo_vec`（8 维顺序同 `EMO_VECTOR_ORDER`），`emo_alpha` 是融合权重 | ⚠️ 文档示例里的 **`emo_weight` 是过时的**，真实参数名 `emo_alpha` |
+| 吞吐 | 600 字约 41s 墙钟（RTF 0.3–0.6）；10 万字 ≈ 167 段 ≈ 1.9 小时（单并发） | |
+
+⚠️ 文档「注意事项」还写着「TTS 限时免费」，而控制台照常记 token。规划按 ¥0.40/万字算，
+真免费算**额外收益**，不当成前提。
+
+### 单次上限 600 为什么实际按 ≈300 汉字/段切（刻意不修）
+
+`chunker._char_count` 的口径是「1 汉字 = 2 字符」（art 的历史口径），而 Modelverse 是
+「1 字符 = 1 token」。所以声明 `max_input_chars=600` 后，实际每段约 300 汉字 —— **比平台上限保守一半**。
+
+不改的理由：资源池是**段级选路**，同一条任务的不同段可能落到 art / 本地 / modelverse，
+切片必须对池内**最严的那条**安全；把口径改成 1:1 只会让 modelverse 单跑时多吃一倍配额，
+混池时毫无收益，却要动 `chunker` + 能力声明 + 池聚合 + 两个 runner 四处。
+多切一倍的代价实测可忽略（每段多一次 ~100KB 参考音频上传 + 一次 HTTP 往返）。
+
+同一条道理也解释了：**加了 modelverse 之后，池的最小输入上限变成 600**，art 原本按 1024
+汉字/段切，现在也按 ≈300 汉字/段 —— 这不是 bug，是段级混池的必然（见「音频与能力」）。
+
+### 依赖方向（刻意的）
+
+情绪幅度表 `EMOTION_AMPLITUDE` / `DEFAULT_AMPLITUDE` 从 `indextts_302ai` import，
+不复制一份：同一个 IndexTTS-2 底座、同一套 8 维向量语义，「one-hot 1.0 听感偏激动」
+这个结论两边同时成立。复制表迟早漂移。
 
 ## 多台本地引擎（分流与音色）
 
