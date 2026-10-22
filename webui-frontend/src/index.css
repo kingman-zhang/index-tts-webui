@@ -197,3 +197,21 @@ input[type="range"]::-moz-range-thumb {
     animation: none;
   }
 }
+
+/* ─── 队列「等平台」不确定态进度条 ──────────────────────────
+   后端 progress 只按「已完成段数」算（podcast_runner._update_progress），
+   ⇒ 段已提交、平台还在跑时恒为 0。此时显示 0% 会被读成「卡死」，
+   改用滑动条表示「在动、只是还没有结果」（2026-10-22）。 */
+@keyframes queue-indeterminate {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(310%); }
+}
+.queue-bar-indeterminate {
+  animation: queue-indeterminate 1.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .queue-bar-indeterminate {
+    animation: none;
+    transform: none;
+  }
+}

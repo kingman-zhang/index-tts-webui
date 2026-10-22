@@ -454,6 +454,10 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
               ) : filteredTasks.map(task => {
                 // 已请求取消的运行中任务显示「取消中」（等待进行中的分段合成结束）
                 const cancelling = !!task.cancel_requested && (task.status === "running" || task.status === "syncing");
+                // progress 只按「已完成段数」算 ⇒ 段已提交、平台还在合成时恒为 0。
+                // 这种「0%」不是卡死，是还没拿到第一段结果（2026-10-22）⇒ 显示成
+                // 不确定态滑动条 + 后端 message（「已提交 3/4 段，等待平台合成」）。
+                const waiting = !cancelling && (task.status === "running" || task.status === "syncing") && task.progress <= 0;
                 const cfg = cancelling
                   ? { icon: Loader2, color: "gray", label: "取消中", spin: true }
                   : STATUS_CONFIG[task.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.queued;
@@ -566,17 +570,23 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                     {/* 进度信息（行级进度 1/5 输出到浏览器控制台，界面只显示百分比） */}
                     {(task.status === "running" || task.status === "syncing") && task.total_lines > 0 && (
                       <div className="mt-1.5">
-                        {cancelling && (
-                          <p className="text-[0.75rem] text-gray-500 mb-0.5">{task.message || "正在取消，等待进行中的合成结束"}</p>
+                        {(cancelling || waiting) && (
+                          <p className="text-[0.75rem] text-gray-500 mb-0.5">
+                            {task.message || (cancelling ? "正在取消，等待进行中的合成结束" : "已提交，等待平台合成")}
+                          </p>
                         )}
                         <div className={cn("text-right text-[0.75rem] mb-0.5 tabular-nums", cancelling ? "text-gray-400" : "text-gray-500")}>
-                          {Math.round(task.progress * 100)}%
+                          {waiting ? "准备中" : `${Math.round(task.progress * 100)}%`}
                         </div>
                         <div className={cn("h-1.5 rounded-full overflow-hidden", cancelling ? "bg-gray-200" : "bg-amber-100")}>
-                          <div
-                            className={cn("h-full transition-all duration-300", cancelling ? "bg-gray-400" : "bg-amber-500")}
-                            style={{ width: `${task.progress * 100}%` }}
-                          />
+                          {waiting ? (
+                            <div className="h-full w-1/3 rounded-full bg-amber-400 queue-bar-indeterminate" />
+                          ) : (
+                            <div
+                              className={cn("h-full transition-all duration-300", cancelling ? "bg-gray-400" : "bg-amber-500")}
+                              style={{ width: `${task.progress * 100}%` }}
+                            />
+                          )}
                         </div>
                       </div>
                     )}
