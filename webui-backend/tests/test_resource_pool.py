@@ -98,6 +98,32 @@ class PoolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(local.calls, 1)
         self.assertEqual(p.resources[0][0].max_concurrency, 1)
 
+    async def test_all_cooling_waits_instead_of_failing(self):
+        """全部冷却 ⇒ 等它到期再租约，不把这一单直接判死（2026-10-22）。
+
+        旧行为：`all(in_cooldown)` 立刻 raise ⇒ 上一单超时把资源冷却 120s 之后，
+        每一个正常任务都在这里瞬间 failed（用户看到「进度 0% 突然失败」）。
+        """
+        e = Fake()
+        p = EnginePoolFacade([(ResourceConfig('c', 'cloud'), e)],
+                             cooldown_sec=0.3, health_ttl=5.0, cancel_poll_sec=0.02)
+        await p._refresh_health()                      # 先建立健康位
+        self.assertTrue(p.health_state['c'][0])
+        p.cooldown_until['c'] = engine_base.time.monotonic() + 0.3
+        cfg, engine = await p._lease()                 # 冷却到期后应正常拿到租约
+        self.assertEqual(cfg.id, 'c')
+        self.assertIs(engine, e)
+        self.assertFalse(p.in_cooldown('c'))
+
+    async def test_all_cooling_gives_up_after_wait_max(self):
+        """冷却迟迟不恢复 ⇒ 到 `cooldown_wait_max` 才报错（不能永远 running）。"""
+        e = Fake()
+        p = EnginePoolFacade([(ResourceConfig('c', 'cloud'), e)],
+                             cooldown_sec=99.0, cooldown_wait_max=0.3, cancel_poll_sec=0.02)
+        p.cooldown_until['c'] = engine_base.time.monotonic() + 99.0
+        with self.assertRaises(RuntimeError):
+            await p._lease()
+
     async def test_weighted_sequential_fairness(self):
         a, b = Fake(), Fake()
         p = EnginePoolFacade([(ResourceConfig('a', 'cloud'), a),

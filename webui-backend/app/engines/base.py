@@ -346,7 +346,8 @@ class EnginePoolFacade:
     """按段选择资源的引擎门面；资源租约跨任务共享。"""
 
     def __init__(self, resources: list[tuple[ResourceConfig, TTSEngine]], cooldown_sec: float = 120.0,
-                 health_ttl: float = 15.0, cancel_poll_sec: float = 0.5):
+                 health_ttl: float = 15.0, cancel_poll_sec: float = 0.5,
+                 cooldown_wait_max: float | None = None):
         if not resources:
             raise ResourcePoolEmptyError("TTS 资源池不能为空")
         if len({cfg.id for cfg, _ in resources}) != len(resources):
@@ -354,6 +355,11 @@ class EnginePoolFacade:
         self.resources = resources
         self.cooldown_sec = cooldown_sec
         self.health_ttl = health_ttl
+        # 全部资源冷却时，租约最多等多久才放弃（默认 2×cooldown_sec）。冷却本身
+        # 有期限，等它到期是「排队」；超过这个上限说明资源真挂死，那时报错才有意义。
+        # 见 _lease 的同名注释（2026-10-22：旧行为是冷却即报错，会把别人的失败连坐）。
+        self.cooldown_wait_max = cooldown_sec * 2 if cooldown_wait_max is None else cooldown_wait_max
+        self._cool_log_ts = 0.0
         # 排队等待时的取消轮询间隔（秒）：越短取消越灵敏，越长越省 CPU
         self.cancel_poll_sec = cancel_poll_sec
         self.cooldown_until: dict[str, float] = {}
@@ -467,6 +473,9 @@ class EnginePoolFacade:
     async def _lease(self, should_cancel: Optional[Callable[[], bool]] = None
                      ) -> tuple[ResourceConfig, TTSEngine]:
         async with self._condition:
+            # 「全资源都在冷却」的放弃时刻。只在**第一次**发现全冷却时定，之后不再
+            # 重置 —— 否则「冷却到期 → 探活失败 → 立刻再冷却」会让上限永远算不出来。
+            cool_deadline: float | None = None
             while True:
                 if should_cancel is not None and should_cancel():
                     raise SynthesisCancelled("等待资源期间收到取消，未提交任何合成请求")
@@ -487,7 +496,26 @@ class EnginePoolFacade:
                     self._inflight[cfg.id] += 1
                     return cfg, engine
                 if all(self.in_cooldown(cfg.id) for cfg, _ in self.resources):
-                    raise RuntimeError("所有 TTS 资源均处于冷却中")
+                    # 全部冷却 ⇒ **等它自然到期**，不要把这一单直接判死（2026-10-22）。
+                    # 旧行为是立刻 raise：上一单超时 → 资源冷却 120s → 之后每一个正常
+                    # 任务都在这里瞬间 failed，用户看到的是「进度 0% 突然失败」。
+                    # 冷却是有期限的，等它到期属于排队；但要有上限（cooldown_wait_max），
+                    # 否则资源真挂死时任务会永远 running，比失败更难排查。
+                    now = time.monotonic()
+                    if cool_deadline is None:
+                        cool_deadline = now + self.cooldown_wait_max
+                        # 多段任务每个段都会走到这里 ⇒ 按池节流，别刷屏
+                        if now - self._cool_log_ts >= 60:
+                            self._cool_log_ts = now
+                            logger.warning(
+                                "[engine] 全部资源处于冷却中，改为等待恢复（最多 %.0fs）: %s",
+                                self.cooldown_wait_max,
+                                ", ".join(cfg.id for cfg, _ in self.resources),
+                            )
+                    elif now >= cool_deadline:
+                        raise RuntimeError(
+                            f"所有 TTS 资源均处于冷却中（已等待 {self.cooldown_wait_max:.0f}s 仍未恢复）"
+                        )
                 # 带超时等待：只要用户在该段排队期间点了取消，最多 0.5s 就能跳出
                 # 等待并抛 SynthesisCancelled —— 这是「提交前拦住新费用」的关键。
                 try:
