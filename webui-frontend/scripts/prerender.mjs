@@ -134,6 +134,9 @@ const html = `<!doctype html>
     <meta name="description" content="${esc(mod.LANDING_DESCRIPTION)}" />
     <meta name="keywords" content="${esc(mod.LANDING_KEYWORDS.join(","))}" />
     <meta name="robots" content="index,follow,max-image-preview:large" />
+    <!-- 百度搜索资源平台的「HTML 标签验证」凭据。本文件的 head 是手拼的，不会继承
+         index.html —— 与之**同值**，两处都要有（漏一处不报错，验证就是过不了）。 -->
+    <meta name="baidu-site-verification" content="codeva-rvteFquscq" />
     <link rel="canonical" href="${url}" />
     <link rel="alternate" hreflang="${mod.SITE_LANG}" href="${url}" />
     <link rel="alternate" hreflang="x-default" href="${url}" />
