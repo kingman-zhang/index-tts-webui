@@ -98,6 +98,7 @@ from .base import (
     EMO_VECTOR_ORDER,
     EngineCapabilities,
     EngineInputError,
+    RetryableResourceError,
     SegmentRequest,
 )
 # 情绪幅度表复用 302.ai 那份（同一个 IndexTTS-2 底座、同一套 8 维向量语义）。
@@ -275,7 +276,19 @@ class ModelverseEngine:
         return body[:300]
 
     async def _post_infer(self, data: dict, files: dict) -> httpx.Response:
-        """带连接级重试的提交（只重试连接没建立的情况，见 CONNECT_RETRIES）。"""
+        """带连接级重试的提交（只重试连接没建立的情况，见 CONNECT_RETRIES）。
+
+        两类失败的归因**刻意分开**（2026-10-23，生产事故后修）：
+
+          - 连接没建立（ConnectError / ConnectTimeout）：请求确定没到平台 ⇒ 重试不重复
+            计费，所以就地重试 CONNECT_RETRIES 次。
+          - 请求已经发出去了，但没在 REQUEST_TIMEOUT 内拿到响应（ReadTimeout 等）
+            ⇒ 抛 `RetryableResourceError`，**不在本地重试**（同一台平台只会再等一个
+            300s），交给池短冷却 + runner 的「失败段重试一次」换到别的资源。
+
+        事故数据：任务 q_ee0bcd7bf0 共 50 段，48 段 3~10s 正常返回，2 段卡满 300s。
+        旧行为把这两段当资源故障（冷却 120s + 禁止重试）⇒ 整单作废。
+        """
         last: Exception | None = None
         for attempt in range(CONNECT_RETRIES):
             if attempt:
@@ -287,6 +300,14 @@ class ModelverseEngine:
                 )
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 last = exc
+            except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError) as exc:
+                # 同步接口的固有长尾：平台可能还在推理，也可能已计费 ⇒ 语义上是
+                # 「状态未知」，但代价极小（¥0.4/万字，一段 300 字约 ¥0.012），
+                # 远小于「整单退掉已成功的 48 段」。所以允许重试换资源而不是判死。
+                raise RetryableResourceError(
+                    f"Modelverse 本次未拿到音频（{type(exc).__name__}，超过 {self.timeout:.0f}s 未响应"
+                    f"或连接中断；平台侧可能仍在推理/已计费）"
+                ) from exc
         raise RuntimeError(f"Modelverse 连接失败（已重试 {CONNECT_RETRIES - 1} 次）: {last}")
 
     async def synthesize_segment(self, req: SegmentRequest) -> bytes:

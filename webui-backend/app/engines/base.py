@@ -161,6 +161,26 @@ class NonRetryableSynthesisError(RuntimeError):
     """请求可能已经提交或计费，调用方不得自动重试。"""
 
 
+class RetryableResourceError(RuntimeError):
+    """这台资源**这一次**没给出结果，但资源本身没坏 —— 允许换一台重试该段。
+
+    与 NonRetryableSynthesisError 的分界（2026-10-23 新增，起因见下）：
+
+      - NonRetryableSynthesisError：提交状态未知且**大概率已计费**，重试等于重复扣钱，
+        所以宁可整单失败也不重试（保守，历史上是对的）。
+      - 本异常：重试的代价（可能重复计费的极小额度）**低于**「整单作废」的代价。
+        重试时池会把这一台短冷却，于是该段自然落到别的资源上，任务得以完成。
+
+    触发场景（实测）：云端**同步** TTS 接口（modelverse `POST /v1/audio/infer`）
+    单段长尾 —— 2026-10-23 生产任务 q_ee0bcd7bf0 共 50 段，48 段 3~10s 正常返回，
+    2 段卡到 300s 读超时。旧行为把它当资源故障：冷却 120s + 不可重试 ⇒
+    **整单作废，已成功计费的 48 段一起丢弃**。
+
+    池的处理（见 EnginePoolFacade.synthesize_segment）：不判死整台资源（不动
+    health_state），只打一个**短的** retryable_cooldown_sec，把这一轮让给别的资源。
+    """
+
+
 class SynthesisCancelled(RuntimeError):
     """调用方在提交前取消（等待租约期间发现 cancel 标记），未产生任何平台提交。
 
@@ -192,6 +212,8 @@ ENGINE_INPUT_ERRORS: tuple[type[BaseException], ...] = (EngineInputError, FileNo
 # runner 首次失败后**一律不重试**的异常（真值见 mono_runner._failed 的说明）：
 #   可能已计费（NonRetryableSynthesisError）/ 输入侧永久错误 / 用户主动取消。
 # 集中定义在一处，避免同一个名单散落在 base、mono_runner、podcast_runner 三份里各写一遍。
+# ⚠️ RetryableResourceError **刻意不在**这个名单里 —— 它的全部意义就是「该段要重试一次」；
+#    名单是「不重试」的判据，加进来就把它禁掉了。
 NON_RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
     NonRetryableSynthesisError,
     *ENGINE_INPUT_ERRORS,
@@ -347,7 +369,8 @@ class EnginePoolFacade:
 
     def __init__(self, resources: list[tuple[ResourceConfig, TTSEngine]], cooldown_sec: float = 120.0,
                  health_ttl: float = 15.0, cancel_poll_sec: float = 0.5,
-                 cooldown_wait_max: float | None = None):
+                 cooldown_wait_max: float | None = None,
+                 retryable_cooldown_sec: float = 30.0):
         if not resources:
             raise ResourcePoolEmptyError("TTS 资源池不能为空")
         if len({cfg.id for cfg, _ in resources}) != len(resources):
@@ -355,6 +378,11 @@ class EnginePoolFacade:
         self.resources = resources
         self.cooldown_sec = cooldown_sec
         self.health_ttl = health_ttl
+        # 「这一次没返回」的短冷却（见 RetryableResourceError）。为什么不能是 0：
+        # 重试批次紧接着就跑，若立刻恢复可用，该段会再次命中同一台长尾平台，白等一个
+        # REQUEST_TIMEOUT。为什么不能沿用 cooldown_sec(120s)：那等于判死资源，混池下
+        # 会把本可以走 art 的后续几十段一起拖慢，回到旧问题的反面。
+        self.retryable_cooldown_sec = retryable_cooldown_sec
         # 全部资源冷却时，租约最多等多久才放弃（默认 2×cooldown_sec）。冷却本身
         # 有期限，等它到期是「排队」；超过这个上限说明资源真挂死，那时报错才有意义。
         # 见 _lease 的同名注释（2026-10-22：旧行为是冷却即报错，会把别人的失败连坐）。
@@ -547,12 +575,28 @@ class EnginePoolFacade:
             # 准确文案（「参考音频文件不存在，请检查任务音色配置」）。
             logger.error("[engine] resource=%s 输入侧错误，不隔离该资源：%s", cfg.id, exc)
             raise
+        except RetryableResourceError as exc:
+            # 「这一次没返回」不等于「这台资源坏了」：**不动 health_state**（它没坏，
+            # 下一段大概率 3s 就回来），只打一个短冷却把这轮让给别的资源，
+            # 然后把异常原样抛给 runner —— 它不在 NON_RETRYABLE_ERRORS 里，
+            # 失败段重试一次时池会 lease 到另一台（2026-10-23，见类 docstring）。
+            self.cooldown_until[cfg.id] = time.monotonic() + self.retryable_cooldown_sec
+            logger.warning(
+                "[engine] resource=%s 本次未返回结果，短冷却 %.0fs（保留资源、允许重试换资源）：%s",
+                cfg.id, self.retryable_cooldown_sec, exc,
+            )
+            raise
         except Exception as exc:
             self.cooldown_until[cfg.id] = time.monotonic() + self.cooldown_sec
             self.health_state.pop(cfg.id, None)
             self.health_note.pop(cfg.id, None)   # 与健康位同生共死，别留下过期原因
             logger.warning("[engine] resource=%s 合成失败，隔离 %.0fs，不自动重提交", cfg.id, self.cooldown_sec)
-            raise NonRetryableSynthesisError(f"资源 {cfg.id} 合成失败，提交状态可能未知，禁止自动重试") from exc
+            # 原因必须进 message：queue_worker 只写 `str(e)`，而 `from exc` 的 cause
+            # 在任务卡上不可见 —— 2026-10-23 生产事故正是因此只能靠人工翻容器日志
+            # 才看出是 ReadTimeout（任务卡上只有「资源 modelverse 合成失败」）。
+            raise NonRetryableSynthesisError(
+                f"资源 {cfg.id} 合成失败，提交状态可能未知，禁止自动重试（原因：{exc}）"
+            ) from exc
         finally:
             async with self._condition:
                 self._inflight[cfg.id] -= 1
