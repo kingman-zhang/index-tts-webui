@@ -65,14 +65,30 @@ def send_email(to: str, subject: str, html: str) -> None:
             client.sendmail(SMTP_FROM, [to], msg.as_string())
 
 
-def send_verification_code(to: str, code: str, ttl_minutes: int) -> None:
-    """发送注册验证码邮件。"""
+def send_verification_code(to: str, code: str, ttl_minutes: int,
+                           purpose: str = "register") -> None:
+    """发送验证码邮件。`purpose` 决定标题与正文措辞（register / reset）。
+
+    文案必须区分：同一串数字若是「重置密码」，正文却写「您正在注册」，
+    用户会以为账号被人拿去注册了 —— 收到陌生人发来的重置码，正确处理是忽略，
+    而不是照着提示去改自己的密码。
+    """
+    if purpose == "reset":
+        title = "播客工坊 · 重置密码验证码"
+        lead = "您好！您正在重置播客工坊账号的密码，验证码为："
+        subject = f"重置密码验证码：{code}"
+        tail = "如果不是您本人操作，请忽略本邮件，并考虑更换邮箱密码。"
+    else:
+        title = "播客工坊 · 注册验证码"
+        lead = "您好！您正在注册播客工坊账号，验证码为："
+        subject = f"注册验证码：{code}"
+        tail = "如果这不是您本人的操作，请忽略本邮件。"
     html = f"""\
 <div style="max-width:480px;margin:0 auto;font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;color:#333;">
-  <h2 style="font-size:18px;margin:0 0 16px;">播客工坊 · 注册验证码</h2>
-  <p style="font-size:14px;line-height:1.6;margin:0 0 16px;">您好！您正在注册播客工坊账号，验证码为：</p>
+  <h2 style="font-size:18px;margin:0 0 16px;">{title}</h2>
+  <p style="font-size:14px;line-height:1.6;margin:0 0 16px;">{lead}</p>
   <p style="font-size:28px;font-weight:600;letter-spacing:6px;margin:0 0 16px;color:#534AB7;">{code}</p>
   <p style="font-size:13px;line-height:1.6;color:#888;margin:0 0 8px;">验证码 {ttl_minutes} 分钟内有效，请勿泄露给他人。</p>
-  <p style="font-size:13px;color:#888;margin:0;">如果这不是您本人的操作，请忽略本邮件。</p>
+  <p style="font-size:13px;color:#888;margin:0;">{tail}</p>
 </div>"""
-    send_email(to, f"注册验证码：{code}", html)
+    send_email(to, subject, html)

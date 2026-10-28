@@ -154,6 +154,12 @@ class RegisterEmailBody(BaseModel):
     nickname: str = ""
 
 
+class ResetPasswordBody(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+
 class ProfileBody(BaseModel):
     nickname: Optional[str] = None
     bio: Optional[str] = None
@@ -214,6 +220,25 @@ def auth_register_email(body: RegisterEmailBody):
     """邮箱 + 验证码 + 密码注册，成功即登录。"""
     try:
         return service.register_email(body.email, body.code, body.password, body.nickname)
+    except MemberError as e:
+        return _err(e)
+
+
+@router.post("/api/auth/password-code")
+def auth_password_code(body: EmailCodeBody):
+    """发送**重置密码**验证码（邮箱必须已注册；未配置 SMTP 返回 503）。"""
+    try:
+        return service.request_password_code(body.email)
+    except MemberError as e:
+        return _err(e)
+
+
+@router.post("/api/auth/reset-password")
+def auth_reset_password(body: ResetPasswordBody):
+    """邮箱 + 验证码 + 新密码重置密码（未登录）。成功踢掉该用户全部会话。"""
+    try:
+        service.reset_password(body.email, body.code, body.new_password)
+        return {"ok": True, "message": "密码已重置，请用新密码登录"}
     except MemberError as e:
         return _err(e)
 

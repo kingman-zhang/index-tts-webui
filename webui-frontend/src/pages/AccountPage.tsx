@@ -77,9 +77,11 @@ export default function AccountPage() {
 function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
   // 落地页的「免费注册」按钮带 `?tab=register` 进来，直接停在注册表单 ——
   // 少一次点击，也让落地页 CTA 的承诺（点了就是注册）与落地结果一致。
-  const [mode, setMode] = useState<"login" | "register">(
-    () => (new URLSearchParams(window.location.search).get("tab") === "register" ? "register" : "login")
-  );
+  // `?tab=reset` 同理：`/account?tab=reset` 可以直接当「找回密码」入口发出去。
+  const [mode, setMode] = useState<"login" | "register" | "reset">(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    return tab === "register" ? "register" : tab === "reset" ? "reset" : "login";
+  });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [nickname, setNickname] = useState("");
@@ -99,13 +101,23 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
 
   const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 
+  const backToLogin = () => {
+    setMode("login");
+    setErr("");
+    setHint("");
+    setCode("");
+    setCountdown(0);
+  };
+
   const sendCode = async () => {
     setErr("");
     setHint("");
     if (!EMAIL_RE.test(email)) { setErr("请输入正确的邮箱地址"); return; }
     setCodeBusy(true);
     try {
-      await memberApi.requestEmailCode(email);
+      // 注册码与重置码是两条通道（服务端按 purpose 隔离，不能混用）
+      if (mode === "reset") await memberApi.requestPasswordCode(email);
+      else await memberApi.requestEmailCode(email);
       setCountdown(60);
       setHint("验证码已发送，请查收邮箱（注意垃圾箱）");
     } catch (e) {
@@ -120,6 +132,18 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
     setHint("");
     setBusy(true);
     try {
+      if (mode === "reset") {
+        const res = await memberApi.resetPassword(email, code, password);
+        // 重置成功不自动登录：让用户拿新密码亲手登一次，避免「改完直接被登进去」
+        // 掩盖掉「我到底记住了没有」这个问题。邮箱留着、密码框清空。
+        setMode("login");
+        setUsername(email);
+        setCode("");
+        setCountdown(0);
+        setPassword("");
+        setHint(res.message || "密码已重置，请用新密码登录");
+        return;
+      }
       let body: { token: string; user: MemberUser };
       if (mode === "login") {
         body = await memberApi.login(username, password);
@@ -142,27 +166,39 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
 
   const canSubmit = mode === "login"
     ? !!username && !!password
-    : EMAIL_RE.test(email) && !!code && !!password;
+    : mode === "register"
+      ? EMAIL_RE.test(email) && !!code && !!password
+      : EMAIL_RE.test(email) && !!code && password.length >= 6;
 
   return (
     <div className="max-w-sm mx-auto">
       <Card>
         <CardHeader>
-          <div className="flex gap-1 p-1 bg-gray-100 rounded-lg">
-            {(["login", "register"] as const).map(m => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => { setMode(m); setErr(""); }}
-                className={cn(
-                  "flex-1 h-8 rounded-md text-xs font-medium transition-colors",
-                  mode === m ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
-                )}
-              >
-                {m === "login" ? "登录" : "注册"}
+          {mode === "reset" ? (
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-gray-800">找回密码</span>
+              <button type="button" onClick={backToLogin}
+                className="text-xs text-gray-500 hover:text-indigo-600 transition-colors">
+                返回登录
               </button>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <div className="flex gap-1 p-1 bg-gray-100 rounded-lg">
+              {(["login", "register"] as const).map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setMode(m); setErr(""); setHint(""); }}
+                  className={cn(
+                    "flex-1 h-8 rounded-md text-xs font-medium transition-colors",
+                    mode === m ? "bg-white text-indigo-700 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                  )}
+                >
+                  {m === "login" ? "登录" : "注册"}
+                </button>
+              ))}
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           {mode === "login" && (
@@ -172,7 +208,7 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
                 placeholder="用户名或注册邮箱" onKeyDown={e => e.key === "Enter" && submit()} />
             </div>
           )}
-          {mode === "register" && (
+          {(mode === "register" || mode === "reset") && (
             <>
               <div>
                 <Label>邮箱</Label>
@@ -201,18 +237,34 @@ function AuthPanel({ onDone }: { onDone: (msg: string) => void }) {
             </div>
           )}
           <div>
-            <Label>密码</Label>
+            <Label>{mode === "reset" ? "新密码" : "密码"}</Label>
             <Input type="password" value={password} onChange={e => setPassword(e.target.value)}
-              placeholder={mode === "register" ? "至少 6 位" : "输入密码"}
+              placeholder={mode === "login" ? "输入密码" : "至少 6 位"}
               onKeyDown={e => e.key === "Enter" && submit()} />
           </div>
+          {mode === "login" && (
+            <div className="flex justify-end -mt-1">
+              <button type="button"
+                onClick={() => { setMode("reset"); setErr(""); setHint(""); }}
+                className="text-[0.6875rem] text-gray-400 hover:text-indigo-600 transition-colors">
+                忘记密码？
+              </button>
+            </div>
+          )}
           {err && <p className="text-xs text-red-500">{err}</p>}
           {!err && hint && <p className="text-xs text-green-600">{hint}</p>}
-          <Button className="w-full" icon={busy ? Loader2 : LogIn} disabled={busy || !canSubmit} onClick={submit}>
-            {busy ? "请稍候" : mode === "login" ? "登录" : "注册（赠送积分）"}
+          <Button className="w-full" icon={busy ? Loader2 : mode === "reset" ? KeyRound : LogIn}
+            disabled={busy || !canSubmit} onClick={submit}>
+            {busy ? "请稍候" : mode === "login" ? "登录" : mode === "register" ? "注册（赠送积分）" : "重置密码"}
           </Button>
           {mode === "register" && (
             <p className="text-[0.6875rem] text-gray-400 text-center">新用户注册即送积分，可用于语音合成</p>
+          )}
+          {mode === "reset" && (
+            <p className="text-[0.6875rem] text-gray-400 text-center leading-relaxed">
+              验证码发到注册邮箱，10 分钟内有效<br />
+              重置后该账号在所有设备上的登录都会失效
+            </p>
           )}
         </CardContent>
       </Card>

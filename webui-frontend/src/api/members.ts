@@ -166,6 +166,18 @@ export const memberApi = {
       jsonInit("POST", { email, code, password, nickname }));
   },
 
+  /** 找回密码：发重置验证码（邮箱必须已注册）。与注册码是两条通道，码不能混用。 */
+  async requestPasswordCode(email: string) {
+    return fetchJSON<{ ok: boolean; ttl_minutes: number }>("/api/auth/password-code",
+      jsonInit("POST", { email }));
+  },
+
+  /** 找回密码：验证码 + 新密码。成功后服务端会踢掉该账号全部会话。 */
+  async resetPassword(email: string, code: string, newPassword: string) {
+    return fetchJSON<{ ok: boolean; message: string }>("/api/auth/reset-password",
+      jsonInit("POST", { email, code, new_password: newPassword }));
+  },
+
   async login(username: string, password: string) {
     return fetchJSON<{ token: string; user: MemberUser }>("/api/auth/login",
       jsonInit("POST", { username, password }));

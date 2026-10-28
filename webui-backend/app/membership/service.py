@@ -128,6 +128,12 @@ EMAIL_CODE_RESEND_INTERVAL = 60   # 同邮箱重发间隔
 EMAIL_CODE_DAILY_LIMIT = 10       # 同邮箱每日上限
 EMAIL_CODE_MAX_ATTEMPTS = 5       # 验证错误次数上限，超过作废
 
+# 验证码**用途**：注册码和重置密码码是两件事，混用等于让「刚收到的注册码」
+# 能直接去改别人账号的密码。存储里每条 entry 带 `purpose`；历史 entry 没有这个
+# 字段，一律按 register 处理（那时只有注册这一个用途，是安全的一侧）。
+CODE_PURPOSE_REGISTER = "register"
+CODE_PURPOSE_RESET = "reset"
+
 
 class MemberError(Exception):
     """业务错误：message 面向用户，code 为 HTTP 状态码。
@@ -308,17 +314,43 @@ def logout(token: str) -> None:
     revoke_session(token)
 
 
-# ─── 邮箱验证码 / 邮箱注册 ─────────────────────────────────
+# ─── 邮箱验证码 / 邮箱注册 / 找回密码 ───────────────────────
 
-def request_email_code(email: str) -> dict:
-    """发送注册验证码。限频：同邮箱 60s 一条、每日 10 条。"""
+def _find_user_by_email(email: str) -> Optional[dict]:
+    """按 **email 字段**精确取用户（故意不走 `find_user` 的用户名兜底匹配）。
+
+    为什么必须区分：`store.find_user(ident)` 会拿 ident 同时匹配 user_id/username/email。
+    重置密码只能认「邮箱」，否则一个用户名恰好写成 `a@b.com` 的账号（历史用户名注册
+    允许的字符集里没有 `@`，所以只是理论上可能，但代价是「验证码发到别人的邮箱、
+    改掉别人的密码」）就会被命中。多这一道字段比对，成本为零。
+    """
+    user = store.find_user(email)
+    if not user:
+        return None
+    if (user.get("email") or "").strip().lower() != email:
+        return None
+    return user
+
+
+def _issue_email_code(email: str, purpose: str) -> dict:
+    """发码公共实现。`purpose` 决定「邮箱必须未注册 / 必须已注册」。
+
+    限频：同邮箱 60s 一条、每日 10 条。两种用途共用同一条 entry（一个邮箱只留一个
+    码），所以窗口天然共用；实践中两者不会互相顶掉 —— 注册码要求未注册、重置码要求
+    已注册，前提互斥，一个邮箱在同一时刻只可能是其中一种状态。
+    """
     email = (email or "").strip().lower()
     if not EMAIL_RE.match(email) or len(email) > 254:
         raise MemberError("邮箱格式不正确")
     if not mailer.configured():
         raise MemberError("邮箱服务未配置（服务端需设置 SMTP_* 环境变量）", 503)
-    if store.find_user(email):
+    exists = _find_user_by_email(email) is not None
+    if purpose == CODE_PURPOSE_REGISTER and exists:
         raise MemberError("该邮箱已注册，可直接登录", 409)
+    if purpose == CODE_PURPOSE_RESET and not exists:
+        # 刻意**明说**没注册：注册接口本来就回「该邮箱已注册」（同一份信息），
+        # 这里再藏存在性没有收益，只会让「是不是填错邮箱」的人白等一封永远不来的信。
+        raise MemberError("该邮箱尚未注册，请先注册", 404)
     now = time.time()
     today = datetime.now().strftime("%Y-%m-%d")
     codes = store.load_email_codes()
@@ -334,6 +366,7 @@ def request_email_code(email: str) -> dict:
     codes = {k: v for k, v in codes.items() if v.get("expires_ts", 0) > now - 86400}
     codes[email] = {
         "code": code,
+        "purpose": purpose,
         "expires_ts": now + EMAIL_CODE_TTL,
         "sent_ts": now,
         "attempts": 0,
@@ -342,7 +375,7 @@ def request_email_code(email: str) -> dict:
     }
     store.save_email_codes(codes)
     try:
-        mailer.send_verification_code(email, code, EMAIL_CODE_TTL // 60)
+        mailer.send_verification_code(email, code, EMAIL_CODE_TTL // 60, purpose)
     except Exception as e:  # 发送失败即作废本次验证码，避免"收不到码还报成功"
         codes = store.load_email_codes()
         codes.pop(email, None)
@@ -351,27 +384,75 @@ def request_email_code(email: str) -> dict:
     return {"ok": True, "ttl_minutes": EMAIL_CODE_TTL // 60}
 
 
-def register_email(email: str, code: str, password: str, nickname: str = "") -> dict:
-    """邮箱注册：验证码通过后建号。用户名从邮箱前缀自动派生并保证唯一。"""
-    email = (email or "").strip().lower()
-    code = (code or "").strip()
-    if not EMAIL_RE.match(email):
-        raise MemberError("邮箱格式不正确")
-    if len(password or "") < 6:
-        raise MemberError("密码至少 6 位")
+def _consume_email_code(email: str, code: str, purpose: str) -> None:
+    """校验一条验证码并**作废**它（一次性）。用途不符直接拒。
+
+    作废放在「验证通过后、业务动作前」：调用方拿到返回值时码已经不能再用，
+    避免「同一封邮件反复提交」在并发下多改一次。
+    """
     codes = store.load_email_codes()
     entry = codes.get(email)
     if not entry:
         raise MemberError("请先获取验证码")
+    if (entry.get("purpose") or CODE_PURPOSE_REGISTER) != purpose:
+        raise MemberError("验证码用途不匹配，请重新获取")
     if entry.get("expires_ts", 0) < time.time():
         raise MemberError("验证码已过期，请重新获取")
     if entry.get("attempts", 0) >= EMAIL_CODE_MAX_ATTEMPTS:
         raise MemberError("验证码错误次数过多，请重新获取")
-    if code != entry["code"]:
+    if (code or "").strip() != entry["code"]:
         entry["attempts"] = entry.get("attempts", 0) + 1
         store.save_email_codes(codes)
         remain = EMAIL_CODE_MAX_ATTEMPTS - entry["attempts"]
         raise MemberError(f"验证码错误（剩余 {max(0, remain)} 次机会）")
+    codes.pop(email, None)
+    store.save_email_codes(codes)
+
+
+def request_email_code(email: str) -> dict:
+    """发送注册验证码（邮箱必须未注册）。"""
+    return _issue_email_code(email, CODE_PURPOSE_REGISTER)
+
+
+def request_password_code(email: str) -> dict:
+    """发送**重置密码**验证码（邮箱必须已注册）。"""
+    return _issue_email_code(email, CODE_PURPOSE_RESET)
+
+
+def reset_password(email: str, code: str, new_password: str) -> None:
+    """用邮箱验证码重置密码（未登录态）。
+
+    成功后**吊销该用户全部会话**：忘记密码的真实前提往往是「密码可能已经泄露」，
+    重置只改密不踢线，等于让已经拿到旧 token 的人继续用下去。
+    """
+    email = (email or "").strip().lower()
+    if not EMAIL_RE.match(email):
+        raise MemberError("邮箱格式不正确")
+    if len(new_password or "") < 6:
+        raise MemberError("新密码至少 6 位")
+    user = _find_user_by_email(email)
+    if not user:
+        raise MemberError("该邮箱尚未注册，请先注册", 404)
+    if user.get("disabled"):
+        raise MemberError("账号已被禁用，请联系管理员", 403)
+    _consume_email_code(email, code, CODE_PURPOSE_RESET)
+    salt, pwd_hash = hash_password(new_password)
+    store.update_user_fields(user["user_id"], {
+        "salt": salt,
+        "password_hash": pwd_hash,
+        "updated_at": datetime.now().isoformat(),
+    })
+    revoke_user_sessions(user["user_id"])
+
+
+def register_email(email: str, code: str, password: str, nickname: str = "") -> dict:
+    """邮箱注册：验证码通过后建号。用户名从邮箱前缀自动派生并保证唯一。"""
+    email = (email or "").strip().lower()
+    if not EMAIL_RE.match(email):
+        raise MemberError("邮箱格式不正确")
+    if len(password or "") < 6:
+        raise MemberError("密码至少 6 位")
+    _consume_email_code(email, code, CODE_PURPOSE_REGISTER)
     if store.find_user(email):
         raise MemberError("该邮箱已注册，可直接登录", 409)
     # 用户名派生：邮箱前缀过滤成合法字符，冲突则加随机后缀
@@ -379,9 +460,6 @@ def register_email(email: str, code: str, password: str, nickname: str = "") -> 
     username = base
     while store.find_user(username):
         username = f"{base}_{uuid.uuid4().hex[:4]}"
-    # 验证通过：作废验证码（一次性）
-    codes.pop(email, None)
-    store.save_email_codes(codes)
 
     user_id = f"u_{uuid.uuid4().hex[:12]}"
     salt, pwd_hash = hash_password(password)

@@ -20,6 +20,12 @@ from pathlib import Path
 TMP = tempfile.mkdtemp(prefix="wb-email-test-")
 os.environ["DATA_DIR"] = TMP
 os.environ["MEMBER_REG_BONUS"] = "100"
+# ⚠️ 必须把存储钉在本地的 file 后端：真实环境变量优先于 .env，本机 .env 配的是
+#    MEMBER_STORE=mongo / SESSION_STORE=redis，不钉住就会把测试账号写进**开发库**
+#    （2026-10-28 实际踩到：跑一次就往 mongo users 塞进 user1@example.com 等几个账号，
+#    第二次再跑直接「邮箱已注册」）。DATA_DIR 只对 file 后端有效。
+os.environ["MEMBER_STORE"] = "file"
+os.environ["SESSION_STORE"] = "file"
 
 # ─── mini SMTP 服务器（明文，SMTP_TLS=none 配套） ──────────
 
