@@ -3,10 +3,11 @@
 """文本诊断：一句话为什么被读错 / 我配的词条为什么没生效。
 
 TTS 读错字的投诉里，绝大多数不是「模型不行」，而是**送进去的文本已经不是用户以为的那份**。
-这条链路有八道关，任何一道静默改变文本，用户都看不见：
+这条链路有九道关，任何一道静默改变文本，用户都看不见：
 
     原文 --[术语表 str.replace]--> --[人名分隔号归一化]--> --[年份读法]-->
-         --[时间读法]--> --[区间读法]--> --[数值读法]--> --[数字读法（号码）]--> 发往引擎
+         --[时间读法]--> --[区间读法]--> --[数值读法]--> --[数字读法（号码）]-->
+         --[符号清洗]--> 发往引擎
 
 （2026-09-29 补一道「年份读法」：它原先只存在于 tts-server 的本地引擎链路上，
 云引擎链路绕过它 ⇒「以前修好的年份读法又坏了」。详见 webui-backend/app/year_norm.py。
@@ -25,6 +26,11 @@ webui-backend/app/time_norm.py。
 **整个丢掉**（`10 ~15 岁` 实测读成「十到一五岁」，用户听到像漏字）。年份区间仍归
 上一道「年份」管，本道只接「两端都是普通数字」的形态。详见
 webui-backend/app/range_norm.py。）
+
+2026-10-28 再补一道「符号清洗」：`（）[ ]「」《》` 这类人类不读的符号，
+IndexTTS 的 `front.py` 会把它们**折成孤立的单引号 token**（不是 unk，编码是成功的，
+所以 unk 检查抓不到）⇒ 每个符号处一小段气声，用户听到的是「很短的一个声音」。
+本道提前换成逗号/删除。见 `app/symbol_norm.py`。
 
 本工具把这条链路**逐步打印**出来，并把「看不见的字符」曝光：
 同一个视觉符号（中点、破折号、引号、空格）可能有多个 Unicode 码位，
@@ -86,6 +92,7 @@ from app import (  # noqa: E402
     number_norm,
     range_norm,
     stores,
+    symbol_norm,
     time_norm,
     year_norm,
 )
@@ -101,9 +108,14 @@ CJK_RANGES = (
     (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2FA1F),
 )
 
+# front.py 的 char_rep_map 里**值为单引号**的那些键（2026-10-28）。
+# 它们不是 unk —— 编码是成功的，所以 symbol_risks() 的 unk 判据永远抓不到；
+# 但 `'` 是孤立 token、不表示任何音素，模型在每个位置都得硬生成一小段音频。
+# 与 app/symbol_norm.py 的 _BRACKET_CHARS + _QUOTE_CHARS 保持一致。
+SINGLE_QUOTE_FOLD = "（）()［］[]【】〔〕〖〗｛｝{}《》〈〉「」『』\"“”‘’"
+
 # 「看起来一样但不是一个字符」的重灾区，用于把可疑字符点名说清楚
-SUSPICIOUS_NAMES = {
-    "\u00b7": "中文间隔号（标准中点）",
+SUSPICIOUS_NAMES = {    "\u00b7": "中文间隔号（标准中点）",
     "\u0387": "希腊分号点",
     "\u16eb": "卢恩单标点",
     "\u2022": "项目符号圆点",
@@ -199,6 +211,9 @@ def show_env() -> dict:
           f"110元 → 一百一十元、30% → 百分之三十）")
     print(f"数字读法归一化    : {'开' if number_norm.ENABLED else '关'}"
           f"（号码方向；与上一道互补）")
+    print(f"符号清洗          : {'开' if symbol_norm.ENABLED else '关'}"
+          f"（规则版本 v{symbol_norm.RULE_VERSION}；括号/方括号→逗号、书名号/引号→删除，"
+          f"专治「每个符号一小段气声」）")
     return {"terms": len(terms), "synth_terms": len(synth_terms)}
 
 
@@ -256,6 +271,11 @@ def run_chain(text: str, terms: list, member_id: str | None) -> dict:
                    if num_value_norm.ENABLED else after_range)
     after_number = (number_norm.apply_number_rules([{"text": after_value}])[0]["text"]
                     if number_norm.ENABLED else after_value)
+    # 符号层排最后（2026-10-28）：它删括号/引号、把分号冒号换逗号。放最后是因为
+    # 前面几层要靠这些符号做语境判断（如数值层的「第 2 章」），先删会让它们看不见；
+    # 而 `[pause:N]` / `<#>` 在本层内部占位保护，不会被当成方括号吃掉。
+    after_symbol = (symbol_norm.apply_symbol_rules([{"text": after_number}])[0]["text"]
+                    if symbol_norm.ENABLED else after_number)
     return {
         "original": text,
         "hits": hit,
@@ -265,9 +285,11 @@ def run_chain(text: str, terms: list, member_id: str | None) -> dict:
         "after_time": after_time,
         "after_range": after_range,
         "after_value": after_value,
-        "final": after_number,
+        "after_number": after_number,
+        "after_symbol": after_symbol,
+        "final": after_symbol,
         # 引擎侧清洗（本地 front.py 的 char_rep_map）：云端是否有同表未知
-        "after_front": apply_front_char_map(after_number),
+        "after_front": apply_front_char_map(after_symbol),
     }
 
 
@@ -300,10 +322,16 @@ def show_chain(stage: dict, verbose: bool = False) -> None:
         print(f"数值   : {stage['after_value']}")
     elif verbose:
         print("数值   : （未改动）")
-    if stage["final"] != stage["after_value"]:
-        print(f"号码   : {stage['final']}")
+    if stage["after_number"] != stage["after_value"]:
+        print(f"号码   : {stage['after_number']}")
     elif verbose:
         print("号码   : （未改动）")
+    if stage["after_symbol"] != stage["after_number"]:
+        print(f"符号   : {stage['after_symbol']}")
+        print("         ↑ 括号/引号/书名号会被引擎折成孤立单引号 token（每个符号一小段气声），")
+        print("           本道提前换成逗号或删掉；原样保留的只有 % $ ¥ / 等有 TN 读法的字符。")
+    elif verbose:
+        print("符号   : （未改动）")
     if stage["after_front"] != final:
         print(f"引擎侧 : {stage['after_front']}")
         print("         ↑ 本地 front.py 的字符替换表（如 ·→-）会再改一道；")
@@ -495,7 +523,7 @@ def main() -> int:
         if not odd:
             print("（无：汉字、ASCII 与常见中文标点）")
 
-        print("\n-- 八道关 --")
+        print("\n-- 九道关 --")
         stage = run_chain(text, terms, None)
         show_chain(stage, verbose=args.verbose)
 
@@ -513,6 +541,22 @@ def main() -> int:
                 print("  模型在这些位置拿不到已知音素，读出什么是自由的。")
                 print("  解法一：补一条词条把它换成汉字读音（如 9・11 → 九幺幺）")
                 print("  解法二：改用表内形态（· U+00B7 会被 front.py 换成 '-'）")
+
+        # 「会被折成单引号」的一类（2026-10-28 补）：它们**不是 unk**，编码也成功，
+        # 所以上面那节 unk 检查永远抓不到 —— 但它们才是「每个符号一小段气声」的
+        # 真正来源。这里扫**原文**（不是 final）：final 已被符号层清干净，
+        # 那样反而看不出「原本有多少个」。是否已被处理看开关。
+        quoted = [(i, ch) for i, ch in enumerate(text) if ch in SINGLE_QUOTE_FOLD]
+        if quoted:
+            names = Counter(ch for _i, ch in quoted)
+            detail = "、".join(f"{ch!r}×{n}" for ch, n in names.most_common())
+            print("\n-- 会被折成单引号的符号（每个符号一小段气声） --")
+            print(f"  {detail}（共 {len(quoted)} 个）—— front.py 的 char_rep_map 把它们")
+            print("  折成孤立的 `'` token：编码成功、不是 unk，所以上一节检查抓不到。")
+            if symbol_norm.ENABLED:
+                print(f"  本进程的符号层已开启（v{symbol_norm.RULE_VERSION}）⇒ 已换成逗号/删除。")
+            else:
+                print("  ⚠️ 本进程的符号层**已关闭**（SYMBOL_NORMALIZE=0）⇒ 真的会出声。")
 
         print()
         if risks:

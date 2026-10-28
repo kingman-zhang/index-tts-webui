@@ -57,7 +57,7 @@ async def on_startup():
     logger.info(
         "[startup] 文本前处理：术语表 %s 条（合成展开 %s）"
         " / 人名分隔号 %s(%s) / 年份读法 %s / 时间读法 %s / 区间读法 %s(%s)"
-        " / 数值读法 %s / 数字读法 %s",
+        " / 数值读法 %s / 数字读法 %s / 符号清洗 %s(v%s)",
         _tp.get("glossary_terms"), _tp.get("glossary_terms_for_synthesis"),
         "开" if _tp.get("name_punct_enabled") else "关", _tp.get("name_punct_target"),
         "开" if _tp.get("year_norm_enabled") else "关",
@@ -65,6 +65,7 @@ async def on_startup():
         "开" if _tp.get("range_normalize") else "关", _tp.get("range_norm_separator"),
         "开" if _tp.get("num_value_normalize") else "关",
         "开" if _tp.get("number_norm_enabled") else "关",
+        "开" if _tp.get("symbol_normalize") else "关", _tp.get("symbol_rule_version"),
     )
     # 引擎链路（2026-09-29）：注册顺序即优先级，能力由各引擎自己声明。
     # 「这次为什么走了某个引擎」此前完全不可见，只能靠猜；这一行 + /api/version

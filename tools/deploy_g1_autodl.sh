@@ -124,7 +124,8 @@ print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >
 print("  区间读法归一   :", tp.get("range_normalize"), "| 分隔符", tp.get("range_norm_separator"),
       "| 空白码位", tp.get("range_norm_space_codepoints"))
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
-print("  数字读法归一   :", tp.get("number_norm_enabled"))
+print("  数字读法归一   :", tp.get("number_norm_enabled"),
+      "| 符号清洗", tp.get("symbol_normalize"), "v%s" % tp.get("symbol_rule_version"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 vm = v.get("voice_management") or {}
 print("  音色管理结构   : schema v%s" % vm.get("schema_version"), "|", vm.get("layout"), "| 服务器名", vm.get("server_naming"))
@@ -168,6 +169,14 @@ assert 12288 in (tp.get("range_norm_space_codepoints") or []), (
 # 只有把这张表列出来才知道进程跑的是哪一版。
 assert "第" in (tp.get("num_value_ordinal_markers") or []), (
     "!! 数值层缺序数规则（字段缺失或表里没有「第」）—— 第2章 会被读成「第两章」")
+# symbol_rule_version 是 2026-10-28「不发音符号」引入的新符号。用户报「文本里有
+# `（）[ ]` 时每个符号处有一小段气声」：这些字符被 front.py 的 char_rep_map 折成
+# **孤立的单引号 token**（编码成功、不是 unk，所以 unk 检查抓不到）。字段缺失 =
+# 镜像里还没有这一层 ⇒ 括号照样出声。报**版本**而非开关：将来「括号→删除」与
+# 「括号→逗号」两版 symbol_normalize 都是 true，看不出差异。
+assert (tp.get("symbol_rule_version") or 0) >= 1, (
+    "!! 符号清洗这一层不在（字段缺失）—— 文本里的 （）[ ]「」《》 会在音频里各出现"
+    "一小段气声")
 # voice_management.schema_version 是 2026-10-02「音色 id 化 + 上传广播」引入的新符号。
 # 为什么必须是取值而不是开关：改动前后 `/api/voices` 都能返回列表、上传也都能 200，
 # 光看接口通不通分辨不出来。v2 = 上传落 data/voices/<user_id>/<voice_id> + 广播到池内
@@ -364,7 +373,8 @@ print("  时间读法归一   :", tp.get("time_norm_enabled"), "| 受理段数 >
 print("  区间读法归一   :", tp.get("range_normalize"), "| 分隔符", tp.get("range_norm_separator"),
       "| 空白码位", tp.get("range_norm_space_codepoints"))
 print("  数值读法归一   :", tp.get("num_value_normalize"), "| 受理位数 <=", tp.get("num_value_max_digits"), "| 两/二 语境", tp.get("num_value_ordinal_markers"))
-print("  数字读法归一   :", tp.get("number_norm_enabled"))
+print("  数字读法归一   :", tp.get("number_norm_enabled"),
+      "| 符号清洗", tp.get("symbol_normalize"), "v%s" % tp.get("symbol_rule_version"))
 print("  全局词条 / 合成:", tp.get("glossary_terms"), "/", tp.get("glossary_terms_for_synthesis"))
 print("  中点变体展开   :", tp.get("glossary_sep_variants"), "上限", tp.get("glossary_sep_variants_max"))
 vm = v.get("voice_management") or {}
@@ -426,8 +436,12 @@ assert 12288 in (tp.get("range_norm_space_codepoints") or []), (
 assert (tp.get("time_norm_max_parts") or 0) >= 2, (
     "!! 时间读法这一层不在（字段缺失）—— 12:30 / 12 : 30 / 0:30 会原样进模型，"
     "带空格与 0 点开头的会被读成「比」")
-# stale_sources 放最后断言：它监视的是 build_info.WATCHED 里那组文本/引擎链路文件
-# （name_punct / year_norm / time_norm / num_value_norm / number_norm / stores /
+# symbol_rule_version（2026-10-28）：`（）[ ]「」《》` 被 front.py 折成孤立单引号
+# token ⇒ 每个符号处一小段气声。字段缺失 = 这段代码还没上服务器。
+assert (tp.get("symbol_rule_version") or 0) >= 1, (
+    "!! 符号清洗这一层不在（字段缺失）—— 文本里的 （）[ ]「」《》 会在音频里各出现"
+    "一小段气声")
+# stale_sources 放最后断言：它监视的是 build_info.WATCHED 里那组文本/引擎链路文件# （name_punct / year_norm / time_norm / num_value_norm / number_norm / stores /
 # queue_worker / engines 三件），比较用的是浮点 mtime，秒级不模糊。正常「先 pull 再重启」
 # 的顺序下它必然为空；若非空，说明确有文件在这次启动之后被写过，是真问题。
 assert not (v.get("stale_sources") or []), (
@@ -447,6 +461,14 @@ if python3 tools/diagnose_text.py "在 2011 年发生的事" 2>/dev/null | grep 
   echo "    [ok] 年份读法生效（2011 年 → 二零一一年）"
 else
   echo "    !! 年份未被逐位读 —— 见 webui-backend/app/year_norm.py"
+  exit 1
+fi
+# 符号清洗（2026-10-28）：括号/方括号昨天还是原样进模型、每个符号一小段气声。
+# 判据＝diagnose_text 打出「符号 :」这一行（说明这一道关真的跑了）。
+if python3 tools/diagnose_text.py "他说（笑）你好[测试]" 2>/dev/null | grep -q "^符号   :"; then
+  echo "    [ok] 符号清洗生效（（笑）[测试] → 逗号分隔）"
+else
+  echo "    !! 括号/方括号未被清洗 —— 见 webui-backend/app/symbol_norm.py"
   exit 1
 fi
 

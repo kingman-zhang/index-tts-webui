@@ -11,9 +11,17 @@ from fastapi import HTTPException
 
 from .config import TTS_URL, http_client, logger
 # import 顺序有语义：config 先加载 .env，而 name_punct / year_norm / time_norm /
-# range_norm / num_value_norm / number_norm 的开关是**模块级**读 os.environ 的。
-# 顺序反了会落到缺省值。
-from . import name_punct, num_value_norm, number_norm, range_norm, time_norm, year_norm
+# range_norm / num_value_norm / number_norm / symbol_norm 的开关是**模块级**读
+# os.environ 的。顺序反了会落到缺省值。
+from . import (
+    name_punct,
+    num_value_norm,
+    number_norm,
+    range_norm,
+    symbol_norm,
+    time_norm,
+    year_norm,
+)
 from .stores import apply_glossary, load_glossary_for_synthesis
 from . import queue_state as qs
 from .membership import service as member_svc
@@ -233,6 +241,15 @@ async def _execute_task(task_id: str) -> None:
         # 默认关闭；NUM_NORMALIZE=1 启用。详见 app/number_norm.py 与 NUMBER_NORMALIZATION.md。
         if number_norm.ENABLED:
             synth_lines = number_norm.apply_number_rules(synth_lines)
+        # 不发音符号：`（）[ ]「」《》` 这类人类不读的符号，IndexTTS 的 char_rep_map
+        # 会把它们折成**孤立的单引号 token** ⇒ 每个符号处一小段气声（用户报的
+        # 「很短的一个声音」，2026-10-28 token 级定位）。本层换成逗号/删除，
+        # 顺手统一分号冒号。**必须排最后**：前面的层要靠这些符号做语境判断
+        # （如 num_value_norm 的「第」上下文），先删会让它们看不见原文；
+        # `[pause:N]` / `<#>` 在本层内部占位保护，不会被当成方括号删掉。
+        # 详见 app/symbol_norm.py。
+        if symbol_norm.ENABLED:
+            synth_lines = symbol_norm.apply_symbol_rules(synth_lines)
 
         # 合成只有一条路径：引擎适配层（engines/），在 backend 进程内合成。
         # 2026-09-29 之前这里还有一条兜底：kind 不是 mono/podcast 时

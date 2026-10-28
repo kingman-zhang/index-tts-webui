@@ -74,6 +74,9 @@ WATCHED = (
     "app/range_norm.py",
     "app/num_value_norm.py",
     "app/number_norm.py",
+    # 符号清洗（2026-10-28 新增）：出现即证明「不发音符号」这一层已加载
+    # （=== null 说明跑的是括号会被折成单引号、每个符号一小段气声的旧代码）。
+    "app/symbol_norm.py",
     "app/stores.py",
     "app/queue_worker.py",
     # 队列存储门面（2026-10-13 B1 新增）：**这个文件在 source_mtimes 里出现本身就
@@ -178,6 +181,7 @@ def _text_switches() -> dict:
             number_norm,
             range_norm,
             stores,
+            symbol_norm,
             time_norm,
             year_norm,
         )
@@ -225,6 +229,11 @@ def _text_switches() -> dict:
             # 直接说明进程加载的是修过的那一版还是初版 —— 开关两者都是 true，看不出。
             "num_value_ordinal_markers": list(num_value_norm.ORDINAL_MARKERS),
             "number_norm_enabled": number_norm.ENABLED,
+            # 不发音符号（2026-10-28 新增）：`（）[ ]「」《》` 会被 IndexTTS 的
+            # char_rep_map 折成**孤立的单引号 token** ⇒ 每个符号处一小段气声。
+            # 出现该字段即说明进程加载的是含 symbol_norm 的代码（这次改动的判据）。
+            "symbol_normalize": symbol_norm.ENABLED,
+            "symbol_rule_version": symbol_norm.RULE_VERSION,
             "glossary_sep_variants": stores.GLOSSARY_SEP_VARIANTS,
             "glossary_sep_variants_max": stores.MAX_SEP_VARIANTS,
             "glossary_terms": len(terms),
