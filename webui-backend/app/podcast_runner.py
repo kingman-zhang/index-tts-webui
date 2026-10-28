@@ -40,6 +40,7 @@ import subprocess
 from pathlib import Path
 
 from . import audio_norm
+from . import audio_trim
 from . import queue_state as qs
 from .config import logger
 from .engines import (
@@ -293,6 +294,9 @@ async def run_podcast_task(task: dict, lines: list | None = None) -> None:
         post_speed = post_speeds[entry["speaker"]]
         if abs(post_speed - 1.0) >= 1e-3:
             audio = await asyncio.to_thread(_apply_speed, audio, post_speed)
+        # 裁头尾静音（app/audio_trim.py）：必须在变速**之后** —— atempo 会改变
+        # 时长，先裁再变速的余量会按比例缩水。开关 PODCAST_TRIM=off 时原样返回。
+        audio = await asyncio.to_thread(audio_trim.trim_if_enabled, audio)
         state["done"] += 1
         _update_progress()
         return audio

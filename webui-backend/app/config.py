@@ -303,6 +303,20 @@ PODCAST_DEFAULT_SILENCE = {
     "speaker_switch": PODCAST_SILENCE_SWITCH_MS,
 }
 
+# ─── 段级首尾静音裁剪（2026-10-27）───
+# 每段音频自己带的头尾空白会让上面的静音配置值失真（短应答「没错」实测
+# 1.43s 里有 0.96s 是空气，见 app/audio_trim.py 模块注释）。裁掉之后
+# `silence_after_ms` 的标称值才等于实际听到的间隔。
+#
+# PODCAST_TRIM：on（默认）/ off。off 时完全不做，行为与本改动前一致。
+# 阈值取相对峰值的 dB —— 写死绝对值会让小音量段被整段误判成静音。
+PODCAST_TRIM = os.environ.get("PODCAST_TRIM", "on").strip().lower() not in (
+    "off", "0", "false", "no", "none",
+)
+PODCAST_TRIM_THR_DB = float(os.environ.get("PODCAST_TRIM_THR_DB", "-45"))
+PODCAST_TRIM_KEEP_HEAD_MS = max(0, int(os.environ.get("PODCAST_TRIM_KEEP_HEAD_MS", "30")))
+PODCAST_TRIM_KEEP_TAIL_MS = max(0, int(os.environ.get("PODCAST_TRIM_KEEP_TAIL_MS", "60")))
+
 # ─── 单人配音（kind=mono）换行后的行间静音 ───
 # 单人只有一个说话人，没有「说话人切换」语义，故只开一个旋钮；
 # 它加在**每行末尾**，与行内 [pause:N] 叠加（叠加后仍受 MAX_GAP_MS 钳制）。
