@@ -87,9 +87,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -105,6 +107,8 @@ from .base import (
 # 复制一份表迟早两边漂移，所以只留一个来源：改幅度两边同时生效。
 from .indextts_302ai import DEFAULT_AMPLITUDE, EMOTION_AMPLITUDE
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_BASE_URL = "https://api.modelverse.cn"
 MODEL = "IndexTeam/IndexTTS-2"
 
@@ -119,9 +123,19 @@ INTERVAL_SILENCE_MS = 200
 EMO_ALPHA = 1.0
 
 HEALTH_TTL = 300.0
-# 单段 300s：600 字实测 ~41s 墙钟（RTF 0.3~0.6）；但语速调到 0.25× 时
-# 音频要长 4 倍 ⇒ 留足余量，宁可不卡在超时上（非幂等请求，超时=白花钱）
-REQUEST_TIMEOUT = 300.0
+# 单段 40s（2026-10-29 由 300s 下调）。
+#
+# 依据＝**平台调用日志的实际耗时**：单段（池上限切出来的 ≈294 汉字）2.15s / 2.27s /
+# 12.95s / 17.77s / 19.50s，最长 19.5s ⇒ 40s 约有 2 倍余量。
+# 为什么值得下调：同步接口一旦长尾，这 40s 会**独占一个并发额度**（默认 3），
+# `gather` 又必须等所有段 ⇒ 整单进度看起来完全不动。300s 时这个「假死」是 5 分钟。
+#
+# ⚠️ 已知边界（不是 bug，是刻意的取舍）：语速会成比例拉长输出时长，
+# 而推理时间大致跟着音频时长走 ⇒ 0.5× 时单段可能到 ~40s（踩线）、0.25× 约 80s
+# （必然被误判超时）。误判的代价只是「抛 RetryableResourceError → 池短冷却 30s
+# → 该段重试租到别的资源」，钱上亏一段（¥0.01 级），数据不会坏。
+# 若将来真要在慢语速上放开：改成 `40 / max(speed, 0.25)` 即可，**不要退回 300**。
+REQUEST_TIMEOUT = 40.0
 # 提交的连接级重试：只重试「连接没建立」类错误（请求确定没到服务器，重试不重复计费）。
 # 读超时/响应中断**一律不重试** —— 那时平台可能已经接单并计费。
 CONNECT_RETRIES = 3
@@ -275,7 +289,20 @@ class ModelverseEngine:
             return str(err)[:300]
         return body[:300]
 
-    async def _post_infer(self, data: dict, files: dict) -> httpx.Response:
+    # 平台侧「请求 ID」的头名文档里没写（只在错误体的 `error.param` 里提了一句
+    # 「请求 ID，用于反馈或排查错误原因」）⇒ 按常见名逐个试；一个都没有就在日志里
+    # 写「平台id=无」，这样下次一看日志就知道该平台到底回不回这个头。
+    _TRACE_HEADERS = ("x-request-id", "x-requestid", "request-id", "x-trace-id", "traceparent")
+
+    @classmethod
+    def _trace_id(cls, resp: httpx.Response) -> str:
+        for name in cls._TRACE_HEADERS:
+            value = resp.headers.get(name)
+            if value:
+                return f"平台id({name})={value}"
+        return "平台id=无"
+
+    async def _post_infer(self, data: dict, files: dict, text: str = "") -> httpx.Response:
         """带连接级重试的提交（只重试连接没建立的情况，见 CONNECT_RETRIES）。
 
         两类失败的归因**刻意分开**（2026-10-23，生产事故后修）：
@@ -284,26 +311,43 @@ class ModelverseEngine:
             计费，所以就地重试 CONNECT_RETRIES 次。
           - 请求已经发出去了，但没在 REQUEST_TIMEOUT 内拿到响应（ReadTimeout 等）
             ⇒ 抛 `RetryableResourceError`，**不在本地重试**（同一台平台只会再等一个
-            300s），交给池短冷却 + runner 的「失败段重试一次」换到别的资源。
+            超时），交给池短冷却 + runner 的「失败段重试一次」换到别的资源。
 
-        事故数据：任务 q_ee0bcd7bf0 共 50 段，48 段 3~10s 正常返回，2 段卡满 300s。
-        旧行为把这两段当资源故障（冷却 120s + 禁止重试）⇒ 整单作废。
+        事故数据：任务 q_ee0bcd7bf0 共 50 段，48 段 3~10s 正常返回，2 段卡满当时的
+        超时（300s）。旧行为把这两段当资源故障（冷却 120s + 禁止重试）⇒ 整单作废。
+
+        日志（2026-10-29 加）：提交 / 返回各一行 INFO，用 `rid` 配对 —— 目的是能拿
+        「字数 + 时间窗」去平台后台的调用日志里 1:1 反查（后台只有 UUID + tokens）。
+        「发出时刻」就是提交那行的时间戳，所以不重复打；字数取**实际提交给平台的**
+        那版文本（已剥掉 `[pause:N]`），与后台的 tokens 口径一致。
         """
+        rid = uuid.uuid4().hex[:8]
+        chars = len(text)
+        preview = re.sub(r"\s+", " ", text).strip()[:12]
+        started = time.monotonic()
+        logger.info("[engine] modelverse 提交 rid=%s 字数=%d 首字=「%s」 超时=%.0fs",
+                    rid, chars, preview, self.timeout)
         last: Exception | None = None
         for attempt in range(CONNECT_RETRIES):
             if attempt:
                 await asyncio.sleep(CONNECT_RETRY_BASE_S * attempt)
             try:
-                return await self.client.post(
+                resp = await self.client.post(
                     f"{self.base_url}/v1/audio/infer",
                     headers=self._headers(), data=data, files=files, timeout=self.timeout,
                 )
+                logger.info("[engine] modelverse 返回 rid=%s 状态=%d 耗时=%.2fs 字节=%d %s",
+                            rid, resp.status_code, time.monotonic() - started,
+                            len(resp.content or b""), self._trace_id(resp))
+                return resp
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 last = exc
             except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError) as exc:
                 # 同步接口的固有长尾：平台可能还在推理，也可能已计费 ⇒ 语义上是
                 # 「状态未知」，但代价极小（¥0.4/万字，一段 300 字约 ¥0.012），
                 # 远小于「整单退掉已成功的 48 段」。所以允许重试换资源而不是判死。
+                logger.info("[engine] modelverse 无响应 rid=%s 耗时=%.2fs 字数=%d 首字=「%s」 原因=%s",
+                            rid, time.monotonic() - started, chars, preview, type(exc).__name__)
                 raise RetryableResourceError(
                     f"Modelverse 本次未拿到音频（{type(exc).__name__}，超过 {self.timeout:.0f}s 未响应"
                     f"或连接中断；平台侧可能仍在推理/已计费）"
@@ -318,6 +362,8 @@ class ModelverseEngine:
         resp = await self._post_infer(
             data={"model": MODEL, "payload": json.dumps(payload, ensure_ascii=False)},
             files={"spk_audio_file": (filename, audio, "application/octet-stream")},
+            # 传的是**发出去的那版文本**（已处理 [pause:N]）⇒ 与平台 tokens 同口径
+            text=payload["input"],
         )
         if resp.status_code != 200:
             raise RuntimeError(f"Modelverse 合成失败 HTTP {resp.status_code}: {self._error_text(resp)}")
