@@ -230,6 +230,14 @@ class Indextts302aiEngine:
                 timeout=120.0,
             )
         if resp.status_code != 200:
+            # 上传阶段**还没有创建任何合成任务**（0 计费风险），所以 5xx/429 这种
+            # 「平台这会儿抽风」的响应应当换资源重试，而不是把整单判死。
+            # 4xx 保持判死：那是凭据/参数问题，换台资源也没用（且要让人看见）。
+            if resp.status_code >= 500 or resp.status_code == 429:
+                raise RetryableResourceError(
+                    f"302.ai 音频上传失败 HTTP {resp.status_code}（未创建合成任务、无计费）: "
+                    f"{resp.text[:200]}"
+                )
             raise RuntimeError(f"302.ai 音频上传失败 HTTP {resp.status_code}: {resp.text[:400]}")
         data = (resp.json() or {}).get("data")
         if not data or not str(data).startswith("http"):
@@ -401,7 +409,19 @@ class Indextts302aiEngine:
             )
         if req.speed and abs(float(req.speed) - 1.0) > 1e-6 and not self._speed_warned:
             self._speed_warned = True  # 平台无 speed 参数，仅提示一次
-        voice_url = await self._resolve_voice_url(req)
+        # 参考音频上传这一步失败时，**一个合成任务都还没提交**（0 计费风险），
+        # 所以传输层异常在这里同样必须归 RetryableResourceError —— 之前它漏在
+        # try 之外，一次 `ReadTimeout`（302 上传端点 TTFB 可达数十秒）就整单判死、
+        # 整台资源冷却 120s、文案还写「提交状态可能未知」（2026-10-30 生产实锤
+        # q_d2003547d7）。EngineInputError 必须原样抛出，让池走「输入侧」分支。
+        try:
+            voice_url = await self._resolve_voice_url(req)
+        except EngineInputError:
+            raise
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            raise RetryableResourceError(
+                f"302.ai 参考音频上传未完成（{type(exc).__name__}；未创建合成任务、无计费）"
+            ) from exc
         payload: dict = {"text": req.text, "speaker_audio_url": voice_url}
         vec = self._emotion_vector(req.emotion_label)
         if vec is not None:

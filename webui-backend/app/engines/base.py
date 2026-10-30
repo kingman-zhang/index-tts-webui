@@ -594,8 +594,11 @@ class EnginePoolFacade:
             # 原因必须进 message：queue_worker 只写 `str(e)`，而 `from exc` 的 cause
             # 在任务卡上不可见 —— 2026-10-23 生产事故正是因此只能靠人工翻容器日志
             # 才看出是 ReadTimeout（任务卡上只有「资源 modelverse 合成失败」）。
+            # `str(httpx.ReadTimeout())` 是空串（2026-10-30 现场：任务卡显示「原因：」），
+            # 所以空字符串要退回异常类型名，否则等于没给原因。
+            reason = str(exc) or type(exc).__name__
             raise NonRetryableSynthesisError(
-                f"资源 {cfg.id} 合成失败，提交状态可能未知，禁止自动重试（原因：{exc}）"
+                f"资源 {cfg.id} 合成失败，提交状态可能未知，禁止自动重试（原因：{reason}）"
             ) from exc
         finally:
             async with self._condition:

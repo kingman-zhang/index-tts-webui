@@ -17,6 +17,7 @@ ValueError，于是池一律按「资源故障 + 可能已计费」处理 ——
 """
 import asyncio
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -46,14 +47,24 @@ AUDIO = b"RIFF____WAVEfmt "  # 适配器不解析音频，原样返回
 class Fake302:
     """按脚本回放的 302 假平台。"""
 
-    def __init__(self, poll_script=None, submit_exc=None):
+    def __init__(self, poll_script=None, submit_exc=None, upload_exc=None, upload_status=None):
         # poll_script 元素：("json", {..}) / ("status", 500) / ("exc", Exception 实例)
         self.poll_script = poll_script or [("json", {"state": "SUCCESS", "audio_url": "https://file.302.ai/a.wav"})]
         self.submit_exc = submit_exc
+        self.upload_exc = upload_exc
+        self.upload_status = upload_status
         self.submit_calls = 0
         self.poll_calls = 0
+        self.upload_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if "/302/upload-file" in str(request.url):
+            self.upload_calls += 1
+            if self.upload_exc is not None:
+                raise self.upload_exc
+            if self.upload_status:
+                return httpx.Response(self.upload_status, text="upload boom")
+            return httpx.Response(200, json={"data": "https://file.302.ai/uploaded/ref.mp3"})
         if request.method == "POST":
             self.submit_calls += 1
             if self.submit_exc is not None:
@@ -180,6 +191,48 @@ class Test302aiAttribution(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(EngineInputError):
             await eng.synthesize_segment(long_req)
 
+    # ---- 参考音频上传阶段（2026-10-30 q_d2003547d7：这里漏了归因）----
+    def _upload_engine(self, tmpdir: str, fake: Fake302):
+        return Indextts302aiEngine(
+            api_key="sk-test",
+            client=httpx.AsyncClient(transport=httpx.MockTransport(fake.handler)),
+            cache_path=Path(tmpdir) / "cache.json",
+        )
+
+    def _upload_req(self, tmpdir: str) -> SegmentRequest:
+        ref = Path(tmpdir) / "ref.wav"
+        ref.write_bytes(AUDIO)
+        # 名字不在 voice_map 里 ⇒ 必然走「自动上传」分支
+        return SegmentRequest(text="x", voice=VoiceRef(local_path=str(ref), display_name="未映射音色"))
+
+    async def test_upload_read_timeout_is_retryable(self):
+        """上传读超时 → RetryableResourceError。上传阶段还没提交任何任务，0 计费风险。"""
+        with tempfile.TemporaryDirectory() as td:
+            fake = Fake302(upload_exc=httpx.ReadTimeout(""))
+            eng = self._upload_engine(td, fake)
+            with self.assertRaises(RetryableResourceError) as ctx:
+                await eng.synthesize_segment(self._upload_req(td))
+        self.assertEqual(fake.submit_calls, 0, "上传失败就不该继续提交任务")
+        self.assertIn("未创建合成任务", str(ctx.exception))
+
+    async def test_upload_5xx_is_retryable(self):
+        """上传端点 5xx（平台抽风）→ RetryableResourceError，而不是整单判死。"""
+        with tempfile.TemporaryDirectory() as td:
+            fake = Fake302(upload_status=502)
+            eng = self._upload_engine(td, fake)
+            with self.assertRaises(RetryableResourceError):
+                await eng.synthesize_segment(self._upload_req(td))
+        self.assertEqual(fake.submit_calls, 0)
+
+    async def test_upload_4xx_stays_fatal(self):
+        """上传 4xx（凭据/参数问题）仍判死：换台资源也没用，要让人看见。"""
+        with tempfile.TemporaryDirectory() as td:
+            fake = Fake302(upload_status=401)
+            eng = self._upload_engine(td, fake)
+            with self.assertRaises(RuntimeError) as ctx:
+                await eng.synthesize_segment(self._upload_req(td))
+        self.assertNotIsInstance(ctx.exception, RetryableResourceError)
+
 
 class _ScriptedEngine:
     """池层测试用：按需抛出指定异常。"""
@@ -236,6 +289,13 @@ class TestPoolDisposition(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("r1", pool.health_state)
         self.assertIn("禁止自动重试", str(ctx.exception))
         self.assertIn("提交失败 HTTP 400", str(ctx.exception), "原始原因必须进 message（任务卡只显示 str(e)）")
+
+    async def test_empty_exception_message_falls_back_to_type_name(self):
+        """`str(httpx.ReadTimeout(""))` 是空串 ⇒ message 里要退回类型名，不能只剩「原因：」。"""
+        pool = self._pool(httpx.ReadTimeout(""))
+        with self.assertRaises(NonRetryableSynthesisError) as ctx:
+            await pool.synthesize_segment(REQ)
+        self.assertIn("ReadTimeout", str(ctx.exception), "空原因时必须写异常类型名")
 
 
 if __name__ == "__main__":
