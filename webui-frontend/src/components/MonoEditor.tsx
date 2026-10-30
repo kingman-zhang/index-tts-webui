@@ -1680,10 +1680,10 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
                 {importing ? "正在解析文档…" : "点击或拖拽上传到这里"}
               </p>
               <p className="text-xs text-gray-400">
-                支持 .doc / .docx / .pdf / .txt / .md · 导入后可自动分章并逐章确认
+                支持 .doc / .docx / .pdf / .txt / .md · 导入后会自动分章。
               </p>
-              <p className="text-xs text-gray-400">
-                文件 ≤ 20MB（带图 PDF 才可能触顶）；书稿按每章约 {formatChars(DEFAULT_CHAPTER_MAX_CHARS)}自动切分
+              <p className="text-xs text-red-400">
+                文件 ≤ 20MB。导入后，请你再次确认文本内容是否正确。
               </p>
             </div>
             {importError && (
