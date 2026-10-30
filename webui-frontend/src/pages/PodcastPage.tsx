@@ -8,7 +8,8 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
-  defaultProject, defaultEmotion, defaultParams, defaultSilence,
+  defaultProject, defaultEmotion, defaultParams, defaultSilence, resolveProjectName,
+  defaultProjectName,
   textToPodcastSegments, podcastScriptIssues, podcastLinesToScript,
   dialogTextToScript, emotionFromLabel, billableChars, estimatePoints,
   type PodcastProject, type PodcastLine, type SpeakerConfig, type VoiceFile,
@@ -35,7 +36,8 @@ function loadPodcastDraft(): PodcastDraft {
       const d = JSON.parse(raw);
       if (d && typeof d === "object" && typeof d.script === "string") {
         return {
-          name: typeof d.name === "string" && d.name ? d.name : empty.name,
+          // 没改名（或清空）⇒ 用今天的默认名，避免默认名被草稿钉死在第一次打开那天
+          name: resolveProjectName(d.name),
           voices: {
             A: { ...empty.voices.A, ...(d.voices?.A || {}) },
             B: { ...empty.voices.B, ...(d.voices?.B || {}) },
@@ -256,16 +258,18 @@ export default function PodcastPage() {
       for (const s of activeSpeakers) {
         speakerSpeeds[s] = voices[s]?.speed ?? 1.0;
       }
+      // 名称被清空时不落到后端那层「未命名」（那样既没日期也分不清任务）
+      const taskName = name.trim() || defaultProjectName();
       // 静音/生成参数不在前端配置：省略后由后端 .env 默认值（PODCAST_SILENCE_* / PODCAST_GEN_PARAMS）兜底
       const result = await api.submitToQueue({
-        project_name: name,
+        project_name: taskName,
         lines,
         voices: voicesPayload,
         params: { speaker_speeds: speakerSpeeds },
         glossary_enabled: true,
       });
       // 重名时后端会把任务名改成「原名_01」，这里说清楚，免得用户以为名字被打错了
-      const renamed = result.project_name && result.project_name !== name
+      const renamed = result.project_name && result.project_name !== taskName
         ? `（任务名 ${result.project_name}）`
         : "";
       showToast(`已加入队列（位置 ${result.queue_position}）${renamed}`);

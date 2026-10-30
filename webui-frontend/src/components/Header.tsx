@@ -7,6 +7,7 @@ import { Input, Button } from "./ui";
 import { UserMenu } from "./UserMenu";
 import { navigate } from "@/lib/auth";
 import { cn } from "@/lib/utils";
+import { defaultProjectName } from "@/types";
 
 /** 顶部切换项目下拉的数据项（与具体存储解耦：mono 本地 / 播客后端各自映射） */
 export interface ProjectSwitcherItem {
@@ -123,6 +124,9 @@ export function Header({
           <Input
             value={name}
             onChange={e => onRename(e.target.value)}
+            // 名称清空后离开输入框 ⇒ 回填当天默认名。
+            // 空名字提交到后端会变成「未命名」，用户看不到日期，也没法区分任务，不如当场补回来。
+            onBlur={() => { if (!name.trim()) onRename(defaultProjectName()); }}
             placeholder="项目名称"
             className="text-center font-medium pr-[4.25rem]"
           />

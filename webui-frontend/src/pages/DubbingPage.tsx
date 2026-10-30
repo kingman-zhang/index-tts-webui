@@ -9,7 +9,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api } from "../api/client";
 import { useAppInit, useToast, ToastNode } from "../hooks/useAppInit";
 import {
-  defaultProjectName, defaultParams, defaultSilence,
+  defaultProjectName, resolveProjectName, defaultParams, defaultSilence,
   textToMonoLines, monoLinesToText, billableChars, estimatePoints,
   newChapterId, type MonoChapter,
 } from "../types";
@@ -39,7 +39,8 @@ function loadMonoDraft(): MonoDraft {
       const d = JSON.parse(raw);
       if (d && typeof d === "object" && typeof d.text === "string") {
         return {
-          name: typeof d.name === "string" && d.name ? d.name : defaultProjectName(),
+          // 没改名（或清空）⇒ 用今天的默认名，避免默认名被草稿钉死在第一次打开那天
+          name: resolveProjectName(d.name),
           voice: { voice_path: d.voice?.voice_path ?? null, voice_name: d.voice?.voice_name ?? null },
           speed: Number(d.speed) > 0 ? Number(d.speed) : 1.0,
           text: d.text,
@@ -245,7 +246,8 @@ export default function DubbingPage() {
     if (!lines.length) throw new Error("这一章没有可合成的内容");
     const params = { ...defaultParams(), speed: monoSpeed, speaker_speeds: { A: monoSpeed } };
     return api.submitToQueue({
-      project_name: projectName,
+      // 名称被清空时不落到后端那层「未命名」（那样既没日期也分不清任务）
+      project_name: projectName.trim() || defaultProjectName(),
       kind: "mono",
       lines,
       voices: { A: monoVoice.voice_path },

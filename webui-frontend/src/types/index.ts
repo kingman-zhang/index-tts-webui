@@ -198,6 +198,29 @@ export function defaultProjectName(): string {
   return `未命名_${ymd}`;
 }
 
+/** 是否仍是「系统自动生成」的项目名（未命名_YYYYMMDD）。
+ *
+ *  用来区分「用户自己起的名字」和「用户根本没改过的默认名」：前者要一直保留，
+ *  后者应该在每次打开时翻新成当天日期。 */
+export function isAutoProjectName(name: string): boolean {
+  return /^未命名_\d{8}$/.test((name || "").trim());
+}
+
+/** 从草稿里解析项目名：空 或 仍是自动名 ⇒ 用今天的默认名。
+ *
+ *  为什么需要它：草稿（localStorage）里存了 name，用户没改名时存的就是
+ *  `未命名_20261029` 这类**写死的日期**；直接读回来会让默认名永远停在第一次打开的那天
+ *  （现象：昨天打开是 20261029，今天打开还是 20261029 —— 不是 HTTP 缓存，是草稿持久化）。
+ *  用户自己起过的名字原样返回，不会被改写。
+ *
+ *  注意：只用于**载入草稿**。从「项目存档」里切换项目时不走这里 ——
+ *  那是用户显式保存过的名字，哪怕长得像自动名也不该被翻新。 */
+export function resolveProjectName(stored: unknown): string {
+  const s = typeof stored === "string" ? stored.trim() : "";
+  if (!s) return defaultProjectName();
+  return isAutoProjectName(s) ? defaultProjectName() : s;
+}
+
 export function defaultProject(): PodcastProject {
   return {
     name: defaultProjectName(),
