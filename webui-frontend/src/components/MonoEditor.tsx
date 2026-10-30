@@ -535,7 +535,6 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
   const totalChars = billableChars(
     podcastSegs ? podcastSegs.map(s => s.text) : parsed.map(l => l.text)
   );
-  const segCount = podcastSegs ? podcastSegs.length : parsed.length;
   const isEmpty = text.trim().length === 0;
   const speakerNames = speakers
     ? {
@@ -1323,8 +1322,9 @@ export function MonoEditor({ text, onChange, onGenerate, canGenerate, generating
             onChange={e => { const f = e.target.files?.[0]; if (f) handleImportFile(f); e.target.value = ""; }} />
 
           <div className="ml-auto flex items-center gap-3 shrink-0">
+            {/* 只报字数与积分：段数（= 行数）用户自己在画布里看得见，没必要占位 */}
             <span className="text-xs text-gray-400 tabular-nums whitespace-nowrap hidden sm:inline">
-              {totalChars} 字 · {segCount} 段
+              {totalChars} 字
               {pointsInfo && pointsInfo.cost > 0 ? ` · 约 ${pointsInfo.cost} 积分` : ""}
             </span>
             {pointsInfo && pointsInfo.balance != null && pointsInfo.cost > pointsInfo.balance && (

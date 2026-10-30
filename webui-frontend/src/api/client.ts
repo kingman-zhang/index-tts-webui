@@ -6,21 +6,17 @@ const BASE = "/api";
 
 let breezeblueCache: Promise<BreezeblueVoice[]> | null = null;
 
-/** 术语表条目。source 标识生效来源：global=内置（超管维护），user=我的词条。 */
+/** 术语表条目。用户接口不再区分来源：内置库对用户隐藏，只回「我的词条」。 */
 export interface GlossaryTermItem {
   original: string;
   replacement: string;
   source?: "global" | "user";
 }
 
-/** GET /api/glossary 返回：生效词表 + 内置库原始 + 我的词条原始。 */
+/** GET /api/glossary 返回：**只有「我的词条」**（内置库不下发，用户看不到）。 */
 export interface GlossaryView {
-  terms: GlossaryTermItem[];
-  count: number;
-  global: GlossaryTermItem[];
   mine: GlossaryTermItem[];
-  global_count: number;
-  user_count: number;
+  count: number;
   logged_in: boolean;
 }
 
@@ -324,7 +320,13 @@ export const api = {
     silence?: any;   // 省略时由后端 .env 默认值（PODCAST_SILENCE_*）兜底
     params?: any;    // 省略时由后端 .env 默认值（PODCAST_GEN_PARAMS）兜底
     glossary_enabled: boolean;
-  }): Promise<{ task_id: string; status: string; queue_position: number }> {
+  }): Promise<{
+    task_id: string;
+    status: string;
+    queue_position: number;
+    /** 实际落库的任务名：与请求的重名时，后端已追加 _01/_02… */
+    project_name?: string;
+  }> {
     return fetchJSON(`${BASE}/queue/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

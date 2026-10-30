@@ -39,6 +39,32 @@ def _check_access(task: dict, user: Optional[dict]):
         raise HTTPException(404, "任务不存在")
 
 
+def _unique_project_name(base: str, kind: str, user: Optional[dict]) -> str:
+    """在「本页可见的那批任务」里保证任务名唯一：重名时追加 `_01` / `_02`…。
+
+    可见范围与 `GET /api/queue?kind=` 保持一致：
+      * 只看同一 `kind`（播客页与配音页各自一套名字，互不干扰）；
+      * 数据隔离开启时只看自己的任务；未开启时全平台共用一套名字
+        （此时用户本来就能看到彼此的任务，重名同样会混淆）。
+    规则：名字没被占用 ⇒ 原样返回；已被占用 ⇒ 取第一个未占用的 `{base}_{序号}`。
+    """
+    base = (base or "").strip() or "未命名"
+    uid = (user or {}).get("user_id")
+    taken: set = set()
+    for t in qs.queue_tasks.values():
+        if (t.get("kind") or "podcast") != kind:
+            continue
+        if _isolation_on() and t.get("member_id") != uid:
+            continue
+        taken.add(str(t.get("project_name") or ""))
+    if base not in taken:
+        return base
+    n = 1
+    while f"{base}_{n:02d}" in taken:
+        n += 1
+    return f"{base}_{n:02d}"
+
+
 @router.post("/api/queue/submit")
 async def submit_to_queue(
     task: QueueTaskModel,
@@ -48,6 +74,9 @@ async def submit_to_queue(
 
     会员扣费：MEMBER_ENFORCE=1 时登录用户按字数预扣积分，余额不足返回 402；
     未开启时行为与旧版完全一致（不含任何会员逻辑）。
+
+    任务名去重：与列表可见范围一致（同一 kind；隔离开启时只看自己的）内重名时
+    追加 `_01` / `_02`…，见 `_unique_project_name`。下载名由任务名推导，随之唯一。
     """
     # 本实例不接管队列（B2 之前的防互踩保险，见 QUEUE_MIGRATION_PLAN.md §5）：
     # 收了任务也永远没人执行（另一台要等自己重启才会看到），不如明确拒绝。
@@ -59,7 +88,8 @@ async def submit_to_queue(
     task_id = f"q_{uuid.uuid4().hex[:10]}"
     entry = {
         "id": task_id,
-        "project_name": task.project_name,
+        # project_name 在入库前才定（见下方 _unique_project_name）：此处留空，
+        # 免得另写一次覆盖赋值。
         "kind": task.kind,
         "lines": task.lines,
         "voices": task.voices,
@@ -90,6 +120,8 @@ async def submit_to_queue(
             entry["points_charged"] = member_svc.estimate_task_cost(task.lines)
             entry["points_charge_log"] = charge["log_id"]
             entry["message"] = f"排队中（已预扣 {entry['points_charged']} 积分）"
+    # 任务名去重：放在扣费之后、入库之前，中间没有 await ⇒ 并发提交不会抢到同一序号
+    entry["project_name"] = _unique_project_name(task.project_name, task.kind, user)
     qs.queue_tasks[task_id] = entry
     qs.queue_order.append(task_id)
     qs.persist_task(task_id)
@@ -97,7 +129,13 @@ async def submit_to_queue(
     # 触发队列处理
     import asyncio
     asyncio.create_task(process_queue())
-    return {"task_id": task_id, "status": "queued", "queue_position": len(qs.queue_order)}
+    return {
+        "task_id": task_id,
+        "status": "queued",
+        "queue_position": len(qs.queue_order),
+        # 实际落库的任务名（重名时已追加 _01/_02…），前端据此提示用户
+        "project_name": entry["project_name"],
+    }
 
 
 # 列表接口不返回的重字段。

@@ -269,7 +269,11 @@ export default function DubbingPage() {
     try {
       const result = await submitText(monoText, name);
       if (activeChapterId) setChapterSubmitted(prev => new Set(prev).add(activeChapterId));
-      showToast(`已加入队列（位置 ${result.queue_position}）`);
+      // 重名时后端会把任务名改成「原名_01」，这里说清楚，免得用户以为名字被打错了
+      const renamed = result.project_name && result.project_name !== name
+        ? `（任务名 ${result.project_name}）`
+        : "";
+      showToast(`已加入队列（位置 ${result.queue_position}）${renamed}`);
       setQueueRefreshKey(k => k + 1);
       setQueueCollapsed(false);
       setGenerating(false);

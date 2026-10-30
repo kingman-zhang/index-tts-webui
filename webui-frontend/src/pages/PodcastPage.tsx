@@ -264,7 +264,11 @@ export default function PodcastPage() {
         params: { speaker_speeds: speakerSpeeds },
         glossary_enabled: true,
       });
-      showToast(`已加入队列（位置 ${result.queue_position}）`);
+      // 重名时后端会把任务名改成「原名_01」，这里说清楚，免得用户以为名字被打错了
+      const renamed = result.project_name && result.project_name !== name
+        ? `（任务名 ${result.project_name}）`
+        : "";
+      showToast(`已加入队列（位置 ${result.queue_position}）${renamed}`);
       setQueueRefreshKey(k => k + 1);  // 触发队列面板刷新
       setQueueCollapsed(false);  // 展开队列面板
       setGenerating(false);

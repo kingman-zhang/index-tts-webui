@@ -4,8 +4,12 @@
   - 全局库 `data/glossary.json`            超管维护，对所有用户生效
   - 用户库 `data/glossary_users/<uid>.json` 用户自维护，**同名时优先于全局库**
 
+⚠️ 全局库（内置词库）对用户**不可见**：`/api/glossary` 只回「我的词条」，
+合成时仍然叠加内置库生效（见 `load_glossary_for_synthesis`），只是用户看不到、
+也不需要维护它。内置库本身只通过超管接口 `X-Admin-Token` 读写。
+
 接口：
-  GET    /api/glossary            当前用户视角：生效词表 + 全局库 + 我的词条
+  GET    /api/glossary            当前用户视角：**只有「我的词条」**（含停用项）
   POST   /api/glossary            新增/覆盖「我的词条」（需登录）
   PUT    /api/glossary            全量覆盖「我的词条」（需登录）
   DELETE /api/glossary/{original} 删除「我的词条」（需登录）
@@ -33,7 +37,6 @@ from ..stores import (
     load_global_glossary,
     load_glossary_for_synthesis,
     load_user_glossary,
-    merge_glossary,
     save_global_glossary,
     save_user_glossary,
 )
@@ -42,18 +45,16 @@ router = APIRouter()
 
 
 def _view(user: Optional[dict]) -> dict:
-    """当前用户视角的完整视图：生效词表 + 全局库原始 + 我的词条原始。"""
+    """当前用户视角：**只回「我的词条」**（内置库对用户隐藏，不随响应下发）。
+
+    `mine` 保留停用项（replacement 为空），用户可自行删除以恢复内置值；
+    `count` 是「我的词条」条数（前端列表徽标）。
+    """
     uid = (user or {}).get("user_id")
-    global_terms = load_global_glossary()
     user_terms = load_user_glossary(uid)
-    terms = merge_glossary(global_terms, user_terms, with_source=True)
     return {
-        "terms": terms,               # 合并后真正生效的词表（带 source）
-        "count": len(terms),
-        "global": global_terms,       # 全局库原始（内置区渲染用）
-        "mine": user_terms,           # 我的词条原始（含停用项）
-        "global_count": len(global_terms),
-        "user_count": len(user_terms),
+        "mine": user_terms,       # 我的词条原始（含停用项）
+        "count": len(user_terms),
         "logged_in": bool(uid),
     }
 
@@ -81,7 +82,7 @@ def _normalize_terms(terms: list) -> list:
 
 @router.get("/api/glossary")
 async def get_glossary(user: Optional[dict] = Depends(get_optional_user)):
-    """生效词表。未登录时只有全局库；写操作需登录。"""
+    """只返回「我的词条」。未登录时为空（内置库不下发）；写操作需登录。"""
     return _view(user)
 
 

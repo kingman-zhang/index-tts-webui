@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { ListVideo, Trash2, Square, CheckCircle2, XCircle, Clock, Loader2, Download, Play, RefreshCw, GripVertical, Pause, PlayCircle, AlertCircle, X, History } from "lucide-react";
-import { Card, CardHeader, CardTitle, CardContent, Button, Badge } from "./ui";
+import { Card, CardHeader, CardTitle, CardContent, Badge } from "./ui";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { api } from "@/api/client";
 import { toast } from "@/lib/toast";
@@ -633,27 +633,27 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                 </button>
               )}
             </div>
-
-            {/* 清空按钮：可见条件必须覆盖后端会清掉的全部终态
-                （success/failed/interrupted/cancelled）——
-                漏一个就会出现「按钮可见却清不掉」或「有任务但按钮不出现」。 */}
-            {(stats.success > 0 || stats.failed > 0 || stats.cancelled > 0) && !activeFilter && (
-              <Button
-                variant="outline"
-                size="sm"
-                icon={Trash2}
-                onClick={() => setClearConfirm({
-                  count: stats.success + stats.failed + stats.cancelled,
-                })}
-                className="w-full"
-                title="批量删除当前类型已结束的任务（需确认）"
-              >
-                清空已完成任务
-              </Button>
-            )}
           </>
         )}
       </CardContent>
+
+      {/* 清空按钮：卡片最底部的整条操作栏 —— 与左右边框持平（不再缩在内容区里），
+          列表滚动时它始终可见。可见条件必须覆盖后端会清掉的全部终态
+          （success/failed/interrupted/cancelled），漏一个就会出现
+          「按钮可见却清不掉」或「有任务但按钮不出现」。 */}
+      {(stats.success > 0 || stats.failed > 0 || stats.cancelled > 0) && !activeFilter && (
+        <button
+          type="button"
+          onClick={() => setClearConfirm({
+            count: stats.success + stats.failed + stats.cancelled,
+          })}
+          title="批量删除当前类型已结束的任务（需确认）"
+          className="flex w-full items-center justify-center gap-1.5 rounded-b-xl border-t border-gray-100 py-2.5 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+          清空已完成任务
+        </button>
+      )}
 
       {/* 报错详情弹窗：失败自动弹出，也可通过队列项的详情图标再次打开 */}
       {errorModal && (
