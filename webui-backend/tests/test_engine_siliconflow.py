@@ -14,7 +14,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.engines.base import SegmentRequest, VoiceRef
+from app.engines.base import EngineInputError, SegmentRequest, VoiceRef
 from app.engines.indextts_siliconflow import IndexttsSiliconflowEngine
 
 PASS = 0
@@ -187,7 +187,7 @@ def main():
         run(eng3.synthesize_segment(seg2))
         check(api.upload_calls == 1, "跨实例缓存复用")
 
-        # 6) 参考音频不可读且无映射 → ValueError
+        # 6) 参考音频不可读且无映射 → EngineInputError（输入侧，池不得冷却资源）
         seg3 = SegmentRequest(
             text="x",
             voice=VoiceRef(local_path="/nonexistent/ghost.mp3", display_name="ghost"),
@@ -197,8 +197,8 @@ def main():
         try:
             run(eng3.synthesize_segment(seg3))
             check(False, "不可读参考音频应报错")
-        except ValueError:
-            check(True, "不可读参考音频报 ValueError")
+        except EngineInputError:
+            check(True, "不可读参考音频报 EngineInputError")
 
     # 7) 超长文本拒单
     seg.speed = 1.0
@@ -206,8 +206,8 @@ def main():
     try:
         run(eng.synthesize_segment(seg))
         check(False, "超长文本应拒单")
-    except ValueError:
-        check(True, "超长文本报 ValueError（应走 chunker）")
+    except EngineInputError:
+        check(True, "超长文本报 EngineInputError（应走 chunker）")
 
     # 8) 合成失败 → RuntimeError
     api.speech_error = (503, "Model service overloaded")

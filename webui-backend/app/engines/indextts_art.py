@@ -46,7 +46,7 @@ from pathlib import Path
 
 import httpx
 
-from .base import EngineCapabilities, SegmentRequest, audio_data_uri
+from .base import EngineCapabilities, EngineInputError, SegmentRequest, audio_data_uri
 
 DEFAULT_SUBMIT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/indextts2-v1"
 DEFAULT_RESULT = "https://autodl.art/api/v1/comfyui/comfyui_workflow/result/{task_id}"
@@ -181,7 +181,12 @@ class IndexttsArtEngine:
 
         body = copy.deepcopy(self.body_template)
         if not req.voice.local_path:
-            raise ValueError(f"autodl.art 引擎需要本地参考音频文件: {req.voice.display_name!r}")
+            # 输入侧错误（不是「art 平台坏了」）：抛 EngineInputError 而不是裸
+            # ValueError，否则池会把整个 art 资源冷却 120s、并把该段判成
+            # 「可能已计费、禁止重试」—— 而实际上一个请求都没发出去（2026-10-30）。
+            raise EngineInputError(
+                f"autodl.art 引擎需要本地参考音频文件: {req.voice.display_name!r}"
+            )
         body = self._replace(body, "{{AUDIO}}", self._audio_data_uri(req.voice.local_path))
         # 停顿标记：autodl.art 工作流不支持，降级为逗号（自然短停顿）
         import re as _re

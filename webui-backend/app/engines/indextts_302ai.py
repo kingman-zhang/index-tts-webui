@@ -32,7 +32,15 @@
   - 音色解析顺序：voice_map 显式映射（display_name 或路径 → 公网 URL）→
     本地缓存（cache_path JSON，键=路径+大小+mtime）→ 参考音频在 backend
     侧可读时自动上传并缓存 → 文件不可读时按文件名在 voice_map/缓存中
-    复用同名参考音频的已上传 URL。都不命中才报 ValueError。
+    复用同名参考音频的已上传 URL。都不命中才报 EngineInputError。
+  - 异常归因（2026-10-30 补齐，此前全部落进「裸 Exception」）：
+      · EngineInputError：参考音频喂不进去 / 输入超长 —— 与资源好坏无关，
+        池**不冷却**该资源、runner 不重试（重试必然同样失败）。
+      · RetryableResourceError：这一次没拿到结果（连接耗尽、读超时、轮询
+        连续断连、轮询超时）—— 池只打短冷却 30s、不动健康位，runner 重试
+        该段时会租到**别的资源**。
+      · 其余（平台明确 4xx/5xx、state=FAILURE、音频下载失败）仍按
+        「可能已计费」判死整单 —— 见 base.NonRetryableSynthesisError。
   - 情绪：8 标签 → 带幅度 one-hot 向量（EMOTION_AMPLITUDE 按标签温和化，
     one-hot 1.0 实测偏激动）；neutral/None 不传 emotion_vector（跟随音色）。
   - 停顿：[pause:x] 已由 backend split_by_pauses 切分，本引擎只收纯文本。
@@ -49,7 +57,13 @@ from pathlib import Path
 
 import httpx
 
-from .base import EMO_VECTOR_ORDER, EngineCapabilities, SegmentRequest
+from .base import (
+    EMO_VECTOR_ORDER,
+    EngineCapabilities,
+    EngineInputError,
+    RetryableResourceError,
+    SegmentRequest,
+)
 
 DEFAULT_BASE_URL = "https://api.302ai.com"
 SAMPLE_RATE = 22050  # 平台固定输出采样率
@@ -62,6 +76,24 @@ AUDIO_MIRRORS = ("file.302ai.cn", "file.302ai.com")
 
 # 轮询中判定为终态失败的 state（其余一律视为进行中）
 _FAILED_STATES = {"FAILURE", "FAILED", "ERROR", "CANCELLED", "TIMEOUT"}
+
+# 轮询返回非 200 时的容错次数（2026-10-30 加）。
+#
+# 为什么要容错：GET 是幂等只读的，网关抖动 / 瞬时限流（429/502）返回一次非 200
+# 就整段判死，代价是「已成功的前几十段一起作废」——那是 2026-10-23 modelverse
+# 事故的同一个形状。连续 3 次都非 200 才认为平台真的不可用（此时仍按
+# 「可能已提交」判死，不换资源重试；见模块 docstring 的归因表）。
+_POLL_HTTP_RETRIES = 3
+
+
+class _PollHTTPError(RuntimeError):
+    """轮询返回非 200。
+
+    单独一个异常类型，是为了让 `_wait_result` 能对它做「连续 N 次才放弃」的
+    容错；而其它 RuntimeError（平台明确失败态、坏响应）仍然一次即判死 ——
+    两者语义不同，混用一个类型就区分不了。
+    """
+
 
 # 情绪幅度表（0-1）。one-hot 1.0 实测情绪偏激动（用户听感：喜悦/惊喜过烈），
 # 按标签给不同幅度做温和化；纯经验值，待听感反馈继续微调。
@@ -243,7 +275,7 @@ class Indextts302aiEngine:
                 for k, v in mapping.items():
                     if str(v).startswith("http") and self._key_basename(k) == base:
                         return v
-        raise ValueError(
+        raise EngineInputError(
             f"302.ai 备援需要参考音频在 backend 侧可读（speaker_audio_url 要求公网 URL），"
             f"或在 voice_map 中预映射 URL（音色: {voice.display_name!r}，"
             f"local_path={voice.local_path!r}，tts_path={voice.tts_path!r}）"
@@ -261,7 +293,12 @@ class Indextts302aiEngine:
 
     async def _post_with_connect_retry(self, url: str, **kwargs) -> httpx.Response:
         """POST 带连接级重试（仅 ConnectError/ConnectTimeout——请求未到达服务器，
-        重试不产生重复计费；其他异常原样抛出）。"""
+        重试不产生重复计费；其他异常原样抛出）。
+
+        重试耗尽仍连不上 ⇒ 抛 `RetryableResourceError` 而不是 RuntimeError：
+        请求**确定没有到达平台**（既没提交也没计费），把这一单判死毫无收益，
+        让池短冷却 30s 后由重试租到别的资源才是正确处置（2026-10-30）。
+        """
         last: Exception | None = None
         for attempt in range(_CONNECT_RETRIES):
             if attempt:
@@ -270,7 +307,9 @@ class Indextts302aiEngine:
                 return await self.client.post(url, **kwargs)
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 last = e
-        raise RuntimeError(f"302.ai 连接失败（已重试 {_CONNECT_RETRIES - 1} 次）: {last}")
+        raise RetryableResourceError(
+            f"302.ai 连接失败（已重试 {_CONNECT_RETRIES - 1} 次，请求未到达平台）: {last}"
+        )
 
     async def _submit(self, payload: dict) -> str:
         resp = await self._post_with_connect_retry(
@@ -295,7 +334,7 @@ class Indextts302aiEngine:
             timeout=30.0,
         )
         if resp.status_code != 200:
-            raise RuntimeError(f"302.ai 轮询失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise _PollHTTPError(f"302.ai 轮询失败 HTTP {resp.status_code}: {resp.text[:300]}")
         return resp.json() or {}
 
     async def _download_audio(self, audio_url: str) -> bytes:
@@ -322,14 +361,23 @@ class Indextts302aiEngine:
         t0 = loop.time()
         last_state = ""
         poll_failures = 0  # 连续网络失败计数（瞬时断连容错，GET 幂等可安全重试）
+        http_failures = 0  # 连续非 200 计数（网关抖动/限流容错，见 _POLL_HTTP_RETRIES）
         while loop.time() - t0 < timeout:
             try:
                 data = await self._poll_once(task_id)
-                poll_failures = 0
+                poll_failures = http_failures = 0
             except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as e:
                 poll_failures += 1
                 if poll_failures >= 5:
-                    raise RuntimeError(f"302.ai 轮询连续断连 {poll_failures} 次: {e}") from e
+                    raise RetryableResourceError(
+                        f"302.ai 轮询连续断连 {poll_failures} 次（平台可能仍在推理/已计费）: {e}"
+                    ) from e
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+            except _PollHTTPError:
+                http_failures += 1
+                if http_failures >= _POLL_HTTP_RETRIES:
+                    raise
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             state = str(data.get("state", "") or "").upper()
@@ -348,7 +396,7 @@ class Indextts302aiEngine:
         if not self.api_key:
             raise RuntimeError("302.ai 引擎缺少 API Key（INDEXTTS302_API_KEY）")
         if len(req.text) > MAX_INPUT_CHARS:
-            raise ValueError(
+            raise EngineInputError(
                 f"302.ai 单次输入超长（{len(req.text)} > {MAX_INPUT_CHARS}），请走 chunker"
             )
         if req.speed and abs(float(req.speed) - 1.0) > 1e-6 and not self._speed_warned:
@@ -359,7 +407,21 @@ class Indextts302aiEngine:
         if vec is not None:
             payload["emotion_vector"] = vec
         payload.update(self.extra_params)  # 透传 emotion_alpha 等（按需）
-        task_id = await self._submit(payload)
-        result = await self._wait_result(task_id)
-        audio = await self._download_audio(result["audio_url"])
+        # 传输层失败 = 「这一次没拿到结果」，不是「平台坏了」：
+        # 归 RetryableResourceError ⇒ 池短冷却 30s、runner 重试该段时租到别的资源。
+        # 覆盖三种漏出点：轮询超时（内置 TimeoutError）、提交/轮询的读超时与断连、
+        # 以及 _download_audio 之后才抛的传输异常。注意 _download_audio 内部已把
+        # httpx.HTTPError 收成 RuntimeError（音频已生成、钱已花），那条刻意仍判死。
+        try:
+            task_id = await self._submit(payload)
+            result = await self._wait_result(task_id)
+            audio = await self._download_audio(result["audio_url"])
+        except TimeoutError as exc:   # 轮询超时：平台可能仍在推理/已计费
+            raise RetryableResourceError(
+                f"302.ai 本次未拿到音频（轮询超时；平台可能仍在推理/已计费）: {exc}"
+            ) from exc
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            raise RetryableResourceError(
+                f"302.ai 本次未拿到音频（{type(exc).__name__}；平台可能仍在推理/已计费）"
+            ) from exc
         return audio

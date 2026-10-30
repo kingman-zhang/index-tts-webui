@@ -14,7 +14,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.engines.base import SegmentRequest, VoiceRef
+from app.engines.base import EngineInputError, RetryableResourceError, SegmentRequest, VoiceRef
 from app.engines.indextts_302ai import Indextts302aiEngine
 
 PASS = 0
@@ -192,7 +192,7 @@ def main():
     except RuntimeError as e:
         check("上传失败" in str(e) or "boom" in str(e), "上传失败抛 RuntimeError")
 
-    # 7) 参考音频不可读且无映射 → ValueError
+    # 7) 参考音频不可读且无映射 → EngineInputError（输入侧，池不得冷却资源）
     api = Fake302()
     eng4 = Indextts302aiEngine(
         api_key="sk-test", client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
@@ -203,9 +203,9 @@ def main():
     )
     try:
         run(eng4.synthesize_segment(seg_bad))
-        check(False, "不可读参考音频应抛 ValueError")
-    except ValueError:
-        check(True, "不可读参考音频抛 ValueError")
+        check(False, "不可读参考音频应抛 EngineInputError")
+    except EngineInputError:
+        check(True, "不可读参考音频抛 EngineInputError（不是裸 ValueError）")
 
     # 8) 轮询状态机：PENDING → STARTED → SUCCESS
     api = Fake302()
@@ -268,7 +268,7 @@ def main():
     run(eng9.synthesize_segment(seg))
     check((api.last_submit_payload or {}).get("emotion_alpha") == 0.6, "extra_params 透传 emotion_alpha")
 
-    # 13) 超长文本 → ValueError
+    # 13) 超长文本 → EngineInputError（输入侧，池不得冷却资源）
     api = Fake302()
     eng10 = Indextts302aiEngine(
         api_key="sk-test", client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
@@ -280,9 +280,9 @@ def main():
     )
     try:
         run(eng10.synthesize_segment(seg_long))
-        check(False, "超长文本应抛 ValueError")
-    except ValueError:
-        check(True, "超长文本抛 ValueError（chunker 提示）")
+        check(False, "超长文本应抛 EngineInputError")
+    except EngineInputError:
+        check(True, "超长文本抛 EngineInputError（chunker 提示）")
 
     # 14) 文件名兜底：参考音频不可读（旧部署机器路径），但缓存里有同名参考音频
     #     的已上传 URL → 直接复用，不触发上传
@@ -345,7 +345,9 @@ def main():
     check(audio == b"audio-from-original-host", "提交连接中断重试后成功")
     check(api.submit_calls == 1, "前 2 次连接失败不计入服务端提交次数")
 
-    # 17) 连接持续失败 → RuntimeError（含重试信息），不静默
+    # 17) 连接持续失败 → RetryableResourceError（2026-10-30 改）：
+    #    请求**确定没到平台**（没提交、没计费）⇒ 让池短冷却后换资源重试，
+    #    而不是把整单判死。它仍是 RuntimeError 子类，但语义不同，必须断言子类。
     api = Flaky302()
     api.fail_first = 99
     eng13 = Indextts302aiEngine(
@@ -354,9 +356,10 @@ def main():
     )
     try:
         run(eng13.synthesize_segment(seg))
-        check(False, "持续连接失败应抛 RuntimeError")
-    except RuntimeError as e:
-        check("重试" in str(e) or "连接失败" in str(e), "持续连接失败抛 RuntimeError")
+        check(False, "持续连接失败应抛 RetryableResourceError")
+    except RetryableResourceError as e:
+        check("重试" in str(e) or "连接失败" in str(e),
+              "持续连接失败抛 RetryableResourceError（可换资源重试）")
 
     # 18) 轮询瞬时断连 → 容错继续，恢复后成功
     class BlipPoll(Fake302):

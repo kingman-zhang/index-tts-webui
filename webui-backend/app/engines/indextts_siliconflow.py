@@ -31,7 +31,8 @@
 引擎行为约定（与 base.py 协议对齐）：
   - 音色解析顺序：voice_map 显式映射（display_name 或路径 → speech: URI）→
     本地缓存（cache_path JSON，键=路径+大小+mtime）→ 参考音频在 backend
-    侧可读时自动上传克隆并缓存。不可读且无映射报 ValueError。
+    侧可读时自动上传克隆并缓存。不可读且无映射报 EngineInputError
+    （输入侧错误 ⇒ 池不冷却资源、不重试，见 base.ENGINE_INPUT_ERRORS）。
   - 停顿：[pause:x] 已由 backend split_by_pauses 切分，本引擎只收纯文本。
   - 语速：直传 SiliconFlow speed 参数（0.25–4.0，超范围钳制）。
   - 输出：wav / 24000 Hz（修复头部后返回）。
@@ -52,7 +53,7 @@ from pathlib import Path
 
 import httpx
 
-from .base import EngineCapabilities, SegmentRequest
+from .base import EngineCapabilities, EngineInputError, SegmentRequest
 
 DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
 # 国内站真机可用的克隆模型（IndexTTS-2 仅国际站，见模块 docstring）
@@ -262,7 +263,7 @@ class IndexttsSiliconflowEngine:
         self._load_cache()
         path = self._source_path(voice)
         if path is None:
-            raise ValueError(
+            raise EngineInputError(
                 f"SiliconFlow 备援需要参考音频在 backend 侧可读，"
                 f"或在 voice_map 中预映射 speech: URI（音色: {voice.display_name!r}，"
                 f"local_path={voice.local_path!r}）"
@@ -339,7 +340,7 @@ class IndexttsSiliconflowEngine:
         if not self.api_key:
             raise RuntimeError("SiliconFlow 引擎缺少 API Key（SILICONFLOW_API_KEY）")
         if len(req.text) > MAX_INPUT_CHARS:
-            raise ValueError(
+            raise EngineInputError(
                 f"SiliconFlow 单次输入超长（{len(req.text)} > {MAX_INPUT_CHARS}），请走 chunker"
             )
         uri = await self._resolve_voice_uri(req)
