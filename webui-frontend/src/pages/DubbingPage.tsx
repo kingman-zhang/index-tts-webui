@@ -434,13 +434,17 @@ export default function DubbingPage() {
           />
         </main>
 
-        <aside className="w-80 shrink-0 overflow-y-auto scrollbar-thin">
-          <QueuePanel
-            collapsed={queueCollapsed}
-            onToggle={() => setQueueCollapsed(!queueCollapsed)}
-            refreshKey={queueRefreshKey}
-            defaultKind="mono"
-          />
+        {/* 队列卡片撑满侧栏剩余高度：清空按钮才会压在卡片最底部，
+            与左侧编辑器的底边齐平（同 PodcastPage 的理由）。 */}
+        <aside className="flex min-h-0 w-80 shrink-0 flex-col">
+          <div className="min-h-0 flex-1">
+            <QueuePanel
+              collapsed={queueCollapsed}
+              onToggle={() => setQueueCollapsed(!queueCollapsed)}
+              refreshKey={queueRefreshKey}
+              defaultKind="mono"
+            />
+          </div>
         </aside>
       </div>
 

@@ -411,7 +411,10 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
   };
 
   return (
-    <Card>
+    // 高度链：页面的 aside 是 `flex flex-col`，本卡片包在 `flex-1 min-h-0` 的 wrapper 里
+    // ⇒ 卡片撑满侧栏剩余高度，列表吃剩余空间、清空按钮永远压在卡片最底部
+    // （与左侧编辑器的底边齐平）。父级没有确定高度时 h-full/min-h-0 自然退化为 auto。
+    <Card className="flex h-full min-h-0 flex-col">
       <CardHeader className="cursor-pointer" onClick={onToggle}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
@@ -440,13 +443,15 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
           {activeFilter && <span className="ml-auto text-[0.6875rem] text-indigo-500">再次点击可取消筛选</span>}
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="flex min-h-0 flex-1 flex-col space-y-2">
         {tasks.length === 0 ? (
-          <p className="text-xs text-gray-400 text-center py-6">暂无任务</p>
+          <p className="flex flex-1 items-center justify-center py-6 text-xs text-gray-400">暂无任务</p>
         ) : (
           <>
-            {/* 任务列表 */}
-            <div className="space-y-1.5 max-h-[520px] overflow-y-auto scrollbar-thin">
+            {/* 任务列表吃满 CardContent 的剩余高度。
+                原来这里是 `max-h-[520px]`：卡片高度被钉死，侧栏再高也会在下面留一截空白，
+                清空按钮就永远贴不到底（2026-10-30 用户反馈）。 */}
+            <div className="space-y-1.5 flex-1 min-h-0 overflow-y-auto scrollbar-thin">
               {filteredTasks.length === 0 ? (
                 <p className="py-8 text-center text-xs text-gray-400">
                   {activeFilter ? "当前状态暂无任务" : activeKind === "mono" ? "暂无配音任务" : "暂无播客任务"}
@@ -625,7 +630,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
                 <button
                   type="button"
                   onClick={loadMoreHistory}
-                  className="flex w-full items-center justify-center gap-1 py-1.5 text-[0.75rem] text-indigo-600 transition-colors hover:text-indigo-700 hover:underline"
+                  className="flex w-full shrink-0 items-center justify-center gap-1 py-1.5 text-[0.75rem] text-indigo-600 transition-colors hover:text-indigo-700 hover:underline"
                   title={`已加载每个类型的最近 ${terminalLimit} 条，点击再各取 50 条`}
                 >
                   <History className="w-3 h-3" />
@@ -648,7 +653,7 @@ export function QueuePanel({ collapsed, onToggle, refreshKey, defaultKind = "pod
             count: stats.success + stats.failed + stats.cancelled,
           })}
           title="批量删除当前类型已结束的任务（需确认）"
-          className="flex w-full items-center justify-center gap-1.5 rounded-b-xl border-t border-gray-100 py-2.5 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700"
+          className="flex w-full shrink-0 items-center justify-center gap-1.5 rounded-b-xl border-t border-gray-100 py-2.5 text-xs font-medium text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700"
         >
           <Trash2 className="w-3.5 h-3.5" />
           清空已完成任务
